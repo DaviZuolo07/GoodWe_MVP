@@ -90,6 +90,10 @@ class StopChargeRequest(BaseModel):
     sessao_id: str
 
 
+class RecarregarSaldoRequest(BaseModel):
+    valor: float
+
+
 class ChatRequest(BaseModel):
     message: str
     usuario_id: Optional[str] = None
@@ -204,10 +208,10 @@ def start_charge(payload: StartChargeRequest):
         raise HTTPException(status_code=404, detail="Veículo não encontrado")
     veiculo = veiculo.data[0]
 
-    # Pagamento RFID simulado - sempre aprovado no MVP
-    payment_approved = True
-    if not payment_approved:
-        raise HTTPException(status_code=402, detail="Pagamento recusado")
+    usuario = supabase.table("usuarios").select("*").eq("id", payload.usuario_id).execute()
+    if not usuario.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    usuario = usuario.data[0]
 
     # Cálculo real (não é número aleatório): usa dados do cadastro do carro
     # (capacidade da bateria, potência que o carro aceita) + potência do
@@ -217,6 +221,18 @@ def start_charge(payload: StartChargeRequest):
     energia_necessaria_kwh = veiculo["capacidade_bateria_kwh"] * (1 - percentual_atual / 100)
     tempo_estimado_min = round((energia_necessaria_kwh / potencia_efetiva_kw) * 60) if potencia_efetiva_kw > 0 else 0
     custo_estimado = round(energia_necessaria_kwh * charger["tarifa_kwh"], 2)
+
+    # Pagamento RFID simulado - agora checa saldo de verdade, não aprova sozinho.
+    # É AQUI que, no next, a liberação do Arduino fica condicionada à aprovação.
+    if usuario["saldo"] < custo_estimado:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Saldo insuficiente. Saldo atual: R$ {usuario['saldo']:.2f}, "
+                   f"custo estimado: R$ {custo_estimado:.2f}.",
+        )
+
+    novo_saldo = round(usuario["saldo"] - custo_estimado, 2)
+    supabase.table("usuarios").update({"saldo": novo_saldo}).eq("id", payload.usuario_id).execute()
 
     sessao = supabase.table("sessoes_recarga").insert({
         "carregador_id": payload.charger_id,
@@ -233,13 +249,41 @@ def start_charge(payload: StartChargeRequest):
         "iniciado_em": datetime.utcnow().isoformat(),
     }).execute()
 
+    # Registra o pagamento de verdade (a tabela existia mas nunca era usada)
+    supabase.table("pagamentos").insert({
+        "sessao_id": sessao.data[0]["id"],
+        "valor": custo_estimado,
+        "metodo": "rfid_simulado",
+        "status": "aprovado",
+    }).execute()
+
     # Atualiza também o veículo com a % informada agora (fica coerente pro
     # dashboard mostrar, mesmo fora de uma sessão ativa)
     supabase.table("veiculos").update({"percentual_bateria": percentual_atual}).eq("id", payload.veiculo_id).execute()
 
     supabase.table("carregadores").update({"status": "em_uso"}).eq("id", payload.charger_id).execute()
 
-    return {"success": True, "sessao": sessao.data[0]}
+    return {"success": True, "sessao": sessao.data[0], "saldo_atual": novo_saldo}
+
+
+@app.post("/usuarios/{usuario_id}/recarregar-saldo")
+def recarregar_saldo(usuario_id: str, payload: RecarregarSaldoRequest):
+    """
+    Adiciona crédito ao saldo do usuário. No MVP isso é só um botão que
+    credita na hora (não tem gateway de pagamento real por trás) - serve
+    pra não travar a demo caso o saldo acabe durante os testes/vídeo.
+    """
+    if payload.valor <= 0:
+        raise HTTPException(status_code=400, detail="Valor precisa ser maior que zero")
+
+    usuario = supabase.table("usuarios").select("saldo").eq("id", usuario_id).execute()
+    if not usuario.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    novo_saldo = round(usuario.data[0]["saldo"] + payload.valor, 2)
+    supabase.table("usuarios").update({"saldo": novo_saldo}).eq("id", usuario_id).execute()
+
+    return {"success": True, "saldo_atual": novo_saldo}
 
 
 @app.post("/charge/stop")
