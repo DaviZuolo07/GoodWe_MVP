@@ -1,8 +1,9 @@
 import { useState } from 'react'
-
-const API_URL = import.meta.env.VITE_API_URL
+import CondominioSelect, { useCondominios } from '../components/CondominioSelect.jsx'
+import { API_URL, CONDOMINIO_PADRAO } from '../config.js'
 
 function Login({ onLoginSuccess }) {
+  const { condominios, carregando: carregandoCondominios } = useCondominios()
   const [modo, setModo] = useState('login') // 'login' | 'cadastro'
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState('')
@@ -15,6 +16,7 @@ function Login({ onLoginSuccess }) {
   const [nome, setNome] = useState('')
   const [senha, setSenha] = useState('')
   const [tipoUsuario, setTipoUsuario] = useState('morador')
+  const [condominioId, setCondominioId] = useState(null)
   const [blocoApto, setBlocoApto] = useState('')
   const [veiculoModelo, setVeiculoModelo] = useState('')
   const [veiculoPlaca, setVeiculoPlaca] = useState('')
@@ -49,6 +51,12 @@ function Login({ onLoginSuccess }) {
   async function handleCadastro(e) {
     e.preventDefault()
     setErro('')
+
+    if (!condominioId) {
+      setErro('Escolha o condomínio onde você mora ou vai carregar.')
+      return
+    }
+
     setCarregando(true)
     try {
       const res = await fetch(`${API_URL}/cadastro`, {
@@ -56,6 +64,7 @@ function Login({ onLoginSuccess }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nome,
+          condominio_id: condominioId || CONDOMINIO_PADRAO,
           tipo_usuario: tipoUsuario,
           bloco_apto: blocoApto,
           veiculo_modelo: veiculoModelo,
@@ -81,19 +90,19 @@ function Login({ onLoginSuccess }) {
   }
 
   const inputClass =
-    'w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-2 text-white placeholder-neutral-500 focus:outline-none focus:border-red-500'
-  const labelClass = 'text-sm text-neutral-400 mb-1 block'
+    'w-full bg-panel border border-line rounded-lg px-4 py-2 text-ink placeholder-dim focus:outline-none focus:border-flux'
+  const labelClass = 'text-sm text-mute mb-1 block'
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-white flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-neutral-900/50 border border-neutral-800 rounded-2xl p-8">
-        <h1 className="text-2xl font-bold text-red-500 mb-1">GoodWe ChargeOps AI</h1>
-        <p className="text-neutral-400 mb-6">
+    <div className="min-h-screen bg-void text-ink flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-panel/60 border border-line rounded-2xl p-8">
+        <h1 className="text-2xl font-bold text-flux mb-1">GoodWe ChargeOps AI</h1>
+        <p className="text-mute mb-6">
           {modo === 'login' ? 'Entrar na sua conta' : 'Criar seu cadastro'}
         </p>
 
         {erro && (
-          <div className="bg-red-500/10 border border-red-500/40 text-red-400 text-sm rounded-lg px-4 py-2 mb-4">
+          <div className="bg-flux/10 border border-flux/40 text-flux text-sm rounded-lg px-4 py-2 mb-4">
             {erro}
           </div>
         )}
@@ -123,13 +132,13 @@ function Login({ onLoginSuccess }) {
             <button
               type="submit"
               disabled={carregando}
-              className="w-full bg-red-500 hover:bg-red-600 disabled:opacity-50 rounded-lg py-2 font-medium transition"
+              className="w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2 font-medium transition"
             >
               {carregando ? 'Entrando...' : 'Entrar'}
             </button>
             <button
               type="button"
-              className="w-full text-sm text-neutral-400 hover:text-white pt-2"
+              className="w-full text-sm text-mute hover:text-ink pt-2"
               onClick={() => { setErro(''); setModo('cadastro') }}
             >
               Sou novo aqui — Cadastrar-se
@@ -146,6 +155,19 @@ function Login({ onLoginSuccess }) {
               <input className={inputClass} type="password" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Qualquer senha (MVP)" />
             </div>
 
+            <div>
+              <label className={labelClass}>Condomínio</label>
+              <CondominioSelect
+                condominios={condominios}
+                valorId={condominioId}
+                onSelecionar={(c) => setCondominioId(c.id)}
+                carregando={carregandoCondominios}
+              />
+              <p className="mt-1.5 text-xs text-dim">
+                Não achou o seu? Busque pelo endereço. Atendemos {condominios.length || '...'} locais.
+              </p>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={labelClass}>Tipo</label>
@@ -160,8 +182,8 @@ function Login({ onLoginSuccess }) {
               </div>
             </div>
 
-            <hr className="border-neutral-800 my-2" />
-            <p className="text-sm text-neutral-400">Dados do veículo</p>
+            <hr className="border-line my-2" />
+            <p className="text-sm text-mute">Dados do veículo</p>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -184,20 +206,20 @@ function Login({ onLoginSuccess }) {
                 <input className={inputClass} type="number" step="0.1" value={potenciaCarro} onChange={(e) => setPotenciaCarro(e.target.value)} />
               </div>
             </div>
-            <p className="text-xs text-neutral-500">
+            <p className="text-xs text-dim">
               A % de bateria atual será perguntada na hora de iniciar a recarga, não agora.
             </p>
 
             <button
               type="submit"
               disabled={carregando}
-              className="w-full bg-red-500 hover:bg-red-600 disabled:opacity-50 rounded-lg py-2 font-medium transition mt-2"
+              className="w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2 font-medium transition mt-2"
             >
               {carregando ? 'Cadastrando...' : 'Cadastrar-se e entrar'}
             </button>
             <button
               type="button"
-              className="w-full text-sm text-neutral-400 hover:text-white pt-2"
+              className="w-full text-sm text-mute hover:text-ink pt-2"
               onClick={() => { setErro(''); setModo('login') }}
             >
               Já tenho cadastro

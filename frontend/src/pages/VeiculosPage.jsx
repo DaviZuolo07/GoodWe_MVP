@@ -46,8 +46,8 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
   }
 
   const inputClass =
-    'w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-2 text-white placeholder-neutral-500 focus:outline-none focus:border-red-500'
-  const labelClass = 'text-sm text-neutral-400 mb-1 block'
+    'w-full bg-panel border border-line rounded-lg px-4 py-2 text-ink placeholder-dim focus:outline-none focus:border-flux'
+  const labelClass = 'text-sm text-mute mb-1 block'
 
   return (
     <div>
@@ -55,16 +55,16 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
         <h2 className="text-xl font-bold">Meus Veículos</h2>
         <button
           onClick={() => setMostrarForm((v) => !v)}
-          className="bg-red-500 hover:bg-red-600 px-4 py-2 rounded-lg text-sm font-medium transition"
+          className="bg-flux hover:bg-flare px-4 py-2 rounded-lg text-sm font-medium transition"
         >
           {mostrarForm ? 'Cancelar' : '+ Adicionar veículo'}
         </button>
       </div>
 
       {mostrarForm && (
-        <form onSubmit={handleAdicionar} className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 mb-6 space-y-3">
+        <form onSubmit={handleAdicionar} className="bg-panel border border-line rounded-xl p-4 mb-6 space-y-3">
           {erro && (
-            <div className="bg-red-500/10 border border-red-500/40 text-red-400 text-sm rounded-lg px-3 py-2">
+            <div className="bg-flux/10 border border-flux/40 text-flux text-sm rounded-lg px-3 py-2">
               {erro}
             </div>
           )}
@@ -91,7 +91,7 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
           <button
             type="submit"
             disabled={carregando}
-            className="bg-red-500 hover:bg-red-600 disabled:opacity-50 px-4 py-2 rounded-lg text-sm font-medium transition"
+            className="bg-flux hover:bg-flare disabled:opacity-50 px-4 py-2 rounded-lg text-sm font-medium transition"
           >
             {carregando ? 'Salvando...' : 'Salvar veículo'}
           </button>
@@ -100,17 +100,17 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {veiculos.map((v) => (
-          <div key={v.id} className="bg-neutral-900 border border-neutral-800 rounded-xl p-4">
-            <p className="font-medium text-white">{v.modelo}</p>
-            <p className="text-xs text-neutral-500 mb-3">{v.placa || 'Sem placa cadastrada'}</p>
-            <div className="grid grid-cols-2 gap-2 text-xs text-neutral-400">
+          <div key={v.id} className="bg-panel border border-line rounded-xl p-4">
+            <p className="font-medium text-ink">{v.modelo}</p>
+            <p className="text-xs text-dim mb-3">{v.placa || 'Sem placa cadastrada'}</p>
+            <div className="grid grid-cols-2 gap-2 text-xs text-mute">
               <div>
-                <p className="text-neutral-600">Bateria</p>
-                <p className="text-white">{v.capacidade_bateria_kwh} kWh</p>
+                <p className="text-dim">Bateria</p>
+                <p className="text-ink">{v.capacidade_bateria_kwh} kWh</p>
               </div>
               <div>
-                <p className="text-neutral-600">Potência</p>
-                <p className="text-white">{v.potencia_carro_kw} kW</p>
+                <p className="text-dim">Potência</p>
+                <p className="text-ink">{v.potencia_carro_kw} kW</p>
               </div>
             </div>
           </div>

@@ -1,1 +1,290 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
+
+/* ===========================================================================
+   GoodWe ChargeOps AI — camada de design
+   ---------------------------------------------------------------------------
+   Tudo que é cor, fonte, raio e sombra do produto nasce aqui. Nenhum
+   componente deve escrever hex na mão: usem as classes geradas por estes
+   tokens (bg-panel, text-mute, border-line, text-flux...).
+
+   Tailwind v4 gera as utilities automaticamente a partir do @theme:
+     --color-panel  ->  bg-panel / text-panel / border-panel
+     --font-mono    ->  font-mono
+     --radius-panel ->  rounded-panel
+   =========================================================================== */
+
+@theme {
+  /* Superfícies — do mais fundo para o mais próximo do usuário */
+  --color-void: #07080a;   /* fundo da página */
+  --color-panel: #0d0f13;  /* cards e painéis */
+  --color-raise: #131720;  /* item ativo, hover, campos */
+  --color-line: #212630;   /* borda visível */
+  --color-hair: #1a1e26;   /* divisória interna, mais discreta */
+
+  /* Texto — três níveis, bem separados de propósito */
+  --color-ink: #f3f5f8;    /* título e números */
+  --color-mute: #97a0ae;   /* apoio, legenda */
+  --color-dim: #5c6472;    /* rótulo, metadado */
+
+  /* Acento GoodWe: "flux" = energia em movimento */
+  --color-flux: #e5352b;
+  --color-flare: #ff6a45;  /* par quente do gradiente, só em movimento */
+
+  /* Estados operacionais dos carregadores */
+  --color-live: #2fd07a;   /* disponível */
+  --color-queue: #f5b33f;  /* fila */
+  --color-off: #4b515c;    /* offline */
+
+  /* Tipografia
+     Space Grotesk: display + interface (técnica, sem ser fria)
+     IBM Plex Mono: telemetria — número que muda sozinho é lido em mono */
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --radius-panel: 1rem;
+  --radius-chip: 0.625rem;
+
+  --shadow-lift: 0 1px 0 0 rgb(255 255 255 / 0.03) inset,
+                 0 18px 40px -24px rgb(0 0 0 / 0.9);
+  --shadow-flux: 0 0 0 1px rgb(229 53 43 / 0.35),
+                 0 12px 32px -12px rgb(229 53 43 / 0.45);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Número que muda sozinho não pode "dançar" na tela */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background: rgb(229 53 43 / 0.35);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-flux);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Rótulo de seção / eyebrow — mono, caixa alta, bem espaçado
+   --------------------------------------------------------------------------- */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+}
+
+/* ---------------------------------------------------------------------------
+   Assinatura visual: o "barramento" — a linha viva que atravessa o produto.
+   Aparece no item ativo da navegação e na borda do painel selecionado.
+   --------------------------------------------------------------------------- */
+.bus {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  translate: 0 -50%;
+  width: 2px;
+  height: 60%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, var(--color-flux), transparent);
+  box-shadow: 0 0 12px 1px rgb(229 53 43 / 0.6);
+}
+
+/* Gradiente de energia em movimento — barra de bateria, carga ativa */
+@keyframes gw-flux {
+  from { background-position: 0% 50%; }
+  to   { background-position: 200% 50%; }
+}
+.flux-bar {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-flux) 0%,
+    var(--color-flare) 45%,
+    var(--color-flux) 100%
+  );
+  background-size: 200% 100%;
+  animation: gw-flux 2.6s linear infinite;
+}
+
+/* Ponto de status "vivo" — anel que respira */
+@keyframes gw-ping {
+  0%   { box-shadow: 0 0 0 0 currentColor; opacity: 0.9; }
+  70%  { box-shadow: 0 0 0 6px transparent; opacity: 1; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 0.9; }
+}
+.dot-live {
+  animation: gw-ping 2s ease-out infinite;
+}
+
+/* Entrada de painel / card */
+@keyframes gw-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.rise {
+  animation: gw-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Esqueleto de carregamento */
+@keyframes gw-shimmer {
+  from { background-position: -180% 0; }
+  to   { background-position: 180% 0; }
+}
+.skeleton {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-panel) 0%,
+    var(--color-raise) 50%,
+    var(--color-panel) 100%
+  );
+  background-size: 180% 100%;
+  animation: gw-shimmer 1.6s ease-in-out infinite;
+}
+
+/* Brilho ambiente do topo da aplicação — dá profundidade sem sujar o fundo */
+.ambient {
+  background-image:
+    radial-gradient(900px 460px at 10% -12%, rgb(229 53 43 / 0.10), transparent 62%),
+    radial-gradient(720px 380px at 96% -6%, rgb(255 106 69 / 0.05), transparent 60%);
+}
+
+/* Barra de rolagem interna dos painéis */
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+.scroll-slim::-webkit-scrollbar { width: 8px; }
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+}
+.scroll-slim::-webkit-scrollbar-track { background: transparent; }
+
+/* Piso de qualidade: quem pediu menos movimento, recebe menos movimento */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Varredura de luz no hover — só transform, roda na GPU, não repinta layout.
+   --------------------------------------------------------------------------- */
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgb(255 255 255 / 0.07) 50%,
+    transparent 65%
+  );
+  transform: translateX(-120%);
+  transition: transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sweep:hover::after {
+  transform: translateX(120%);
+}
+
+/* Entrada da coluna de detalhe */
+@keyframes gw-slide-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+.slide-in {
+  animation: gw-slide-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ===========================================================================
+   TEMA CLARO — prata
+   ---------------------------------------------------------------------------
+   Só os tokens mudam. Como toda a interface usa var(--color-*), reescrever
+   estas variáveis vira a aplicação inteira de uma vez: nenhum componente
+   precisa saber que existe mais de um tema.
+
+   O vermelho GoodWe permanece idêntico — o pedido foi trocar o preto pelo
+   prata, não a marca. Verde e âmbar ganharam tons mais fechados: os originais
+   foram escolhidos para brilhar sobre preto e sumiriam sobre prata.
+   =========================================================================== */
+
+[data-tema="claro"] {
+  --color-void: #c4d0d8;   /* base da página */
+  --color-panel: #e4e9ec;  /* cards e painéis */
+  --color-raise: #f1f4f6;  /* item ativo, hover, campos */
+  --color-line: #a9a9a9;   /* borda visível */
+  --color-hair: #c6ced3;   /* divisória interna */
+
+  --color-ink: #171c23;    /* título e números */
+  --color-mute: #4d565f;   /* apoio, legenda */
+  --color-dim: #6d7681;    /* rótulo, metadado */
+
+  --color-flux: #d42a20;   /* vermelho GoodWe, levemente fechado p/ contraste */
+  --color-flare: #ef5a34;
+
+  --color-live: #12874a;
+  --color-queue: #9a6a05;
+  --color-off: #8d959c;
+
+  --shadow-lift: 0 1px 0 0 rgb(255 255 255 / 0.7) inset,
+                 0 16px 32px -22px rgb(40 50 60 / 0.55);
+  --shadow-flux: 0 0 0 1px rgb(212 42 32 / 0.35),
+                 0 12px 28px -14px rgb(212 42 32 / 0.4);
+
+  color-scheme: light;
+}
+
+/* O degradê prateado pedido, aplicado ao fundo da página. */
+[data-tema="claro"] body {
+  background-color: var(--color-void);
+  background-image: linear-gradient(160deg, #b8cad4 0%, #d3d3d3 52%, #a9a9a9 100%);
+  background-attachment: fixed;
+}
+
+/* No escuro o brilho ambiente é vermelho sobre preto; no claro isso vira
+   sujeira. Aqui ele só aprofunda o prata. */
+[data-tema="claro"] .ambient {
+  background-image:
+    radial-gradient(900px 460px at 10% -12%, rgb(255 255 255 / 0.55), transparent 62%),
+    radial-gradient(720px 380px at 96% -6%, rgb(169 169 169 / 0.35), transparent 60%);
+}
+
+/* Varredura branca é invisível sobre prata: inverte para sombra. */
+[data-tema="claro"] .sweep::after {
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgb(23 28 35 / 0.06) 50%,
+    transparent 65%
+  );
+}
+
+[data-tema="claro"] .bus {
+  box-shadow: 0 0 10px 1px rgb(212 42 32 / 0.45);
+}
