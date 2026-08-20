@@ -1,6 +1,5 @@
-import { useState } from 'react'
-
-const API_URL = import.meta.env.VITE_API_URL
+import { useEffect, useState } from 'react'
+import { API_URL } from '../config.js'
 
 const ETAPAS = {
   RFID: 'rfid',
@@ -19,12 +18,53 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
   const veiculo = veiculos.find((v) => v.id === veiculoId) || veiculos[0]
 
-  const potenciaEfetiva = veiculo ? Math.min(charger.potencia_maxima_kw, veiculo.potencia_carro_kw) : 0
-  const energiaNecessaria = veiculo ? veiculo.capacidade_bateria_kwh * (1 - percentual / 100) : 0
-  const tempoEstimadoMin = potenciaEfetiva > 0 ? Math.round((energiaNecessaria / potenciaEfetiva) * 60) : 0
-  const custoEstimado = Math.round(energiaNecessaria * charger.tarifa_kwh * 100) / 100
+  // A prévia vem do backend, não de uma conta paralela aqui.
+  // O cálculo real considera curva de carga (a bateria desacelera depois dos
+  // 80%), derating térmico do carregador e perdas de conversão — replicar
+  // isso no frontend garantiria divergência entre o que se mostra e o que se
+  // cobra. Uma conta, um dono.
+  const [estimativa, setEstimativa] = useState(null)
+  const [calculando, setCalculando] = useState(false)
 
-  const saldoInsuficiente = usuario.saldo < custoEstimado
+  useEffect(() => {
+    if (etapa !== ETAPAS.CONFIRMAR || !veiculo) return
+
+    let cancelado = false
+    setCalculando(true)
+
+    async function calcular() {
+      try {
+        const res = await fetch(`${API_URL}/charge/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            charger_id: charger.id,
+            veiculo_id: veiculo.id,
+            percentual_bateria_atual: Number(percentual),
+          }),
+        })
+        const data = await res.json()
+        if (!cancelado && res.ok) setEstimativa(data)
+      } catch {
+        if (!cancelado) setErro('Não foi possível calcular a prévia.')
+      } finally {
+        if (!cancelado) setCalculando(false)
+      }
+    }
+
+    calcular()
+    return () => {
+      cancelado = true
+    }
+  }, [etapa, veiculo, charger.id, percentual])
+
+  const energiaNecessaria = estimativa?.energia_necessaria_kwh ?? 0
+  const tempoEstimadoMin = estimativa?.tempo_estimado_min ?? 0
+  const custoEstimado = estimativa?.custo_estimado ?? 0
+  const temperatura = estimativa?.temperatura_c
+  const comDerating = estimativa?.fator_termico != null && estimativa.fator_termico < 1
+
+  const saldoInsuficiente = estimativa != null && usuario.saldo < custoEstimado
 
   async function confirmarRecarga() {
     setErro('')
@@ -59,10 +99,10 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
   if (!veiculo) {
     return (
-      <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-        <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-sm p-6 text-center">
-          <p className="text-white mb-4">Você ainda não tem nenhum veículo cadastrado.</p>
-          <button onClick={onClose} className="bg-neutral-800 hover:bg-neutral-700 rounded-lg py-2 px-4">
+      <div className="fixed inset-0 bg-void/80 flex items-center justify-center z-50 p-4">
+        <div className="bg-panel border border-line rounded-2xl w-full max-w-sm p-6 text-center">
+          <p className="text-ink mb-4">Você ainda não tem nenhum veículo cadastrado.</p>
+          <button onClick={onClose} className="bg-raise hover:bg-raise rounded-lg py-2 px-4">
             Fechar
           </button>
         </div>
@@ -71,24 +111,24 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl w-full max-w-sm p-6">
+    <div className="fixed inset-0 bg-void/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-panel border border-line rounded-2xl w-full max-w-sm p-6">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="font-semibold text-white">Carregador {charger.numero}</h3>
-          <button onClick={onClose} className="text-neutral-500 hover:text-white">✕</button>
+          <h3 className="font-semibold text-ink">Carregador {charger.numero}</h3>
+          <button onClick={onClose} className="text-dim hover:text-ink">✕</button>
         </div>
 
         {erro && (
-          <div className="bg-red-500/10 border border-red-500/40 text-red-400 text-sm rounded-lg px-3 py-2 mb-4">
+          <div className="bg-flux/10 border border-flux/40 text-flux text-sm rounded-lg px-3 py-2 mb-4">
             {erro}
           </div>
         )}
 
         {veiculos.length > 1 && etapa !== ETAPAS.CONFIRMAR && (
           <div className="mb-4">
-            <label className="text-sm text-neutral-400 mb-1 block">Qual veículo?</label>
+            <label className="text-sm text-mute mb-1 block">Qual veículo?</label>
             <select
-              className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white"
+              className="w-full bg-raise border border-line rounded-lg px-3 py-2 text-ink"
               value={veiculoId}
               onChange={(e) => setVeiculoId(e.target.value)}
             >
@@ -101,14 +141,14 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
         {etapa === ETAPAS.RFID && (
           <div className="text-center py-6">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full border-2 border-red-500 flex items-center justify-center text-2xl">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full border-2 border-flux flex items-center justify-center text-2xl">
               📶
             </div>
-            <p className="text-white mb-1">Aproxime seu cartão RFID</p>
-            <p className="text-xs text-neutral-500 mb-6">Simulação — clique para aproximar</p>
+            <p className="text-ink mb-1">Aproxime seu cartão RFID</p>
+            <p className="text-xs text-dim mb-6">Simulação — clique para aproximar</p>
             <button
               onClick={() => setEtapa(ETAPAS.BATERIA)}
-              className="w-full bg-red-500 hover:bg-red-600 rounded-lg py-2 font-medium transition"
+              className="w-full bg-flux hover:bg-flare rounded-lg py-2 font-medium transition"
             >
               Aproximar cartão
             </button>
@@ -117,18 +157,18 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
         {etapa === ETAPAS.BATERIA && (
           <div>
-            <p className="text-sm text-neutral-400 mb-2">Qual a % de bateria atual do veículo?</p>
+            <p className="text-sm text-mute mb-2">Qual a % de bateria atual do veículo?</p>
             <input
               type="number"
               min="0"
               max="100"
               value={percentual}
               onChange={(e) => setPercentual(e.target.value)}
-              className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-4 py-2 text-white mb-4"
+              className="w-full bg-raise border border-line rounded-lg px-4 py-2 text-ink mb-4"
             />
             <button
               onClick={() => setEtapa(ETAPAS.CONFIRMAR)}
-              className="w-full bg-red-500 hover:bg-red-600 rounded-lg py-2 font-medium transition"
+              className="w-full bg-flux hover:bg-flare rounded-lg py-2 font-medium transition"
             >
               Continuar
             </button>
@@ -137,38 +177,51 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
         {etapa === ETAPAS.CONFIRMAR && (
           <div>
-            <div className="bg-neutral-800/50 rounded-lg p-4 mb-4 space-y-2 text-sm">
+            <div className="bg-raise/50 rounded-lg p-4 mb-4 space-y-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-neutral-500">Veículo</span>
-                <span className="text-white">{veiculo.modelo}</span>
+                <span className="text-dim">Veículo</span>
+                <span className="text-ink">{veiculo.modelo}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-neutral-500">Energia necessária</span>
-                <span className="text-white">{energiaNecessaria.toFixed(2)} kWh</span>
+                <span className="text-dim">Energia necessária</span>
+                <span className="text-ink">{energiaNecessaria.toFixed(2)} kWh</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-neutral-500">Tempo estimado</span>
-                <span className="text-white">{tempoEstimadoMin} min</span>
+                <span className="text-dim">Tempo estimado</span>
+                <span className="text-ink">
+                  {tempoEstimadoMin < 60
+                    ? `${tempoEstimadoMin} min`
+                    : `${Math.floor(tempoEstimadoMin / 60)}h ${String(tempoEstimadoMin % 60).padStart(2, '0')}m`}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-neutral-500">Custo estimado</span>
-                <span className="text-white">R$ {custoEstimado.toFixed(2)}</span>
+                <span className="text-dim">Custo estimado</span>
+                <span className="text-ink">R$ {custoEstimado.toFixed(2)}</span>
               </div>
-              <hr className="border-neutral-700" />
+              <hr className="border-line" />
               <div className="flex justify-between">
-                <span className="text-neutral-500">Seu saldo</span>
-                <span className={saldoInsuficiente ? 'text-red-400' : 'text-green-400'}>
+                <span className="text-dim">Seu saldo</span>
+                <span className={saldoInsuficiente ? 'text-flux' : 'text-live'}>
                   R$ {usuario.saldo.toFixed(2)}
                 </span>
               </div>
             </div>
 
-            {saldoInsuficiente ? (
+            {comDerating && (
+              <p className="mb-3 rounded-lg border border-queue/30 bg-queue/10 px-3 py-2 text-xs text-queue">
+                Carregador a {Number(temperatura).toFixed(0)}°C — a potência foi reduzida para
+                proteger o equipamento, então o tempo estimado subiu.
+              </p>
+            )}
+
+            {calculando && !estimativa ? (
+              <p className="py-2 text-center text-sm text-dim">Calculando...</p>
+            ) : saldoInsuficiente ? (
               <div>
-                <p className="text-xs text-red-400 mb-3">Saldo insuficiente para essa recarga.</p>
+                <p className="text-xs text-flux mb-3">Saldo insuficiente para essa recarga.</p>
                 <button
                   onClick={onIrParaCarteira}
-                  className="w-full bg-neutral-700 hover:bg-neutral-600 rounded-lg py-2 font-medium transition"
+                  className="w-full bg-raise hover:bg-line rounded-lg py-2 font-medium transition"
                 >
                   Ir para Carteira
                 </button>
@@ -176,8 +229,8 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
             ) : (
               <button
                 onClick={confirmarRecarga}
-                disabled={carregando}
-                className="w-full bg-red-500 hover:bg-red-600 disabled:opacity-50 rounded-lg py-2 font-medium transition"
+                disabled={carregando || !estimativa}
+                className="w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2 font-medium transition"
               >
                 {carregando ? 'Iniciando...' : 'Confirmar pagamento e iniciar'}
               </button>

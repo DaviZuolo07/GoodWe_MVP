@@ -1,63 +1,138 @@
-const STATUS_CONFIG = {
-  disponivel: { label: 'Disponível', dot: 'bg-green-500', text: 'text-green-500' },
-  em_uso: { label: 'Em uso', dot: 'bg-red-500', text: 'text-red-500' },
-  fila: { label: 'Fila', dot: 'bg-amber-500', text: 'text-amber-500' },
-  offline: { label: 'Offline', dot: 'bg-neutral-600', text: 'text-neutral-500' },
+import { memo } from 'react'
+import ArteCarregador from './ArteCarregador.jsx'
+import ArteVeiculo from './ArteVeiculo.jsx'
+
+const STATUS = {
+  disponivel: { label: 'Disponível', cor: 'text-live', dot: 'bg-live', borda: 'hover:border-live/50' },
+  em_uso: { label: 'Em uso', cor: 'text-flux', dot: 'bg-flux', borda: 'hover:border-flux/50' },
+  fila: { label: 'Fila', cor: 'text-queue', dot: 'bg-queue', borda: 'hover:border-queue/50' },
+  offline: { label: 'Offline', cor: 'text-dim', dot: 'bg-off', borda: 'hover:border-line' },
 }
 
-function ChargerCard({ charger, sessao, onSelecionar }) {
-  const status = STATUS_CONFIG[charger.status] || STATUS_CONFIG.offline
+/** 72 -> "1h 12m" | 58 -> "58 min" */
+function tempo(min) {
+  if (min == null) return '—'
+  if (min < 60) return `${min} min`
+  return `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
+}
+
+function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
+  const st = STATUS[charger.status] || STATUS.offline
+  const emUso = charger.status === 'em_uso'
+  const bateria = Math.round(sessao?.percentual_bateria_atual || 0)
+  const temperatura = Number(charger.temperatura_c)
+  const quente = Number.isFinite(temperatura) && temperatura > 35
 
   return (
     <button
+      type="button"
       onClick={() => onSelecionar(charger)}
-      className="text-left bg-neutral-900 border border-neutral-800 hover:border-red-500/50 rounded-xl p-4 transition"
+      aria-pressed={selecionado}
+      className={`sweep group relative w-full overflow-hidden rounded-panel border bg-panel p-5 text-left
+        transition duration-200 ease-out will-change-transform
+        hover:-translate-y-1 hover:bg-raise/50 hover:shadow-lift active:scale-[0.995]
+        ${selecionado ? 'border-flux/70 shadow-flux' : `border-line ${st.borda}`}`}
     >
-      <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-semibold text-white bg-neutral-800 px-2 py-0.5 rounded">
+      {selecionado && <span className="bus" aria-hidden="true" />}
+
+      <div className="relative flex items-start justify-between gap-3">
+        <span className="num rounded-chip bg-raise px-2.5 py-1 text-sm font-semibold text-ink">
           {charger.numero}
         </span>
-        <span className={`flex items-center gap-1.5 text-xs font-medium ${status.text}`}>
-          <span className={`w-2 h-2 rounded-full ${status.dot}`} />
-          {status.label}
+
+        <span className={`flex items-center gap-2 text-xs font-medium ${st.cor}`}>
+          <span
+            className={`h-2 w-2 rounded-full ${st.dot} ${emUso ? 'dot-live' : ''}`}
+            style={emUso ? { color: 'var(--color-flux)' } : undefined}
+          />
+          {st.label}
         </span>
       </div>
 
+      {/* Retrato: o carro quando há recarga, o equipamento quando está livre */}
+      <div className="relative flex h-36 items-center justify-center py-2">
+        {emUso && sessao ? (
+          <ArteVeiculo modelo={sessao.veiculos?.modelo} className="h-28" />
+        ) : (
+          <ArteCarregador status={charger.status} modelo={charger.modelo} className="h-32" />
+        )}
+
+        {quente && (
+          <span className="num absolute right-0 top-0 rounded-chip border border-queue/30 bg-queue/10 px-2 py-0.5 text-[11px] text-queue">
+            {temperatura.toFixed(0)}°C
+          </span>
+        )}
+      </div>
+
       {sessao ? (
-        <div>
-          <p className="font-medium text-white">{sessao.veiculos?.modelo || 'Veículo'}</p>
-          <p className="text-xs text-neutral-500 mb-3">{sessao.veiculos?.placa}</p>
+        <div className="relative">
+          <p className="truncate font-medium text-ink">{sessao.veiculos?.modelo || 'Veículo'}</p>
+          <p className="num mb-3 text-xs text-dim">{sessao.veiculos?.placa || '—'}</p>
 
-          <div className="w-full bg-neutral-800 rounded-full h-1.5 mb-3">
-            <div
-              className="bg-red-500 h-1.5 rounded-full transition-all"
-              style={{ width: `${sessao.percentual_bateria_atual || 0}%` }}
-            />
+          <div className="mb-3 flex items-center gap-3">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raise">
+              <div
+                className="flux-bar h-full rounded-full transition-[width] duration-700 ease-out"
+                style={{ width: `${bateria}%` }}
+              />
+            </div>
+            <span className="num text-sm font-semibold text-ink">{bateria}%</span>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-xs text-neutral-400">
+          <dl className="grid grid-cols-3 gap-2 border-t border-hair pt-3">
             <div>
-              <p className="text-neutral-600">Potência</p>
-              <p className="text-white">{sessao.potencia_atual_kw} kW</p>
+              <dt className="eyebrow text-[10px]">Potência</dt>
+              <dd className="num text-sm text-ink">{sessao.potencia_atual_kw} kW</dd>
             </div>
             <div>
-              <p className="text-neutral-600">Energia</p>
-              <p className="text-white">{sessao.energia_entregue_kwh?.toFixed(2)} kWh</p>
+              <dt className="eyebrow text-[10px]">Energia</dt>
+              <dd className="num text-sm text-ink">
+                {Number(sessao.energia_entregue_kwh || 0).toFixed(2)} kWh
+              </dd>
             </div>
             <div>
-              <p className="text-neutral-600">Tempo</p>
-              <p className="text-white">{sessao.tempo_estimado_min}m</p>
+              <dt className="eyebrow text-[10px]">Restante</dt>
+              <dd className="num text-sm text-ink">{tempo(sessao.tempo_estimado_min)}</dd>
             </div>
-          </div>
+          </dl>
         </div>
       ) : (
-        <div>
-          <p className="text-sm text-white">{charger.tipo} {charger.potencia_maxima_kw}kW</p>
-          <p className="text-xs text-neutral-500">{charger.conector}</p>
+        <div className="relative">
+          <p className="num text-lg font-semibold text-ink">
+            {charger.tipo} {charger.potencia_maxima_kw} kW
+          </p>
+          <p className="mb-3 text-xs text-mute">{charger.conector}</p>
+
+          <div className="flex items-center justify-between border-t border-hair pt-3">
+            <span className="num text-xs text-dim">
+              R$ {Number(charger.tarifa_kwh).toFixed(2)} / kWh
+            </span>
+            <span
+              className={`flex items-center gap-1.5 text-xs font-medium transition-colors ${
+                charger.status === 'disponivel' ? 'text-flux group-hover:text-flare' : 'text-dim'
+              }`}
+            >
+              {charger.status === 'disponivel' ? 'Selecionar' : 'Aguardando liberação'}
+              {charger.status === 'disponivel' && (
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-1"
+                  aria-hidden="true"
+                >
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              )}
+            </span>
+          </div>
         </div>
       )}
     </button>
   )
 }
 
-export default ChargerCard
+export default memo(ChargerCard)
