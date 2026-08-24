@@ -30,6 +30,9 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 from hardware_serial import iniciar_escuta_serial, _processar_leitura_rfid
+from chatbot import configurar_chatbot, responder_chatbot
+from hardware_api import (router as hardware_router, configurar_hardware,
+                          enfileirar_comando, marcar_dispositivos_offline)
 
 # ---------------------------------------------------------------------------
 # CONEXÃO COM O SUPABASE
@@ -76,6 +79,7 @@ CONDOMINIO_ID = CONDOMINIO_PADRAO  # alias legado
 
 EFICIENCIA_CARGA = 0.92   # energia que chega na bateria / energia da tomada
 SOC_JOELHO = 80.0         # onde começa o tapering (%)
+TARIFA_PADRAO_KWH = 2.10  # só entra se o carregador não tiver tarifa cadastrada
 FATOR_FINAL = 0.20        # fração da potência ao encostar em 100%
 
 
@@ -168,6 +172,14 @@ class ChatRequest(BaseModel):
     message: str
     usuario_id: Optional[str] = None
     charger_id: Optional[str] = None
+    # Local que o usuário escolheu no seletor do chat. Campo OPCIONAL: se vier
+    # nulo, o backend usa o condomínio de moradia, como sempre fez. O valor é
+    # validado contra os favoritos - o frontend não decide escopo sozinho.
+    condominio_id: Optional[str] = None
+
+
+class FavoritoRequest(BaseModel):
+    condominio_id: str
 
 
 class VincularRfidRequest(BaseModel):
@@ -295,6 +307,106 @@ def listar_condominios():
     return result.data
 
 
+# --- Locais favoritos ------------------------------------------------------
+# O assistente responde sobre UM local por vez. Estes três endpoints alimentam
+# o seletor do chat e definem, ao mesmo tempo, a allowlist de escopo: o bot só
+# aceita responder sobre um local que esteja nesta lista.
+
+def _locais_do_usuario(usuario_id: str) -> dict:
+    """Favoritos + condomínio de moradia. Usado pelo endpoint e pelo chatbot."""
+    u = (
+        supabase.table("usuarios")
+        .select("condominio_id")
+        .eq("id", usuario_id)
+        .execute()
+    )
+    if not u.data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+
+    padrao_id = u.data[0].get("condominio_id")
+
+    favs = (
+        supabase.table("condominios_favoritos")
+        .select("condominio_id")
+        .eq("usuario_id", usuario_id)
+        .execute()
+    )
+    ids = {f["condominio_id"] for f in (favs.data or [])}
+
+    # O condomínio de moradia é favorito implícito: a pessoa nunca fica sem
+    # nenhum local para escolher, mesmo que apague todos os favoritos.
+    if padrao_id:
+        ids.add(padrao_id)
+
+    todos = supabase.table("condominios").select("*").order("nome").execute().data or []
+    favoritos = [c for c in todos if c["id"] in ids]
+
+    return {"padrao_id": padrao_id, "favoritos": favoritos, "todos": todos}
+
+
+@app.get("/usuarios/{usuario_id}/locais")
+def listar_locais(usuario_id: str):
+    """
+    Tudo que o seletor do chat precisa, numa chamada só:
+    os favoritos (que ele mostra), todos os locais (para adicionar) e qual é
+    o condomínio de moradia (que não pode ser desfavoritado).
+    """
+    return _locais_do_usuario(usuario_id)
+
+
+@app.post("/usuarios/{usuario_id}/favoritos")
+def favoritar_local(usuario_id: str, payload: FavoritoRequest):
+    """Idempotente: favoritar de novo não duplica nem dá erro."""
+    existe = (
+        supabase.table("condominios")
+        .select("id")
+        .eq("id", payload.condominio_id)
+        .execute()
+    )
+    if not existe.data:
+        raise HTTPException(status_code=404, detail="Condomínio não encontrado")
+
+    ja = (
+        supabase.table("condominios_favoritos")
+        .select("id")
+        .eq("usuario_id", usuario_id)
+        .eq("condominio_id", payload.condominio_id)
+        .execute()
+    )
+    if not ja.data:
+        supabase.table("condominios_favoritos").insert({
+            "usuario_id": usuario_id,
+            "condominio_id": payload.condominio_id,
+        }).execute()
+
+    return _locais_do_usuario(usuario_id)
+
+
+@app.delete("/usuarios/{usuario_id}/favoritos/{condominio_id}")
+def desfavoritar_local(usuario_id: str, condominio_id: str):
+    """
+    Remove o favorito - menos o condomínio de moradia.
+
+    Se deixássemos remover, o usuário conseguiria zerar a própria allowlist e
+    o chat ficaria sem nenhum local para responder.
+    """
+    u = supabase.table("usuarios").select("condominio_id").eq("id", usuario_id).execute()
+    if u.data and u.data[0].get("condominio_id") == condominio_id:
+        raise HTTPException(
+            status_code=400,
+            detail="O condomínio onde você mora não pode ser removido dos favoritos.",
+        )
+
+    (
+        supabase.table("condominios_favoritos")
+        .delete()
+        .eq("usuario_id", usuario_id)
+        .eq("condominio_id", condominio_id)
+        .execute()
+    )
+    return _locais_do_usuario(usuario_id)
+
+
 @app.get("/chargers")
 def list_chargers(condominio_id: Optional[str] = None):
     result = (
@@ -355,6 +467,31 @@ def calcular_estimativa(charger: dict, veiculo: dict, percentual_atual: float, a
     }
 
 
+def custo_da_sessao(sessao: dict) -> float:
+    """
+    Custo real de uma sessão, sempre pela tarifa do carregador daquele
+    condomínio - nunca por um valor fixo no código.
+
+    `energia_entregue_kwh` já é energia de tomada (o simulador acumula
+    energia_rede, não energia_bateria), então ela entra direto na conta. Não
+    dividir de novo por EFICIENCIA_CARGA aqui, senão a perda é cobrada duas
+    vezes.
+    """
+    energia_rede_kwh = float(sessao.get("energia_entregue_kwh") or 0)
+
+    tarifa = TARIFA_PADRAO_KWH
+    charger = (
+        supabase.table("carregadores")
+        .select("tarifa_kwh")
+        .eq("id", sessao["carregador_id"])
+        .execute()
+    )
+    if charger.data and charger.data[0].get("tarifa_kwh") is not None:
+        tarifa = float(charger.data[0]["tarifa_kwh"])
+
+    return round(energia_rede_kwh * tarifa, 2)
+
+
 # ---------------------------------------------------------------------------
 # 4. FLUXO DE RECARGA
 # ---------------------------------------------------------------------------
@@ -405,6 +542,10 @@ def autorizar_e_iniciar_sessao(charger: dict, veiculo: dict, usuario: dict, perc
 
     supabase.table("veiculos").update({"percentual_bateria": percentual_atual}).eq("id", veiculo["id"]).execute()
     supabase.table("carregadores").update({"status": "em_uso"}).eq("id", charger["id"]).execute()
+
+    # Ponto físico: manda o ESP32 fechar o relé. É AQUI que a energia começa a
+    # correr de verdade. Em ponto simulado a função devolve None e nada muda.
+    enfileirar_comando(charger["id"], "liberar", sessao.data[0]["id"])
 
     return {"sessao": sessao.data[0], "saldo_atual": novo_saldo}
 
@@ -714,75 +855,61 @@ def stop_charge(payload: StopChargeRequest):
     supabase.table("sessoes_recarga").update({
         "status": "finalizada",
         "finalizado_em": datetime.utcnow().isoformat(),
-        "custo_final": round(sessao["energia_entregue_kwh"] * 2.10, 2),
+        "custo_final": custo_da_sessao(sessao),
     }).eq("id", payload.sessao_id).execute()
 
     supabase.table("carregadores").update({"status": "disponivel"}).eq("id", sessao["carregador_id"]).execute()
+
+    # Ponto físico: abre o relé. Sem isto o carro continuaria carregando de
+    # graça depois do "parar" na tela.
+    enfileirar_comando(sessao["carregador_id"], "bloquear", sessao["id"])
+
     avisar_proximo_da_fila(sessao["carregador_id"])
 
     return {"success": True}
 
 
 # ---------------------------------------------------------------------------
-# 5. CHATBOT (baseado em regras, usa os dados reais do Supabase)
+# 5. CHATBOT
 # ---------------------------------------------------------------------------
+# A lógica vive em backend/chatbot/ - router de intenção, camada de dados
+# whitelisted, prompts versionados, verificação anti-alucinação e fallback por
+# regras. Aqui fica só a casca HTTP.
+#
+# O contrato do endpoint não mudou: `reply` e `timestamp` continuam iguais. Os
+# outros campos são aditivos (o frontend ignora o que não usa).
+
+# --- Hardware ESP32 por WiFi ------------------------------------------------
+# O ESP32 é cliente: ele chama estas rotas, o backend nunca chama a placa.
+# Ver hardware_api.py para o porquê dessa inversão.
+app.include_router(hardware_router)
+
+configurar_hardware(
+    supabase=supabase,
+    autorizar_e_iniciar_sessao=autorizar_e_iniciar_sessao,
+    calcular_estimativa=calcular_estimativa,
+    tempo_de_carga_min=tempo_de_carga_min,
+    custo_da_sessao=custo_da_sessao,
+    eficiencia_carga=EFICIENCIA_CARGA,
+    avisar_proximo_da_fila=avisar_proximo_da_fila,
+)
+
+configurar_chatbot(
+    supabase=supabase,
+    calcular_estimativa=calcular_estimativa,
+    custo_da_sessao=custo_da_sessao,
+    condominio_padrao=CONDOMINIO_PADRAO,
+)
+
 
 @app.post("/chatbot")
 def chatbot(payload: ChatRequest):
-    msg = payload.message.lower()
-    reply = "Posso te ajudar com informações sobre disponibilidade, tempo restante, fila e potência dos carregadores."
-
-    sessao = None
-    if payload.usuario_id:
-        result = (
-            supabase.table("sessoes_recarga")
-            .select("*")
-            .eq("usuario_id", payload.usuario_id)
-            .eq("status", "carregando")
-            .execute()
-        )
-        if result.data:
-            sessao = result.data[0]
-
-    # O chatbot responde sobre o condomínio de quem perguntou, não sobre um
-    # condomínio fixo.
-    condominio_do_usuario = CONDOMINIO_PADRAO
-    if payload.usuario_id:
-        u = supabase.table("usuarios").select("condominio_id").eq("id", payload.usuario_id).execute()
-        if u.data and u.data[0].get("condominio_id"):
-            condominio_do_usuario = u.data[0]["condominio_id"]
-
-    if ("tempo" in msg or "falta" in msg) and sessao:
-        reply = f"Faltam aproximadamente {sessao['tempo_estimado_min']} minutos para concluir sua recarga."
-    elif "disponível" in msg or "disponivel" in msg:
-        chargers = supabase.table("carregadores").select("numero,status").eq("condominio_id", condominio_do_usuario).execute()
-        disponiveis = [c["numero"] for c in chargers.data if c["status"] == "disponivel"]
-        reply = f"Carregadores disponíveis agora: {', '.join(disponiveis) if disponiveis else 'nenhum no momento'}."
-    elif "potência" in msg or "potencia" in msg:
-        if sessao:
-            reply = f"A potência atual da sua recarga é de {sessao['potencia_atual_kw']} kW."
-        else:
-            reply = "Você não tem uma recarga ativa no momento."
-    elif "custo" in msg or "preço" in msg or "preco" in msg:
-        if sessao:
-            custo = round(sessao["energia_entregue_kwh"] * 2.10, 2)
-            reply = f"O custo estimado até agora é de R$ {custo}."
-
-    # loga a conversa (opcional, mas já deixa o histórico real no banco)
-    supabase.table("chat_mensagens").insert({
-        "usuario_id": payload.usuario_id,
-        "carregador_id": payload.charger_id,
-        "remetente": "usuario",
-        "mensagem": payload.message,
-    }).execute()
-    supabase.table("chat_mensagens").insert({
-        "usuario_id": payload.usuario_id,
-        "carregador_id": payload.charger_id,
-        "remetente": "bot",
-        "mensagem": reply,
-    }).execute()
-
-    return {"reply": reply, "timestamp": datetime.utcnow().isoformat()}
+    return responder_chatbot(
+        mensagem=payload.message,
+        usuario_id=payload.usuario_id,
+        charger_id=payload.charger_id,
+        condominio_id=payload.condominio_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -811,9 +938,18 @@ async def simulador_loop():
             # --- Temperatura dos carregadores ---
             # Persegue um alvo (quente em uso, ambiente se livre) com passo
             # pequeno e ruído, para parecer curva e não degrau.
+            # Só pontos SIMULADOS. Carregador com origem='hardware' tem um
+            # ESP32 escrevendo temperatura e energia a partir do sensor - se o
+            # simulador também escrevesse, os dois brigariam pela mesma linha
+            # a cada 10s e o valor na tela ficaria pulando entre o medido e o
+            # modelado. Um dono por linha.
             chargers = supabase.table("carregadores").select(
                 "id, status, temperatura_c, potencia_maxima_kw, tarifa_kwh"
-            ).execute()
+            ).eq("origem", "simulado").execute()
+
+            # Dispositivos sem contato recente derrubam o ponto. Aproveita
+            # este loop em vez de abrir outra thread.
+            marcar_dispositivos_offline()
 
             por_id = {}
             for c in chargers.data:
@@ -842,6 +978,10 @@ async def simulador_loop():
                 potencia_carro = veiculo.get("potencia_carro_kw") or 7.4
                 charger = por_id.get(sessao["carregador_id"])
                 if not charger:
+                    # `por_id` só tem pontos simulados. Sessão rodando em
+                    # carregador físico cai aqui e é ignorada de propósito:
+                    # quem avança energia e SoC nela é o ESP32, via
+                    # POST /hardware/telemetria. NÃO remova este guard.
                     continue
 
                 soc = float(sessao["percentual_bateria_atual"] or 0)
@@ -874,7 +1014,7 @@ async def simulador_loop():
                     update_data["status"] = "finalizada"
                     update_data["finalizado_em"] = datetime.utcnow().isoformat()
                     update_data["custo_final"] = round(
-                        nova_energia * charger.get("tarifa_kwh", 2.10), 2
+                        nova_energia * (charger.get("tarifa_kwh") or TARIFA_PADRAO_KWH), 2
                     )
                     supabase.table("carregadores").update({"status": "disponivel"}).eq(
                         "id", sessao["carregador_id"]

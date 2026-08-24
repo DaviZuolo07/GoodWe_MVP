@@ -590,6 +590,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
         chargerId={chargerSelecionado?.id}
         aberto={chatAberto}
         onFechar={() => setChatAberto(false)}
+        condominioId={condominioId}
       />
 
       {/* ---------------- Modais (lógica intocada) ---------------- */}

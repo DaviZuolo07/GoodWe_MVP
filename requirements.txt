@@ -4,3 +4,4 @@ pydantic
 python-dotenv
 supabase
 pyserial
+httpx
