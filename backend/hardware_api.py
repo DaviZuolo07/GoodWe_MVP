@@ -53,10 +53,11 @@ _CTX = {}
 
 def configurar_hardware(supabase, autorizar_e_iniciar_sessao, calcular_estimativa,
                         tempo_de_carga_min, custo_da_sessao, eficiencia_carga,
-                        avisar_proximo_da_fila):
+                        avisar_proximo_da_fila, confirmar_sessao_preparada=None):
     _CTX.update({
         "supabase": supabase,
         "autorizar": autorizar_e_iniciar_sessao,
+        "confirmar_preparada": confirmar_sessao_preparada,
         "estimar": calcular_estimativa,
         "tempo_de_carga_min": tempo_de_carga_min,
         "custo_da_sessao": custo_da_sessao,
@@ -127,6 +128,27 @@ def autenticar(token: Optional[str]) -> dict:
     }).eq("id", dispositivo["id"]).execute()
 
     return dispositivo
+
+
+def sessao_aguardando_cartao(carregador_id: str):
+    """
+    A sessão preparada na tela e parada esperando o cartão NESTE ponto.
+
+    A busca é pelo CARREGADOR, não pelo usuário. É a inversão que o fluxo novo
+    exige: o carregador está esperando uma pessoa específica, e o cartão
+    aproximado tem que ser o dela. Buscar pelo usuário primeiro deixaria
+    passar o caso de alguém preparar no ponto 01 e encostar o cartão no 02.
+    """
+    r = (
+        sb().table("sessoes_recarga")
+        .select("*")
+        .eq("carregador_id", carregador_id)
+        .eq("status", "aguardando_rfid")
+        .order("criado_em", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
 
 
 def sessao_ativa_do_carregador(carregador_id: str):
@@ -246,6 +268,7 @@ def handshake(payload: HandshakePayload, x_device_token: str = Header(None)):
         # sessão "carregando" no banco.
         "sessao_ativa": bool(sessao),
         "rele_esperado": bool(sessao),
+        "aguardando_cartao": bool(sessao_aguardando_cartao(c["id"])),
         "servidor_hora": agora().isoformat(),
     }
 
@@ -353,7 +376,11 @@ def receber_telemetria(payload: TelemetriaPayload, x_device_token: str = Header(
         if payload.rele_ligado:
             print(f"[HARDWARE] relé fechado sem sessão no carregador "
                   f"{carregador_id} - mandando abrir")
-        return {"ok": True, "sessao_ativa": False, "deve_liberar": False}
+        # `aguardando_cartao` deixa a placa sinalizar que alguém preparou a
+        # recarga no app e o cartão é esperado agora. Sem isso, o morador
+        # chega no ponto e não tem nenhum retorno físico de que é a vez dele.
+        return {"ok": True, "sessao_ativa": False, "deve_liberar": False,
+                "aguardando_cartao": bool(sessao_aguardando_cartao(carregador_id))}
 
     energia_kwh = _energia_monotonica(sessao, payload.energia_wh)
     update = {"energia_entregue_kwh": round(energia_kwh, 3)}
@@ -477,67 +504,63 @@ def _encerrar(sessao: dict, carregador_id: str, soc: float, update: dict):
 @router.post("/rfid")
 def leitura_rfid(payload: RfidPayload, x_device_token: str = Header(None)):
     """
-    Cartão aproximado do leitor. Mesma lógica do `hardware_serial.py`, só que
-    a resposta volta em JSON no lugar de "L"/"N" pela serial.
+    Cartão aproximado do leitor - o gatilho que efetivamente inicia a recarga.
 
-    A autorização passa pela MESMA função do fluxo pelo app
-    (`autorizar_e_iniciar_sessao`), então as regras de saldo e concorrência
-    são idênticas nos dois caminhos. Duas portas de entrada, uma regra só.
+    A ordem das checagens importa e é o coração do fluxo novo:
+
+      1. Este carregador está esperando alguém?  Se não, não há o que iniciar.
+      2. O cartão é de quem preparou?            Identidade tem que bater.
+      3. O saldo cobre a estimativa?             Decidido AGORA, não antes.
+
+    Repare no que NÃO acontece aqui: a sessão não é apagada e recriada. Ela é
+    promovida no lugar por `confirmar_sessao_preparada()`, preservando o id.
+    O navegador do morador está inscrito nesse id pelo Realtime desde que a
+    tela mostrou "aproxime seu cartão" - trocar o id deixaria ele escutando
+    uma linha que não muda mais.
+
+    E quando o saldo não cobre, a recusa é gravada na sessão antes de voltar
+    para a placa. A resposta HTTP vai para o ESP32; o morador está olhando o
+    celular. O canal de retorno para ele é o banco.
     """
     dispositivo = autenticar(x_device_token)
     uid = (payload.uid or "").strip()
+    carregador_id = dispositivo["carregador_id"]
+
+    sessao = sessao_aguardando_cartao(carregador_id)
+    if not sessao:
+        return {"autorizado": False, "motivo": "sem_recarga_preparada",
+                "mensagem": "Nenhuma recarga preparada aqui. Use o aplicativo primeiro."}
 
     u = sb().table("usuarios").select("*").eq("rfid_uid", uid).execute()
     if not u.data:
         return {"autorizado": False, "motivo": "cartao_nao_vinculado",
-                "mensagem": "Cartão não vinculado a nenhum morador."}
+                "mensagem": "Cartão não reconhecido."}
     usuario = u.data[0]
 
-    pend = (
-        sb().table("sessoes_recarga")
-        .select("*")
-        .eq("usuario_id", usuario["id"])
-        .eq("status", "aguardando_rfid")
-        .order("criado_em", desc=True)
-        .limit(1)
-        .execute()
-    )
-    if not pend.data:
-        return {"autorizado": False, "motivo": "sem_recarga_pendente",
-                "mensagem": f"{usuario['nome'].split()[0]}, "
-                            "prepare a recarga no aplicativo primeiro."}
-    pendente = pend.data[0]
-
-    # O cartão precisa ser passado NO ponto onde a recarga foi preparada.
-    if pendente["carregador_id"] != dispositivo["carregador_id"]:
-        return {"autorizado": False, "motivo": "carregador_errado",
-                "mensagem": "Sua recarga foi preparada em outro ponto."}
-
-    charger = sb().table("carregadores").select("*").eq(
-        "id", pendente["carregador_id"]
-    ).execute().data[0]
-    veiculo = sb().table("veiculos").select("*").eq(
-        "id", pendente["veiculo_id"]
-    ).execute().data[0]
+    if usuario["id"] != sessao["usuario_id"]:
+        # Cartão válido, mas de outra pessoa. A sessão preparada continua
+        # esperando o dono - não cancelamos por causa de um cartão errado.
+        dono = sb().table("usuarios").select("nome").eq(
+            "id", sessao["usuario_id"]
+        ).execute()
+        nome_dono = (dono.data[0]["nome"].split()[0] if dono.data else "outro morador")
+        return {"autorizado": False, "motivo": "cartao_de_outro_usuario",
+                "mensagem": f"Este ponto está aguardando o cartão de {nome_dono}."}
 
     try:
-        # A sessão "aguardando_rfid" já cumpriu o papel de guardar a
-        # estimativa; a função central cria a sessão "carregando" de verdade.
-        sb().table("sessoes_recarga").delete().eq("id", pendente["id"]).execute()
-
-        resultado = _CTX["autorizar"](
-            charger, veiculo, usuario,
-            pendente["percentual_bateria_atual"],
-            metodo="rfid_hardware", origem="hardware",
-        )
+        resultado = _CTX["confirmar_preparada"](sessao, metodo="rfid_hardware")
     except HTTPException as e:
-        return {"autorizado": False, "motivo": "recusado", "mensagem": e.detail}
+        # A recusa já foi gravada na sessão lá dentro. Aqui só devolvemos para
+        # a placa poder sinalizar (LED, buzzer).
+        print(f"[HARDWARE] cartão recusado para {usuario['nome']}: {e.detail}")
+        return {"autorizado": False, "motivo": "saldo_insuficiente",
+                "mensagem": "Saldo insuficiente para esta recarga."}
 
     print(f"[HARDWARE] recarga autorizada por cartão para {usuario['nome']}")
     return {
         "autorizado": True,
         "mensagem": f"Bem-vindo, {usuario['nome'].split()[0]}!",
-        "sessao_id": resultado["sessao"]["id"],
+        "sessao_id": sessao["id"],
         "usuario": usuario["nome"],
     }
 

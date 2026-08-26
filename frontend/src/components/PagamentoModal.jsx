@@ -1,20 +1,49 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { API_URL } from '../config.js'
+import { supabase } from '../supabaseClient.js'
+
+/**
+ * Modal de início de recarga.
+ *
+ * A ORDEM DAS ETAPAS MUDOU
+ * ------------------------
+ * Antes: cartão (simulado, um clique) -> bateria -> confirmar -> inicia.
+ * O cartão era decoração; quem iniciava a recarga era o botão.
+ *
+ * Agora: bateria e alvo -> confirmar -> ESPERA o cartão físico -> inicia.
+ * Quem decide é a aproximação do cartão no ESP32. O botão só prepara.
+ *
+ * COMO A TELA DESCOBRE O QUE ACONTECEU
+ * ------------------------------------
+ * O cartão é lido pelo ESP32, que fala com o backend. O navegador não está
+ * nessa conversa - se a autorização falhar por saldo, o erro acontece num
+ * canal onde o morador não está ouvindo.
+ *
+ * Por isso a tela não espera resposta de requisição nenhuma: ela se inscreve
+ * no Realtime da LINHA da sessão. Sucesso, recusa por saldo e expiração
+ * chegam todos como UPDATE naquela linha. O banco é o canal de retorno.
+ */
 
 const ETAPAS = {
-  RFID: 'rfid',
   BATERIA: 'bateria',
   CONFIRMAR: 'confirmar',
+  AGUARDANDO: 'aguardando',
+  RECUSADO: 'recusado',
 }
 
 function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrParaCarteira }) {
   const { usuario } = sessao
 
   const [veiculoId, setVeiculoId] = useState(veiculos[0]?.id || '')
-  const [etapa, setEtapa] = useState(ETAPAS.RFID)
+  const [etapa, setEtapa] = useState(ETAPAS.BATERIA)
   const [percentual, setPercentual] = useState(20)
+  const [alvo, setAlvo] = useState(100)
   const [erro, setErro] = useState('')
   const [carregando, setCarregando] = useState(false)
+
+  const [sessaoPreparada, setSessaoPreparada] = useState(null)
+  const [segundos, setSegundos] = useState(0)
+  const [motivoRecusa, setMotivoRecusa] = useState('')
 
   const veiculo = veiculos.find((v) => v.id === veiculoId) || veiculos[0]
 
@@ -66,11 +95,14 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
   const saldoInsuficiente = estimativa != null && usuario.saldo < custoEstimado
 
-  async function confirmarRecarga() {
+  // ---------------------------------------------------------------------
+  // Etapa 1 — preparar: cria a sessão parada esperando o cartão
+  // ---------------------------------------------------------------------
+  async function prepararRecarga() {
     setErro('')
     setCarregando(true)
     try {
-      const res = await fetch(`${API_URL}/charge/start`, {
+      const res = await fetch(`${API_URL}/charge/preparar-rfid`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -78,24 +110,96 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
           usuario_id: usuario.id,
           veiculo_id: veiculoId,
           percentual_bateria_atual: Number(percentual),
+          alvo_percentual: Number(alvo),
         }),
       })
       const data = await res.json()
 
       if (!res.ok) {
-        // Cobre os dois casos de concorrência: carregador ocupado ou o
-        // próprio veículo já carregando em outro lugar.
-        setErro(data.detail || 'Não foi possível iniciar a recarga.')
+        // Cobre saldo insuficiente (402), ponto offline (503), carregador já
+        // aguardando outro morador (409) e concorrência de veículo.
+        setErro(data.detail || 'Não foi possível preparar a recarga.')
         return
       }
 
-      onSucesso(data.saldo_atual)
+      setSessaoPreparada(data.sessao)
+      setSegundos(data.segundos_para_aproximar || 120)
+      setEtapa(ETAPAS.AGUARDANDO)
     } catch {
       setErro('Não foi possível conectar ao servidor.')
     } finally {
       setCarregando(false)
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Etapa 2 — escutar a linha da sessão até ela mudar de estado
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    if (etapa !== ETAPAS.AGUARDANDO || !sessaoPreparada?.id) return
+
+    const canal = supabase
+      .channel(`espera-cartao-${sessaoPreparada.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'sessoes_recarga',
+          filter: `id=eq.${sessaoPreparada.id}`,
+        },
+        (evento) => {
+          const nova = evento.new
+          if (nova.status === 'carregando') {
+            // O ESP32 leu o cartão e o backend autorizou. O saldo já foi
+            // debitado lá; aqui só refletimos na tela.
+            onSucesso(Number((usuario.saldo - (nova.custo_estimado || 0)).toFixed(2)))
+          } else if (nova.status === 'recusada') {
+            setMotivoRecusa(nova.motivo_recusa || 'Saldo insuficiente para esta recarga.')
+            setEtapa(ETAPAS.RECUSADO)
+          } else if (nova.status === 'cancelada') {
+            setMotivoRecusa(
+              nova.motivo_recusa === 'tempo_esgotado'
+                ? 'O tempo para aproximar o cartão se esgotou.'
+                : 'A recarga foi cancelada.',
+            )
+            setEtapa(ETAPAS.RECUSADO)
+          }
+        },
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(canal)
+    }
+  }, [etapa, sessaoPreparada, usuario.saldo, onSucesso])
+
+  // Contagem regressiva. É só informativa — quem cancela de verdade é o
+  // backend, no laço que roda a cada 10s. Duas fontes de verdade para o mesmo
+  // prazo dariam divergência; aqui o relógio é enfeite honesto.
+  useEffect(() => {
+    if (etapa !== ETAPAS.AGUARDANDO) return
+    const t = setInterval(() => setSegundos((s) => Math.max(0, s - 1)), 1000)
+    return () => clearInterval(t)
+  }, [etapa])
+
+  const cancelarEspera = useCallback(async () => {
+    if (!sessaoPreparada?.id) return
+    try {
+      await fetch(`${API_URL}/charge/cancelar-rfid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessao_id: sessaoPreparada.id, usuario_id: usuario.id }),
+      })
+    } catch {
+      /* fechar mesmo assim: o prazo expira sozinho no backend */
+    }
+    onClose()
+  }, [sessaoPreparada, usuario.id, onClose])
+
+  // Fechar no X durante a espera precisa cancelar, senão o ponto fica preso
+  // até o prazo vencer.
+  const fechar = etapa === ETAPAS.AGUARDANDO ? cancelarEspera : onClose
 
   if (!veiculo) {
     return (
@@ -115,7 +219,7 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
       <div className="bg-panel border border-line rounded-2xl w-full max-w-sm p-6">
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-semibold text-ink">Carregador {charger.numero}</h3>
-          <button onClick={onClose} className="text-dim hover:text-ink">✕</button>
+          <button onClick={fechar} className="text-dim hover:text-ink">✕</button>
         </div>
 
         {erro && (
@@ -124,7 +228,7 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
           </div>
         )}
 
-        {veiculos.length > 1 && etapa !== ETAPAS.CONFIRMAR && (
+        {veiculos.length > 1 && etapa === ETAPAS.BATERIA && (
           <div className="mb-4">
             <label className="text-sm text-mute mb-1 block">Qual veículo?</label>
             <select
@@ -139,35 +243,48 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
           </div>
         )}
 
-        {etapa === ETAPAS.RFID && (
-          <div className="text-center py-6">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full border-2 border-flux flex items-center justify-center text-2xl">
-              📶
-            </div>
-            <p className="text-ink mb-1">Aproxime seu cartão RFID</p>
-            <p className="text-xs text-dim mb-6">Simulação — clique para aproximar</p>
-            <button
-              onClick={() => setEtapa(ETAPAS.BATERIA)}
-              className="w-full bg-flux hover:bg-flare rounded-lg py-2 font-medium transition"
-            >
-              Aproximar cartão
-            </button>
-          </div>
-        )}
-
         {etapa === ETAPAS.BATERIA && (
           <div>
             <p className="text-sm text-mute mb-2">Qual a % de bateria atual do veículo?</p>
             <input
               type="number"
               min="0"
-              max="100"
+              max="99"
               value={percentual}
               onChange={(e) => setPercentual(e.target.value)}
               className="w-full bg-raise border border-line rounded-lg px-4 py-2 text-ink mb-4"
             />
+
+            <p className="text-sm text-mute mb-2">Carregar até quanto?</p>
+            <div className="mb-2 flex gap-2">
+              {[80, 90, 100].map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setAlvo(v)}
+                  className={`flex-1 rounded-lg py-2 text-sm transition ${
+                    Number(alvo) === v
+                      ? 'bg-flux text-white'
+                      : 'bg-raise text-mute hover:bg-line'
+                  }`}
+                >
+                  {v}%
+                </button>
+              ))}
+            </div>
+            <p className="mb-4 text-xs text-dim">
+              Parar em 80% carrega bem mais rápido: acima disso a bateria aceita
+              cada vez menos potência.
+            </p>
+
             <button
-              onClick={() => setEtapa(ETAPAS.CONFIRMAR)}
+              onClick={() => {
+                if (Number(alvo) <= Number(percentual)) {
+                  setErro('O alvo precisa ser maior que a bateria atual.')
+                  return
+                }
+                setErro('')
+                setEtapa(ETAPAS.CONFIRMAR)
+              }}
               className="w-full bg-flux hover:bg-flare rounded-lg py-2 font-medium transition"
             >
               Continuar
@@ -181,6 +298,10 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
               <div className="flex justify-between">
                 <span className="text-dim">Veículo</span>
                 <span className="text-ink">{veiculo.modelo}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-dim">Carregar</span>
+                <span className="text-ink">{percentual}% → {alvo}%</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-dim">Energia necessária</span>
@@ -228,13 +349,84 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
               </div>
             ) : (
               <button
-                onClick={confirmarRecarga}
+                onClick={prepararRecarga}
                 disabled={carregando || !estimativa}
                 className="w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2 font-medium transition"
               >
-                {carregando ? 'Iniciando...' : 'Confirmar pagamento e iniciar'}
+                {carregando ? 'Preparando...' : 'Confirmar e aproximar cartão'}
               </button>
             )}
+          </div>
+        )}
+
+        {etapa === ETAPAS.AGUARDANDO && (
+          <div className="py-4 text-center">
+            <div className="relative mx-auto mb-5 flex h-20 w-20 items-center justify-center">
+              <span
+                className="absolute inset-0 rounded-full border-2 border-flux/40"
+                style={{ animation: 'gw-ping 1.6s ease-out infinite' }}
+              />
+              <span className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-flux text-flux">
+                <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                  <rect x="3" y="6" width="18" height="12" rx="2" />
+                  <path d="M14 10.5a3 3 0 0 1 0 3M16.5 8.5a6 6 0 0 1 0 7" />
+                </svg>
+              </span>
+            </div>
+
+            <p className="mb-1 font-medium text-ink">Aproxime seu cartão do leitor</p>
+            <p className="mb-5 text-xs text-dim">
+              A recarga só começa depois da leitura no carregador {charger.numero}.
+            </p>
+
+            <div className="mb-5 rounded-lg bg-raise/50 px-4 py-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-dim">Será debitado</span>
+                <span className="text-ink">R$ {custoEstimado.toFixed(2)}</span>
+              </div>
+              <div className="mt-1 flex justify-between">
+                <span className="text-dim">Tempo para aproximar</span>
+                <span className={segundos <= 20 ? 'text-flux' : 'text-mute'}>
+                  {Math.floor(segundos / 60)}:{String(segundos % 60).padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+
+            <button
+              onClick={cancelarEspera}
+              className="w-full rounded-lg bg-raise py-2 font-medium text-mute transition hover:bg-line hover:text-ink"
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
+
+        {etapa === ETAPAS.RECUSADO && (
+          <div className="py-4 text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full border-2 border-flux text-flux">
+              <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                <path d="M12 8v5M12 16.5v.01" />
+                <circle cx="12" cy="12" r="9" />
+              </svg>
+            </div>
+
+            <p className="mb-1 font-medium text-ink">Recarga não autorizada</p>
+            <p className="mb-5 text-sm text-dim">{motivoRecusa}</p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={onClose}
+                className="flex-1 rounded-lg bg-raise py-2 font-medium text-mute transition hover:bg-line hover:text-ink"
+              >
+                Fechar
+              </button>
+              <button
+                onClick={onIrParaCarteira}
+                className="flex-1 rounded-lg bg-flux py-2 font-medium text-white transition hover:bg-flare"
+              >
+                Adicionar saldo
+              </button>
+            </div>
           </div>
         )}
       </div>

@@ -20,7 +20,7 @@ Documentação automática: http://localhost:8000/docs
 import os
 import asyncio
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -191,6 +191,14 @@ class PrepararRfidRequest(BaseModel):
     usuario_id: str
     veiculo_id: str
     percentual_bateria_atual: float
+    # Até onde carregar. Sempre existiu em calcular_estimativa(), mas ninguém
+    # passava - toda estimativa ia até 100%. Agora o morador define na tela.
+    alvo_percentual: float = 100.0
+
+
+class CancelarRfidRequest(BaseModel):
+    sessao_id: str
+    usuario_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -496,16 +504,20 @@ def custo_da_sessao(sessao: dict) -> float:
 # 4. FLUXO DE RECARGA
 # ---------------------------------------------------------------------------
 
-def autorizar_e_iniciar_sessao(charger: dict, veiculo: dict, usuario: dict, percentual_atual: float, metodo: str, origem: str) -> dict:
+def estimar_e_validar_saldo(charger: dict, veiculo: dict, usuario: dict,
+                            percentual_atual: float, alvo: float = 100.0) -> dict:
     """
-    Função central de autorização - checa saldo, deduz, cria a sessão e
-    registra o pagamento. Usada tanto pelo fluxo simulado (/charge/start,
-    botão no frontend) quanto pelo fluxo do cartão RFID físico (ver
-    hardware_serial.py). Levanta HTTPException se algo bloquear.
+    Calcula a estimativa e confere se o saldo cobre o custo.
+
+    Extraída porque agora a mesma checagem roda em TRÊS momentos diferentes do
+    fluxo do cartão: ao preparar na tela (para recusar cedo, antes do morador
+    caminhar até o carregador), ao aproximar o cartão (o saldo pode ter mudado
+    no meio do caminho) e no fluxo direto pelo app. Três cópias da mesma regra
+    seriam três lugares para ela divergir.
+
+    Levanta HTTPException 402 se o saldo não cobrir.
     """
-    estimativa = calcular_estimativa(charger, veiculo, percentual_atual)
-    potencia_efetiva_kw = estimativa["potencia_agora_kw"]
-    tempo_estimado_min = estimativa["tempo_estimado_min"]
+    estimativa = calcular_estimativa(charger, veiculo, percentual_atual, alvo)
     custo_estimado = estimativa["custo_estimado"]
 
     if usuario["saldo"] < custo_estimado:
@@ -515,6 +527,25 @@ def autorizar_e_iniciar_sessao(charger: dict, veiculo: dict, usuario: dict, perc
                    f"custo estimado: R$ {custo_estimado:.2f}.",
         )
 
+    return estimativa
+
+
+def autorizar_e_iniciar_sessao(charger: dict, veiculo: dict, usuario: dict,
+                               percentual_atual: float, metodo: str, origem: str,
+                               alvo: float = 100.0) -> dict:
+    """
+    Função central de autorização do fluxo DIRETO (app): valida saldo, deduz,
+    cria a sessão e registra o pagamento.
+
+    O fluxo do cartão RFID não passa por aqui - ele usa
+    `confirmar_sessao_preparada()`, porque lá a linha da sessão já existe
+    desde o "aguardando cartão" e precisa ser promovida no lugar, não
+    recriada. Recriar geraria um id novo, e o navegador está escutando o id
+    antigo pelo Realtime.
+    """
+    estimativa = estimar_e_validar_saldo(charger, veiculo, usuario, percentual_atual, alvo)
+
+    custo_estimado = estimativa["custo_estimado"]
     novo_saldo = round(usuario["saldo"] - custo_estimado, 2)
     supabase.table("usuarios").update({"saldo": novo_saldo}).eq("id", usuario["id"]).execute()
 
@@ -523,11 +554,12 @@ def autorizar_e_iniciar_sessao(charger: dict, veiculo: dict, usuario: dict, perc
         "veiculo_id": veiculo["id"],
         "usuario_id": usuario["id"],
         "status": "carregando",
-        "potencia_atual_kw": potencia_efetiva_kw,
+        "potencia_atual_kw": estimativa["potencia_agora_kw"],
         "energia_entregue_kwh": 0,
         "percentual_bateria_inicial": percentual_atual,
         "percentual_bateria_atual": percentual_atual,
-        "tempo_estimado_min": tempo_estimado_min,
+        "alvo_percentual": alvo,
+        "tempo_estimado_min": estimativa["tempo_estimado_min"],
         "custo_estimado": custo_estimado,
         "origem": origem,
         "iniciado_em": datetime.utcnow().isoformat(),
@@ -550,13 +582,92 @@ def autorizar_e_iniciar_sessao(charger: dict, veiculo: dict, usuario: dict, perc
     return {"sessao": sessao.data[0], "saldo_atual": novo_saldo}
 
 
+def confirmar_sessao_preparada(sessao: dict, metodo: str = "rfid_hardware") -> dict:
+    """
+    Promove uma sessão `aguardando_rfid` para `carregando` - ou a recusa.
+
+    Chamada pelo ESP32 quando o cartão é aproximado. A linha NÃO é recriada:
+    ela é atualizada no lugar, preservando o id. Isso é essencial porque o
+    navegador do morador está inscrito no Realtime justamente desse id desde
+    que a tela mostrou "aproxime seu cartão". Recriar a linha significaria o
+    navegador nunca receber a notícia.
+
+    Em caso de saldo insuficiente, a recusa é GRAVADA na sessão
+    (status=recusada + motivo_recusa) antes de propagar o erro. O morador está
+    olhando o celular, não a resposta HTTP que vai para a placa - então o
+    canal de retorno tem que ser o banco.
+    """
+    charger = supabase.table("carregadores").select("*").eq(
+        "id", sessao["carregador_id"]
+    ).execute().data[0]
+    veiculo = supabase.table("veiculos").select("*").eq(
+        "id", sessao["veiculo_id"]
+    ).execute().data[0]
+    usuario = supabase.table("usuarios").select("*").eq(
+        "id", sessao["usuario_id"]
+    ).execute().data[0]
+
+    percentual = float(sessao.get("percentual_bateria_inicial") or 0)
+    alvo = float(sessao.get("alvo_percentual") or 100)
+
+    try:
+        estimativa = estimar_e_validar_saldo(charger, veiculo, usuario, percentual, alvo)
+    except HTTPException as e:
+        supabase.table("sessoes_recarga").update({
+            "status": "recusada",
+            "motivo_recusa": e.detail,
+            "finalizado_em": datetime.utcnow().isoformat(),
+        }).eq("id", sessao["id"]).execute()
+        raise
+
+    custo_estimado = estimativa["custo_estimado"]
+    novo_saldo = round(usuario["saldo"] - custo_estimado, 2)
+    supabase.table("usuarios").update({"saldo": novo_saldo}).eq("id", usuario["id"]).execute()
+
+    atualizada = supabase.table("sessoes_recarga").update({
+        "status": "carregando",
+        "potencia_atual_kw": estimativa["potencia_agora_kw"],
+        "energia_entregue_kwh": 0,
+        "tempo_estimado_min": estimativa["tempo_estimado_min"],
+        "custo_estimado": custo_estimado,
+        "expira_em": None,
+        "iniciado_em": datetime.utcnow().isoformat(),
+    }).eq("id", sessao["id"]).execute()
+
+    supabase.table("pagamentos").insert({
+        "sessao_id": sessao["id"],
+        "valor": custo_estimado,
+        "metodo": metodo,
+        "status": "aprovado",
+    }).execute()
+
+    supabase.table("veiculos").update({"percentual_bateria": percentual}).eq(
+        "id", veiculo["id"]
+    ).execute()
+    supabase.table("carregadores").update({"status": "em_uso"}).eq(
+        "id", charger["id"]
+    ).execute()
+
+    enfileirar_comando(charger["id"], "liberar", sessao["id"])
+
+    return {
+        "sessao": atualizada.data[0] if atualizada.data else sessao,
+        "saldo_atual": novo_saldo,
+        "usuario": usuario,
+    }
+
+
 def checar_concorrencia(veiculo_id: str):
     """Levanta erro se o veículo já tiver uma sessão ativa em outro carregador."""
     sessao_ativa = (
         supabase.table("sessoes_recarga")
         .select("id")
         .eq("veiculo_id", veiculo_id)
-        .eq("status", "carregando")
+        # aguardando_rfid entra junto: um veículo com recarga preparada em um
+        # ponto não pode ser preparado em outro. Sem isso, o morador prepara
+        # em dois carregadores, aproxima o cartão num, e a sessão órfã do
+        # outro segura o ponto até expirar.
+        .in_("status", ["carregando", "aguardando_rfid"])
         .execute()
     )
     if sessao_ativa.data:
@@ -575,6 +686,16 @@ def start_charge(payload: StartChargeRequest):
 
     if charger["status"] == "em_uso":
         raise HTTPException(status_code=400, detail="Carregador já está em uso")
+
+    # Ponto físico offline: o comando "liberar" ficaria pendente para sempre,
+    # porque não existe ESP32 buscando comandos. O saldo seria debitado, a tela
+    # diria "carregando" e o carro ficaria parado. Falha silenciosa é a pior
+    # espécie - recusa explicitamente.
+    if charger.get("origem") == "hardware" and charger["status"] == "offline":
+        raise HTTPException(
+            status_code=503,
+            detail="Este carregador está offline no momento. Tente outro ponto.",
+        )
 
     veiculo = supabase.table("veiculos").select("*").eq("id", payload.veiculo_id).execute()
     if not veiculo.data:
@@ -595,18 +716,28 @@ def start_charge(payload: StartChargeRequest):
     return {"success": True, **resultado}
 
 
+# Prazo para aproximar o cartão. Curto o bastante para o ponto não ficar
+# travado se alguém desistir, longo o bastante para caminhar até o carregador.
+SEGUNDOS_ESPERA_CARTAO = 120
+
+
 @app.post("/charge/preparar-rfid")
 def preparar_rfid(payload: PrepararRfidRequest):
     """
-    Passo 1 do fluxo com hardware real: o frontend chama isso quando o
-    usuário já escolheu o carregador e digitou a % de bateria, e a tela
-    está mostrando 'aproxime seu cartão'. Isso NÃO inicia a recarga ainda
-    - só deixa tudo pronto (calcula a estimativa) para quando o cartão for
-    lido de verdade no leitor RFID físico (ver hardware_serial.py), que
-    completa a autorização chamando autorizar_e_iniciar_sessao().
+    Passo 1 do fluxo com cartão físico.
 
-    Pra achar qual usuário passou o cartão, o usuário precisa ter um
-    rfid_uid vinculado (ver /usuarios/{id}/vincular-rfid).
+    O morador escolheu o carregador, informou a bateria atual e o alvo, e
+    confirmou na tela. Isto NÃO inicia a recarga: cria uma sessão parada em
+    `aguardando_rfid` e devolve o id dela, para o navegador ficar escutando
+    essa linha no Realtime enquanto mostra "aproxime seu cartão".
+
+    Quem inicia de fato é a aproximação do cartão no ESP32
+    (POST /hardware/rfid -> confirmar_sessao_preparada).
+
+    O saldo é conferido AQUI TAMBÉM, mesmo sabendo que será conferido de novo
+    no cartão. Recusar cedo evita que a pessoa caminhe até o carregador para
+    descobrir lá que não dava. A checagem no cartão continua sendo a que vale
+    - o saldo pode mudar no meio do caminho.
     """
     charger = supabase.table("carregadores").select("*").eq("id", payload.charger_id).execute()
     if not charger.data:
@@ -615,6 +746,37 @@ def preparar_rfid(payload: PrepararRfidRequest):
 
     if charger["status"] == "em_uso":
         raise HTTPException(status_code=400, detail="Carregador já está em uso")
+
+    # Ponto físico offline = ESP32 desligado ou sem rede. Não adianta preparar:
+    # o cartão seria lido por uma placa que não está conversando com o backend,
+    # ou nem seria lido. Melhor recusar agora com uma mensagem clara do que
+    # deixar o morador esperando por um evento que não vem.
+    if charger.get("origem") == "hardware" and charger["status"] == "offline":
+        raise HTTPException(
+            status_code=503,
+            detail="O leitor deste carregador está offline. Tente outro ponto.",
+        )
+
+    # Uma preparação por carregador. Sem isto, dois moradores ficam esperando
+    # no mesmo ponto e o cartão do primeiro a chegar decide - com o segundo
+    # sem entender por que a tela dele não mudou.
+    ja_aguardando = (
+        supabase.table("sessoes_recarga")
+        .select("id, usuario_id")
+        .eq("carregador_id", payload.charger_id)
+        .eq("status", "aguardando_rfid")
+        .execute()
+    )
+    if ja_aguardando.data:
+        if ja_aguardando.data[0]["usuario_id"] == payload.usuario_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Você já tem uma recarga aguardando cartão neste carregador.",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail="Outro morador já está aguardando o cartão neste carregador.",
+        )
 
     veiculo = supabase.table("veiculos").select("*").eq("id", payload.veiculo_id).execute()
     if not veiculo.data:
@@ -634,7 +796,19 @@ def preparar_rfid(payload: PrepararRfidRequest):
             detail="Esse usuário não tem cartão RFID vinculado. Vincule antes de usar o leitor físico.",
         )
 
-    estimativa = calcular_estimativa(charger, veiculo, payload.percentual_bateria_atual)
+    alvo = max(1.0, min(100.0, float(payload.alvo_percentual or 100)))
+    if alvo <= payload.percentual_bateria_atual:
+        raise HTTPException(
+            status_code=400,
+            detail="O alvo precisa ser maior que a bateria atual.",
+        )
+
+    # Recusa cedo por saldo - levanta 402 e o modal já mostra na tela.
+    estimativa = estimar_e_validar_saldo(
+        charger, veiculo, usuario, payload.percentual_bateria_atual, alvo
+    )
+
+    expira_em = datetime.utcnow() + timedelta(seconds=SEGUNDOS_ESPERA_CARTAO)
 
     sessao = supabase.table("sessoes_recarga").insert({
         "carregador_id": payload.charger_id,
@@ -643,12 +817,51 @@ def preparar_rfid(payload: PrepararRfidRequest):
         "status": "aguardando_rfid",
         "percentual_bateria_inicial": payload.percentual_bateria_atual,
         "percentual_bateria_atual": payload.percentual_bateria_atual,
+        "alvo_percentual": alvo,
         "tempo_estimado_min": estimativa["tempo_estimado_min"],
         "custo_estimado": estimativa["custo_estimado"],
         "origem": "hardware",
+        "expira_em": expira_em.isoformat(),
     }).execute()
 
-    return {"success": True, "sessao": sessao.data[0], "estimativa": estimativa}
+    return {
+        "success": True,
+        "sessao": sessao.data[0],
+        "estimativa": estimativa,
+        "expira_em": expira_em.isoformat(),
+        "segundos_para_aproximar": SEGUNDOS_ESPERA_CARTAO,
+    }
+
+
+@app.post("/charge/cancelar-rfid")
+def cancelar_rfid(payload: CancelarRfidRequest):
+    """
+    Morador desistiu enquanto a tela dizia "aproxime seu cartão".
+
+    Sem este endpoint a única saída seria esperar os 120s do prazo, com o
+    carregador travado. O `usuario_id` é conferido para ninguém cancelar a
+    espera de outro morador.
+    """
+    r = (
+        supabase.table("sessoes_recarga")
+        .select("*")
+        .eq("id", payload.sessao_id)
+        .eq("status", "aguardando_rfid")
+        .execute()
+    )
+    if not r.data:
+        return {"success": True, "ja_encerrada": True}
+
+    if r.data[0]["usuario_id"] != payload.usuario_id:
+        raise HTTPException(status_code=403, detail="Essa espera não é sua.")
+
+    supabase.table("sessoes_recarga").update({
+        "status": "cancelada",
+        "motivo_recusa": "cancelado_pelo_usuario",
+        "finalizado_em": datetime.utcnow().isoformat(),
+    }).eq("id", payload.sessao_id).execute()
+
+    return {"success": True}
 
 
 class PreviewRequest(BaseModel):
@@ -892,6 +1105,7 @@ configurar_hardware(
     custo_da_sessao=custo_da_sessao,
     eficiencia_carga=EFICIENCIA_CARGA,
     avisar_proximo_da_fila=avisar_proximo_da_fila,
+    confirmar_sessao_preparada=confirmar_sessao_preparada,
 )
 
 configurar_chatbot(
@@ -915,6 +1129,35 @@ def chatbot(payload: ChatRequest):
 # ---------------------------------------------------------------------------
 # 6. SIMULADOR - roda sozinho em background, faz as recargas "andarem"
 # ---------------------------------------------------------------------------
+
+def expirar_esperas_de_cartao():
+    """
+    Cancela sessões que ficaram esperando cartão além do prazo.
+
+    Sem isto, quem prepara a recarga e fecha o navegador deixa o carregador
+    travado indefinidamente - ninguém consegue preparar nele de novo. Como o
+    UPDATE vai para o Realtime, um navegador que ainda esteja aberto recebe a
+    notícia e mostra "tempo esgotado" em vez de girar para sempre.
+    """
+    agora_iso = datetime.utcnow().isoformat()
+    try:
+        vencidas = (
+            supabase.table("sessoes_recarga")
+            .select("id, carregador_id")
+            .eq("status", "aguardando_rfid")
+            .lt("expira_em", agora_iso)
+            .execute()
+        )
+        for sessao in (vencidas.data or []):
+            supabase.table("sessoes_recarga").update({
+                "status": "cancelada",
+                "motivo_recusa": "tempo_esgotado",
+                "finalizado_em": agora_iso,
+            }).eq("id", sessao["id"]).execute()
+            print(f"[RFID] espera de cartão expirada na sessão {sessao['id']}")
+    except Exception as e:
+        print(f"[RFID] falha ao expirar esperas: {e}")
+
 
 async def simulador_loop():
     """
@@ -950,6 +1193,7 @@ async def simulador_loop():
             # Dispositivos sem contato recente derrubam o ponto. Aproveita
             # este loop em vez de abrir outra thread.
             marcar_dispositivos_offline()
+            expirar_esperas_de_cartao()
 
             por_id = {}
             for c in chargers.data:
