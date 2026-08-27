@@ -35,6 +35,7 @@ telemetria de outro ponto nem por engano nem de propósito - mesmo princípio
 usado no chatbot: o que vem do cliente é pedido, não permissão.
 """
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -45,6 +46,12 @@ router = APIRouter(prefix="/hardware", tags=["hardware"])
 
 # Sem contato por mais que isto, o ponto é considerado offline no painel.
 SEGUNDOS_ATE_OFFLINE = 30
+
+# Sem nenhum ESP32 na rede, a varredura de dispositivos mortos derruba todo
+# ponto físico para offline - e as travas de "não iniciar em ponto offline"
+# passam a bloquear qualquer teste. MODO_DEMO=1 no .env suspende a varredura
+# para dar para validar o fluxo inteiro sem a placa.
+MODO_DEMO = os.getenv("MODO_DEMO", "0") == "1"
 
 # Injetado pelo main.py no startup (mesmo padrão do módulo do chatbot: evita
 # import circular e mantém uma única instância do cliente Supabase).
@@ -196,6 +203,9 @@ def marcar_dispositivos_offline():
     precisa aparecer como offline no painel: mostrar "disponível" e o morador
     chegar num ponto morto é pior que mostrar o problema.
     """
+    if MODO_DEMO:
+        return
+
     limite = (agora() - timedelta(seconds=SEGUNDOS_ATE_OFFLINE)).isoformat()
 
     mortos = (
@@ -501,30 +511,30 @@ def _encerrar(sessao: dict, carregador_id: str, soc: float, update: dict):
 # 4. RFID - o que a serial fazia, agora por HTTP
 # ---------------------------------------------------------------------------
 
-@router.post("/rfid")
-def leitura_rfid(payload: RfidPayload, x_device_token: str = Header(None)):
+def processar_cartao(carregador_id: str, uid: str) -> dict:
     """
-    Cartão aproximado do leitor - o gatilho que efetivamente inicia a recarga.
+    Lógica pura do cartão, SEM autenticação de dispositivo.
 
-    A ordem das checagens importa e é o coração do fluxo novo:
+    Separada da rota de propósito. A rota `/hardware/rfid` autentica o ESP32 e
+    depois chama isto; o endpoint de teste `/debug/simular-rfid` chama isto
+    direto. Assim o teste sem placa exercita exatamente o mesmo caminho de
+    negócio, sem forjar a presença de um dispositivo que não existe.
 
-      1. Este carregador está esperando alguém?  Se não, não há o que iniciar.
-      2. O cartão é de quem preparou?            Identidade tem que bater.
-      3. O saldo cobre a estimativa?             Decidido AGORA, não antes.
+    Isso não é purismo: `autenticar()` grava `online=True` e `ultimo_contato`
+    no dispositivo. Se o endpoint de teste passasse por lá, o backend passaria
+    a acreditar que existe um ESP32 vivo - e 30s depois a varredura de
+    dispositivos mortos derrubaria o carregador para offline, quebrando todos
+    os testes seguintes.
 
-    Repare no que NÃO acontece aqui: a sessão não é apagada e recriada. Ela é
-    promovida no lugar por `confirmar_sessao_preparada()`, preservando o id.
-    O navegador do morador está inscrito nesse id pelo Realtime desde que a
-    tela mostrou "aproxime seu cartão" - trocar o id deixaria ele escutando
-    uma linha que não muda mais.
+    Ordem das checagens:
+      1. Este carregador está esperando alguém?
+      2. O cartão é de quem preparou?
+      3. O saldo cobre a estimativa?  (decidido AGORA, não antes)
 
-    E quando o saldo não cobre, a recusa é gravada na sessão antes de voltar
-    para a placa. A resposta HTTP vai para o ESP32; o morador está olhando o
-    celular. O canal de retorno para ele é o banco.
+    A sessão não é apagada e recriada: é promovida no lugar, preservando o id
+    que o navegador está escutando pelo Realtime.
     """
-    dispositivo = autenticar(x_device_token)
-    uid = (payload.uid or "").strip()
-    carregador_id = dispositivo["carregador_id"]
+    uid = (uid or "").strip()
 
     sessao = sessao_aguardando_cartao(carregador_id)
     if not sessao:
@@ -548,10 +558,10 @@ def leitura_rfid(payload: RfidPayload, x_device_token: str = Header(None)):
                 "mensagem": f"Este ponto está aguardando o cartão de {nome_dono}."}
 
     try:
-        resultado = _CTX["confirmar_preparada"](sessao, metodo="rfid_hardware")
+        _CTX["confirmar_preparada"](sessao, metodo="rfid_hardware")
     except HTTPException as e:
-        # A recusa já foi gravada na sessão lá dentro. Aqui só devolvemos para
-        # a placa poder sinalizar (LED, buzzer).
+        # A recusa já foi gravada na sessão lá dentro (status=recusada +
+        # motivo_recusa). Aqui só devolvemos para a placa poder sinalizar.
         print(f"[HARDWARE] cartão recusado para {usuario['nome']}: {e.detail}")
         return {"autorizado": False, "motivo": "saldo_insuficiente",
                 "mensagem": "Saldo insuficiente para esta recarga."}
@@ -563,6 +573,13 @@ def leitura_rfid(payload: RfidPayload, x_device_token: str = Header(None)):
         "sessao_id": sessao["id"],
         "usuario": usuario["nome"],
     }
+
+
+@router.post("/rfid")
+def leitura_rfid(payload: RfidPayload, x_device_token: str = Header(None)):
+    """Cartão aproximado do leitor físico. Autentica a placa e delega."""
+    dispositivo = autenticar(x_device_token)
+    return processar_cartao(dispositivo["carregador_id"], payload.uid)
 
 
 # ---------------------------------------------------------------------------

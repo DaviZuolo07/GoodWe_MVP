@@ -82,6 +82,12 @@ SOC_JOELHO = 80.0         # onde começa o tapering (%)
 TARIFA_PADRAO_KWH = 2.10  # só entra se o carregador não tiver tarifa cadastrada
 FATOR_FINAL = 0.20        # fração da potência ao encostar em 100%
 
+# Sem ESP32 na rede, todo ponto físico vira offline e as travas de segurança
+# bloqueiam qualquer teste. MODO_DEMO=1 no .env suspende essas travas para
+# validar o fluxo do cartão sem a placa. NUNCA ligar com hardware real: as
+# travas existem para não debitar saldo de recarga que não vai acontecer.
+MODO_DEMO = os.getenv("MODO_DEMO", "0") == "1"
+
 
 def fator_termico(temperatura_c: float) -> float:
     """Derating térmico: acima de 35 °C o carregador reduz a potência."""
@@ -691,7 +697,7 @@ def start_charge(payload: StartChargeRequest):
     # porque não existe ESP32 buscando comandos. O saldo seria debitado, a tela
     # diria "carregando" e o carro ficaria parado. Falha silenciosa é a pior
     # espécie - recusa explicitamente.
-    if charger.get("origem") == "hardware" and charger["status"] == "offline":
+    if (not MODO_DEMO) and charger.get("origem") == "hardware" and charger["status"] == "offline":
         raise HTTPException(
             status_code=503,
             detail="Este carregador está offline no momento. Tente outro ponto.",
@@ -751,7 +757,7 @@ def preparar_rfid(payload: PrepararRfidRequest):
     # o cartão seria lido por uma placa que não está conversando com o backend,
     # ou nem seria lido. Melhor recusar agora com uma mensagem clara do que
     # deixar o morador esperando por um evento que não vem.
-    if charger.get("origem") == "hardware" and charger["status"] == "offline":
+    if (not MODO_DEMO) and charger.get("origem") == "hardware" and charger["status"] == "offline":
         raise HTTPException(
             status_code=503,
             detail="O leitor deste carregador está offline. Tente outro ponto.",
@@ -1281,24 +1287,87 @@ async def simulador_loop():
 @app.on_event("startup")
 async def start_simulador():
     asyncio.create_task(simulador_loop())
-    iniciar_escuta_serial(supabase, autorizar_e_iniciar_sessao, HTTPException)
+    # A escuta serial é o caminho LEGADO do Arduino por cabo e implementa o
+    # fluxo ANTIGO: ela apaga a sessão pendente e cria outra, com id novo. Com
+    # o fluxo atual isso quebraria o Realtime - o navegador ficaria escutando
+    # um id que não existe mais e a tela travaria em "aproxime seu cartão"
+    # mesmo com a recarga rodando. Só sobe com opt-in explícito.
+    if os.getenv("SERIAL_LEGADO", "0") == "1":
+        print("[HARDWARE] AVISO: escuta serial legada ativa - incompatível com "
+              "o fluxo de cartão do ESP32.")
+        iniciar_escuta_serial(supabase, autorizar_e_iniciar_sessao, HTTPException)
 
 
 # ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
+class SimularRfidRequest(BaseModel):
+    rfid_uid: str
+    charger_id: str
+
+
+@app.post("/debug/simular-esp32/{charger_id}")
+def debug_simular_esp32(charger_id: str):
+    """
+    SÓ PARA TESTES — faz o que o handshake do ESP32 faria ao ligar.
+
+    Marca o dispositivo como online e o ponto como disponível. Serve para
+    testar o fluxo completo com a placa ainda na mão de outra pessoa.
+
+    Com MODO_DEMO=1 no .env, a varredura de dispositivos mortos fica suspensa
+    e o ponto continua disponível. Sem MODO_DEMO, ele volta a offline em 30s.
+    """
+    charger = supabase.table("carregadores").select("*").eq("id", charger_id).execute()
+    if not charger.data:
+        raise HTTPException(status_code=404, detail="Carregador não encontrado")
+
+    sessao = (
+        supabase.table("sessoes_recarga")
+        .select("id")
+        .eq("carregador_id", charger_id)
+        .eq("status", "carregando")
+        .execute()
+    )
+
+    supabase.table("carregadores").update({
+        "status": "em_uso" if sessao.data else "disponivel"
+    }).eq("id", charger_id).execute()
+
+    supabase.table("dispositivos").update({
+        "online": True,
+        "ultimo_contato": datetime.utcnow().isoformat(),
+    }).eq("carregador_id", charger_id).execute()
+
+    return {
+        "ok": True,
+        "carregador": charger.data[0]["numero"],
+        "status": "em_uso" if sessao.data else "disponivel",
+        "modo_demo": MODO_DEMO,
+    }
+
+
 @app.post("/debug/simular-rfid")
-def debug_simular_rfid(payload: VincularRfidRequest):
+def debug_simular_rfid(payload: SimularRfidRequest):
     """
-    SÓ PARA TESTES - simula exatamente o que acontece quando o Arduino lê
-    um cartão de verdade (chama a mesma função interna). Útil pra testar
-    o fluxo /charge/preparar-rfid → autorização sem ter o hardware físico
-    conectado ainda. Pode remover esse endpoint quando o Arduino estiver
-    pronto e testado de verdade.
+    SÓ PARA TESTES — simula a aproximação de um cartão, sem o ESP32.
+
+    Chama `processar_cartao()`, a MESMA função que a rota do hardware usa
+    depois de autenticar a placa. O que NÃO acontece aqui é a autenticação de
+    dispositivo: passar por ela gravaria `online=True` num ESP32 inexistente,
+    e a varredura de dispositivos mortos derrubaria o ponto 30s depois,
+    quebrando todos os testes seguintes.
+
+    Fluxo para testar pelo /docs:
+      1. POST /debug/simular-esp32/{charger_id}   (deixa o ponto disponível)
+      2. Prepare a recarga na tela do navegador   (deixe a aba aberta)
+      3. POST /debug/simular-rfid                 (com o rfid_uid do usuário)
+      4. A tela muda sozinha, via Realtime
+
+    O `rfid_uid` está na tabela `usuarios` do Supabase.
     """
-    resultado = _processar_leitura_rfid(payload.rfid_uid, supabase, autorizar_e_iniciar_sessao, HTTPException)
-    return {"resultado": "autorizado" if resultado == "L" else "negado", "codigo": resultado}
+    from hardware_api import processar_cartao
+    return processar_cartao(payload.charger_id, payload.rfid_uid)
 
 
 @app.get("/")
