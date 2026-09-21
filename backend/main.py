@@ -4,7 +4,7 @@ GoodWe ChargeOps AI Assistant - Backend MVP (conectado ao Supabase)
 Este backend NÃO guarda dados em memória. Tudo é lido e gravado
 direto no Supabase (Postgres). O frontend também pode ler o Supabase
 diretamente (realtime) - este backend cuida das AÇÕES:
-  - cadastro / login simulado
+  - cadastro / login (senha com Argon2id, sessão com JWT - ver seguranca.py)
   - iniciar / parar recarga
   - chatbot
   - simulador (faz energia/bateria/tempo andarem sozinhos)
@@ -18,14 +18,15 @@ Documentação automática: http://localhost:8000/docs
 """
 
 import os
+import re
 import asyncio
 import random
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -33,6 +34,11 @@ from hardware_serial import iniciar_escuta_serial, _processar_leitura_rfid
 from chatbot import configurar_chatbot, responder_chatbot
 from hardware_api import (router as hardware_router, configurar_hardware,
                           enfileirar_comando, marcar_dispositivos_offline)
+from seguranca import (
+    SENHA_MAX, conferir_senha, emitir_token, gerar_hash_senha, hash_ficticio,
+    limitador_por_ip, limitador_por_nome, precisa_rehash, validar_forca_senha,
+    verificar_configuracao,
+)
 
 # ---------------------------------------------------------------------------
 # CONEXÃO COM O SUPABASE
@@ -48,6 +54,11 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         "SUPABASE_URL e SUPABASE_KEY precisam estar definidos no arquivo .env "
         "(veja .env.example)"
     )
+
+# Com o RLS ligado (11_seguranca.sql), um backend usando a chave anon não
+# quebra: recebe listas VAZIAS e parece que o banco sumiu. Esta checagem
+# recusa subir com a chave errada ou com a JWK inválida, com mensagem clara.
+verificar_configuracao(SUPABASE_KEY)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -135,7 +146,8 @@ def tempo_de_carga_min(capacidade_kwh: float, soc_ini: float, soc_fim: float,
 # ---------------------------------------------------------------------------
 
 class CadastroRequest(BaseModel):
-    nome: str
+    nome: str = Field(..., min_length=2, max_length=60)
+    senha: str = Field(..., min_length=1, max_length=SENHA_MAX)
     condominio_id: Optional[str] = None    # se vier vazio, cai no padrão
     tipo_usuario: str = "morador"          # "morador" | "visitante"
     bloco_apto: Optional[str] = None
@@ -147,8 +159,8 @@ class CadastroRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    nome: str
-    senha: Optional[str] = None            # NÃO é validado - login simulado p/ MVP local
+    nome: str = Field(..., min_length=1, max_length=60)
+    senha: str = Field(..., min_length=1, max_length=SENHA_MAX)
 
 
 class StartChargeRequest(BaseModel):
@@ -208,21 +220,41 @@ class CancelarRfidRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 1. CADASTRO (primeiro acesso)
+# 1 e 2. CADASTRO E LOGIN
 # ---------------------------------------------------------------------------
+
+# Letras (com acento), números, espaço, ponto, apóstrofo e hífen. Fica de
+# fora o % e o _, que o ILIKE da checagem de duplicidade trataria como
+# curinga ("%" casaria com qualquer nome do banco).
+NOME_VALIDO = re.compile(r"[A-Za-zÀ-ÿ0-9 .'\-]{2,60}")
+
+
+def _resposta_autenticada(usuario: dict) -> dict:
+    """Formato único de sucesso para /login e /cadastro."""
+    veiculo = (
+        supabase.table("veiculos").select("*").eq("usuario_id", usuario["id"]).execute()
+    )
+    return {
+        "success": True,
+        "usuario": usuario,
+        "veiculo": veiculo.data[0] if veiculo.data else None,
+        **emitir_token(usuario["id"]),        # token + expira_em
+    }
+
 
 @app.post("/cadastro")
 def cadastro(payload: CadastroRequest):
-    """Cria o usuário + veículo no Supabase. É o 'primeiro login'."""
-
-    # Impede nomes duplicados - senão o /login (que busca por nome) poderia
-    # devolver o usuário errado para quem digitou um nome já existente.
+    """Cria usuário, credencial e veículo. Já devolve a sessão logada."""
     nome_normalizado = payload.nome.strip()
+    if not NOME_VALIDO.fullmatch(nome_normalizado):
+        raise HTTPException(
+            status_code=400,
+            detail="Use só letras, números, espaço, ponto, hífen ou apóstrofo no nome.",
+        )
+    validar_forca_senha(payload.senha, nome_normalizado)
+
     existente = (
-        supabase.table("usuarios")
-        .select("id")
-        .ilike("nome", nome_normalizado)
-        .execute()
+        supabase.table("usuarios").select("id").ilike("nome", nome_normalizado).execute()
     )
     if existente.data:
         raise HTTPException(
@@ -246,54 +278,85 @@ def cadastro(payload: CadastroRequest):
         "condominio_id": payload.condominio_id or CONDOMINIO_PADRAO,
         "bloco_apto": payload.bloco_apto,
         "rfid_uid": payload.rfid_uid,
-    }).execute()
+    }).execute().data[0]
 
-    usuario_id = usuario.data[0]["id"]
+    # Três inserts sem transação no cliente HTTP. Se credencial ou veículo
+    # falharem, apagamos o usuário (o ON DELETE CASCADE leva o resto).
+    # Sem isso sobraria um usuário sem senha: impossível de logar e com o
+    # nome ocupado para sempre.
+    try:
+        supabase.table("credenciais_usuario").insert({
+            "usuario_id": usuario["id"],
+            "senha_hash": gerar_hash_senha(payload.senha),
+        }).execute()
 
-    veiculo = supabase.table("veiculos").insert({
-        "usuario_id": usuario_id,
-        "modelo": payload.veiculo_modelo,
-        "placa": payload.veiculo_placa,
-        "capacidade_bateria_kwh": payload.capacidade_bateria_kwh,
-        "potencia_carro_kw": payload.potencia_carro_kw,
-        # percentual_bateria NÃO é enviado aqui de propósito: é desconhecido
-        # até o usuário informar na hora do pagamento (ver /charge/start).
-        # A coluna no banco aceita NULL (ver 04_fix_percentual_bateria.sql).
-    }).execute()
-
-    return {
-        "success": True,
-        "usuario": usuario.data[0],
-        "veiculo": veiculo.data[0],
-    }
-
-
-# ---------------------------------------------------------------------------
-# 2. LOGIN SIMULADO (aceita qualquer senha - só pro MVP local)
-# ---------------------------------------------------------------------------
-
-@app.post("/login")
-def login(payload: LoginRequest):
-    """
-    Login simulado: procura um usuário pelo nome. A senha não é checada.
-    Se não achar ninguém com esse nome, retorna erro pedindo pra cadastrar.
-    """
-    result = supabase.table("usuarios").select("*").eq("nome", payload.nome).execute()
-
-    if not result.data:
+        supabase.table("veiculos").insert({
+            "usuario_id": usuario["id"],
+            "modelo": payload.veiculo_modelo,
+            "placa": payload.veiculo_placa,
+            "capacidade_bateria_kwh": payload.capacidade_bateria_kwh,
+            "potencia_carro_kw": payload.potencia_carro_kw,
+            # percentual_bateria NÃO é enviado aqui de propósito: é
+            # desconhecido até o usuário informar na hora de carregar.
+        }).execute()
+    except Exception as e:
+        supabase.table("usuarios").delete().eq("id", usuario["id"]).execute()
+        print(f"[CADASTRO] desfeito para '{nome_normalizado}': {e}")
         raise HTTPException(
-            status_code=404,
-            detail="Usuário não encontrado. Faça o cadastro primeiro.",
+            status_code=500,
+            detail="Não foi possível concluir o cadastro. Tente novamente.",
         )
 
-    usuario = result.data[0]
+    return _resposta_autenticada(usuario)
 
-    veiculo_result = (
-        supabase.table("veiculos").select("*").eq("usuario_id", usuario["id"]).execute()
-    )
-    veiculo = veiculo_result.data[0] if veiculo_result.data else None
 
-    return {"success": True, "usuario": usuario, "veiculo": veiculo}
+@app.post("/login")
+def login(payload: LoginRequest, request: Request):
+    """
+    Confere a senha com Argon2id e emite o token de sessão.
+
+    Nome inexistente e senha errada dão a MESMA resposta (401, mesma
+    mensagem, mesmo tempo). Responder "usuário não encontrado" ensinaria a
+    quem ataca quais nomes existem, e aí só faltaria adivinhar a senha.
+    """
+    nome = payload.nome.strip()
+    chave_nome = f"nome:{nome.lower()}"
+    chave_ip = f"ip:{request.client.host if request.client else 'desconhecido'}"
+    limitador_por_nome.verificar(chave_nome)
+    limitador_por_ip.verificar(chave_ip)
+
+    r = supabase.table("usuarios").select("*").eq("nome", nome).execute()
+    usuario = r.data[0] if r.data else None
+
+    credencial = None
+    if usuario:
+        c = (
+            supabase.table("credenciais_usuario")
+            .select("senha_hash")
+            .eq("usuario_id", usuario["id"])
+            .execute()
+        )
+        credencial = c.data[0] if c.data else None
+
+    # Sempre roda o Argon2, mesmo sem usuário: é o que iguala o tempo.
+    hash_salvo = credencial["senha_hash"] if credencial else hash_ficticio()
+    senha_ok = conferir_senha(hash_salvo, payload.senha)
+
+    if not (usuario and credencial and senha_ok):
+        limitador_por_nome.registrar_falha(chave_nome)
+        limitador_por_ip.registrar_falha(chave_ip)
+        raise HTTPException(status_code=401, detail="Nome de usuário ou senha incorretos.")
+
+    limitador_por_nome.limpar(chave_nome)
+
+    # Se os parâmetros do Argon2 subirem numa versão futura da biblioteca,
+    # o hash de quem loga é atualizado sem ninguém precisar trocar senha.
+    if precisa_rehash(credencial["senha_hash"]):
+        supabase.table("credenciais_usuario").update({
+            "senha_hash": gerar_hash_senha(payload.senha),
+        }).eq("usuario_id", usuario["id"]).execute()
+
+    return _resposta_autenticada(usuario)
 
 
 @app.post("/usuarios/{usuario_id}/vincular-rfid")

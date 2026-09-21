@@ -64,6 +64,7 @@ function Login({ onLoginSuccess }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           nome,
+          senha,
           condominio_id: condominioId || CONDOMINIO_PADRAO,
           tipo_usuario: tipoUsuario,
           bloco_apto: blocoApto,
@@ -116,6 +117,7 @@ function Login({ onLoginSuccess }) {
                 value={loginNome}
                 onChange={(e) => setLoginNome(e.target.value)}
                 placeholder="Como você se cadastrou"
+                autoComplete="username"
                 required
               />
             </div>
@@ -126,7 +128,9 @@ function Login({ onLoginSuccess }) {
                 type="password"
                 value={loginSenha}
                 onChange={(e) => setLoginSenha(e.target.value)}
-                placeholder="Qualquer senha (MVP)"
+                placeholder="Sua senha"
+                autoComplete="current-password"
+                required
               />
             </div>
             <button
@@ -148,11 +152,20 @@ function Login({ onLoginSuccess }) {
           <form onSubmit={handleCadastro} className="space-y-3">
             <div>
               <label className={labelClass}>Nome</label>
-              <input className={inputClass} value={nome} onChange={(e) => setNome(e.target.value)} required />
+              <input className={inputClass} value={nome} onChange={(e) => setNome(e.target.value)} autoComplete="username" maxLength={60} required />
             </div>
             <div>
               <label className={labelClass}>Senha</label>
-              <input className={inputClass} type="password" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="Qualquer senha (MVP)" />
+              <input
+                className={inputClass}
+                type="password"
+                value={senha}
+                onChange={(e) => setSenha(e.target.value)}
+                placeholder="Mínimo 8 caracteres"
+                autoComplete="new-password"
+                minLength={8}
+                required
+              />
             </div>
 
             <div>

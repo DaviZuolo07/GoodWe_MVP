@@ -286,9 +286,13 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
 
     if (idsDoLocal.length > 0) {
       const [sessionsRes, filaRes, hojeRes] = await Promise.all([
+        // View e não a tabela: com o RLS, a tabela só devolve as MINHAS
+        // sessões, mas o painel precisa ver os pontos ocupados pelos vizinhos.
+        // A view entrega isso com custo, placa e dono mascarados quando a
+        // sessão é de outra pessoa (ver db/11_seguranca.sql).
         supabase
-          .from('sessoes_recarga')
-          .select('*, veiculos(modelo, placa)')
+          .from('v_sessoes_local')
+          .select('*')
           .eq('status', 'carregando')
           .in('carregador_id', idsDoLocal),
         supabase.from('fila').select('id').in('carregador_id', idsDoLocal),
@@ -296,13 +300,18 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
         // energia do dia zerava toda vez que uma recarga terminava — como se
         // o que já foi entregue deixasse de existir.
         supabase
-          .from('sessoes_recarga')
+          .from('v_sessoes_local')
           .select('energia_entregue_kwh, iniciado_em, carregador_id')
           .in('carregador_id', idsDoLocal)
           .gte('iniciado_em', inicioDoDia.toISOString()),
       ])
 
-      sessoesDoLocal = sessionsRes.data || []
+      // Mantém o formato que os componentes já esperam (s.veiculos.modelo).
+      // A placa só vem preenchida quando a sessão é de quem está logado.
+      sessoesDoLocal = (sessionsRes.data || []).map((s) => ({
+        ...s,
+        veiculos: { modelo: s.veiculo_modelo, placa: s.veiculo_placa },
+      }))
       filaDoLocal = filaRes.data || []
       sessoesHojeDoLocal = hojeRes.data || []
     }
