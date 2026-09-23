@@ -16,6 +16,8 @@ export const NAV_GROUPS = [
       { label: 'Assistente IA', page: null, acao: 'chat', icon: 'chat' },
       { label: 'Meus Veículos', page: 'veiculos', icon: 'car' },
       { label: 'Histórico de Recargas', page: 'historico', icon: 'history' },
+      // Só aparece para quem tem tipo_usuario = 'gestor'.
+      { label: 'Gestão do condomínio', page: 'gestao', icon: 'dashboard', somenteGestor: true },
     ],
   },
   {
@@ -24,6 +26,7 @@ export const NAV_GROUPS = [
       { label: 'Carteira', page: 'carteira', icon: 'wallet' },
       { label: 'Notificações', page: 'notificacoes', icon: 'bell' },
       { label: 'Configurações', page: 'configuracoes', icon: 'settings' },
+      { label: 'Como funciona', page: 'como-funciona', icon: 'help' },
       { label: 'Suporte', page: 'suporte', icon: 'help' },
     ],
   },
@@ -179,8 +182,9 @@ function NavItem({ item, ativo, onNavigate, onAcao, badge = 0 }) {
    Navegação compacta — abaixo de lg, onde a sidebar não cabe
    -------------------------------------------------------------------------- */
 
-export function NavCompacta({ paginaAtiva, onNavigate }) {
-  const itens = NAV_GROUPS.flatMap((g) => g.itens).filter((i) => i.page !== null)
+export function NavCompacta({ paginaAtiva, onNavigate, ehGestor = false }) {
+  const itens = NAV_GROUPS.flatMap((g) => g.itens)
+    .filter((i) => i.page !== null && (!i.somenteGestor || ehGestor))
 
   return (
     <nav className="scroll-slim flex gap-2 overflow-x-auto lg:hidden" aria-label="Navegação">
@@ -210,7 +214,7 @@ export function NavCompacta({ paginaAtiva, onNavigate }) {
    Sidebar
    -------------------------------------------------------------------------- */
 
-function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLidas = 0 }) {
+function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLidas = 0, ehGestor = false }) {
   const { usuario, veiculo } = sessao
 
   const iniciais = (usuario.nome || '?')
@@ -244,7 +248,7 @@ function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLi
           <div key={grupo.titulo} className={i > 0 ? 'mt-7' : ''}>
             <p className="eyebrow px-3.5 pb-2.5">{grupo.titulo}</p>
             <div className="space-y-1">
-              {grupo.itens.map((item) => (
+              {grupo.itens.filter((i) => !i.somenteGestor || ehGestor).map((item) => (
                 <NavItem
                   key={item.label}
                   item={item}

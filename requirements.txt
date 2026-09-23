@@ -3,8 +3,10 @@ uvicorn[standard]
 pydantic
 python-dotenv
 supabase
-pyserial
 httpx
 argon2-cffi
 PyJWT[crypto]>=2.8
 cryptography
+# Base de fusos horários: o Windows não traz a do sistema, e sem ela o
+# horário de ponta (America/Sao_Paulo) não resolve.
+tzdata

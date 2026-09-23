@@ -9,7 +9,8 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
       Supabase e a linha pronta para o .env. Não grava nada em disco.
 
   python provisionar.py senhas-demo --senha "SuaSenhaDemo#2026"
-      Dá senha a todo usuário do seed que ainda não tem credencial.
+      Dá senha a todo usuário do seed que ainda não tem credencial - inclui
+      os síndicos e a conta de bancada criados pela migration 12.
       Nunca sobrescreve quem já tem (use --forcar para isso).
 
   python provisionar.py token-esp --carregador <uuid-do-carregador>
@@ -122,7 +123,7 @@ def cmd_token_esp(args):
     print(f"\nDispositivo: {d.data[0]['nome']}")
     print("\nToken NOVO (aparece só agora; o banco guardou apenas o hash):\n")
     print(f"  {token}\n")
-    print("Cole em DEVICE_TOKEN no firmware/chargeops_esp32.ino e grave na placa.")
+    print("Cole em DEVICE_TOKEN no firmware/chargeops_esp32/segredos.h e grave na placa.")
     print("O token antigo deixou de funcionar.\n")
 
 
@@ -159,6 +160,8 @@ def cmd_verificar(_args):
         ("anon lê pagamentos", lambda: bloqueado(get("pagamentos?select=id&limit=1"))),
         ("anon lê sessões", lambda: bloqueado(get("sessoes_recarga?select=id&limit=1"))),
         ("anon lê dispositivos", lambda: bloqueado(get("dispositivos?select=id&limit=1"))),
+        ("anon lê a carteira", lambda: bloqueado(get("movimentacoes_carteira?select=id&limit=1"))),
+        ("anon lê o consumo do condomínio", lambda: bloqueado(get("consumo_horario?select=hora&limit=1"))),
         (f"{a['nome']} lê usuarios", lambda: bloqueado(get("usuarios?select=id&limit=1", token_a))),
         (f"{a['nome']} lê notificações de {b['nome']}",
          lambda: bloqueado(get(f"notificacoes?select=id&usuario_id=eq.{b['id']}", token_a))),
@@ -166,6 +169,15 @@ def cmd_verificar(_args):
          lambda: bloqueado(get(f"veiculos?select=id&usuario_id=eq.{b['id']}", token_a))),
         (f"{a['nome']} lê sessões de {b['nome']}",
          lambda: bloqueado(get(f"sessoes_recarga?select=id&usuario_id=eq.{b['id']}", token_a))),
+        (f"{a['nome']} lê a carteira de {b['nome']}",
+         lambda: bloqueado(get(f"movimentacoes_carteira?select=id&usuario_id=eq.{b['id']}", token_a))),
+        (f"{a['nome']} se dá crédito pelo RPC",
+         lambda: httpx.post(f"{url}/rest/v1/rpc/creditar_saldo",
+                            headers={"apikey": anon, "Authorization": f"Bearer {token_a}",
+                                     "Content-Type": "application/json"},
+                            json={"p_usuario": a["id"], "p_valor": 999, "p_tipo": "credito",
+                                  "p_descricao": "teste de invasão"},
+                            timeout=15).status_code in (401, 403, 404)),
         ("token forjado (assinatura errada)",
          lambda: get("carregadores?select=id&limit=1", token_a[:-4] + "AAAA").status_code in (401, 403)),
         # Controle positivo: se isto falhar, o token não está sendo aceito

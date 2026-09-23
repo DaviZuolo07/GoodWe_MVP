@@ -26,6 +26,10 @@ explicação antes ou depois:
 - `meus_veiculos` — carros cadastrados dele.
 - `simular_recarga` — estimativa hipotética ("quanto custaria carregar até 80%").
 - `historico_recente` — recargas passadas, consumo acumulado.
+- `demanda` — limite de potência do condomínio, horário de ponta, por que a
+  recarga está limitada ou lenta por causa da carga do prédio.
+- `cobranca` — como a cobrança funciona: reserva (pré-autorização), estorno,
+  tarifa de ponta, por que um valor foi debitado.
 - `ajuda` — saudação, ou pergunta sobre o que você faz.
 - `fora_de_escopo` — qualquer assunto que não seja recarga, carregadores, fila,
   tarifa, saldo, veículos ou o condomínio dele.

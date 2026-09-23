@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
-import { API_URL } from '../config.js'
+import { post } from '../lib/api.js'
 
 /**
  * Fila de espera de um carregador ocupado.
@@ -34,7 +34,9 @@ function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
   const carregarFila = useCallback(async () => {
     const { data } = await supabase
       .from('fila')
-      .select('*, usuarios(nome)')
+      // Sem o join em `usuarios`: a tabela é fechada pelo RLS e o nome dos
+      // vizinhos não sai do banco. Quem não é você aparece como "Morador".
+      .select('id, carregador_id, usuario_id, posicao, criado_em')
       .eq('carregador_id', charger.id)
       .order('posicao')
 
@@ -61,19 +63,10 @@ function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
     setErro('')
     setEnviando(true)
     try {
-      const res = await fetch(`${API_URL}/fila/${caminho}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ charger_id: charger.id, usuario_id: usuarioId }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setErro(data.detail || 'Não foi possível atualizar a fila.')
-        return
-      }
+      await post(`/fila/${charger.id}/${caminho}`)
       carregarFila()
-    } catch {
-      setErro('Não foi possível conectar ao servidor.')
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setEnviando(false)
     }
@@ -150,7 +143,7 @@ function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
                     {f.posicao}
                   </span>
                   <span className={`truncate text-sm ${meu ? 'text-ink' : 'text-mute'}`}>
-                    {meu ? 'Você' : f.usuarios?.nome || 'Morador'}
+                    {meu ? 'Você' : 'Morador'}
                   </span>
                 </li>
               )

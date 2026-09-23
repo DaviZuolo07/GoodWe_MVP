@@ -1,160 +1,130 @@
 """
-Orquestrador do chatbot - o fluxo inteiro em um lugar só.
+Orquestrador do chatbot - as quatro camadas, em ordem.
 
     mensagem
-       -> sanitização
-       -> router (regex; LLM só se o regex não decidir)
-       -> camada de dados (funções whitelisted, escopo do backend)
-       -> redação (LLM, com verificação; senão determinística)
-       -> log em chat_mensagens
-       -> {reply, timestamp, intencao, fonte, modelo, latencia_ms}
+      -> [1 ENTRADA]    limpa, limita, barra injeção           (entrada.py)
+      -> [2 CONTEXTO]   identidade do token, local da allowlist (contexto.py)
+      -> router         intenção (regex; LLM se o regex não decidir)
+      -> dados          funções de leitura whitelisted          (dados.py)
+      -> redação        LLM a partir dos fatos, ou regras
+      -> [3 SAÍDA]      reprova número sem lastro/vazamento     (saida.py)
+      -> [4 AUDITORIA]  grava tudo com a camada que decidiu     (auditoria.py)
 
-O contrato do endpoint é sagrado: `reply` e `timestamp` continuam exatamente
-como estavam. Os outros campos são aditivos - o frontend ignora o que não usa,
-e eles respondem a pergunta que a banca faz: de onde saiu esse número.
+O contrato do endpoint continua: `reply` e `timestamp`. Os demais campos
+dizem de onde saiu a resposta - é o que o eval (evals/) confere.
 """
 
 import time
-from datetime import datetime
 
-from . import dados as D
+from config import agora_iso
+
+from . import auditoria, contexto, dados as D, entrada, llm, respostas, saida
 from . import router as R
-from . import respostas
-from . import llm
-from . import verificador
-from .contexto import sb
 
 
 def responder(mensagem: str, usuario_id: str = None, charger_id: str = None,
               condominio_id: str = None) -> dict:
-    """
-    `condominio_id` é o local escolhido no seletor do chat. Ele é um PEDIDO,
-    não uma permissão: quem decide o escopo final é `ctx_usuario`, validando
-    contra a allowlist de favoritos. Se o local não estiver liberado, a
-    resposta sai sobre o condomínio de moradia e ninguém vaza dado de lugar
-    nenhum.
-    """
     inicio = time.perf_counter()
 
-    mensagem = (mensagem or "").strip()[:R.LIMITE_CARACTERES]
-    ctx = D.ctx_usuario(usuario_id, condominio_escolhido=condominio_id)
-    condominio_id = ctx.get("condominio_id")   # já validado
+    # --- 1. Entrada -------------------------------------------------------
+    ent = entrada.processar(mensagem)
+    texto = ent["texto"]
 
-    # --- 1. Router -------------------------------------------------------
-    rota = R.rotear(mensagem)
-    intencao = rota["intencao"]
-    metodo = rota["metodo"]
-    parametros = rota["parametros"]
+    # --- 2. Contexto ------------------------------------------------------
+    ctx = contexto.ctx_usuario(usuario_id, condominio_escolhido=condominio_id)
 
+    if ent["bloqueado"]:
+        return _fechar(texto, respostas.redigir(R.TENTATIVA_INJECAO, {}, ctx), ctx, usuario_id,
+                       charger_id, inicio, intencao=R.TENTATIVA_INJECAO, camada="entrada",
+                       bloqueado=True, motivo=ent["motivo"], metodo="entrada", fonte=[])
+
+    # --- Router -----------------------------------------------------------
+    rota = R.rotear(texto)
+    intencao, metodo, parametros = rota["intencao"], rota["metodo"], rota["parametros"]
     if metodo == "nenhum":
-        palpite = llm.classificar(mensagem)
+        palpite = llm.classificar(texto)
         if palpite and palpite != R.FORA_DE_ESCOPO:
-            intencao = palpite
-            metodo = "llm"
-            parametros = R.extrair_parametros(R.normalizar(mensagem), intencao)
+            intencao, metodo = palpite, "llm"
+            parametros = R.extrair_parametros(R.normalizar(texto), intencao)
 
-    # --- 2. Dados --------------------------------------------------------
-    fatos = _buscar_fatos(intencao, ctx, usuario_id, condominio_id,
-                          charger_id, parametros)
+    if intencao in (R.TENTATIVA_INJECAO, R.FORA_DE_ESCOPO):
+        return _fechar(texto, respostas.redigir(intencao, {}, ctx), ctx, usuario_id, charger_id,
+                       inicio, intencao=intencao, camada="entrada" if intencao == R.TENTATIVA_INJECAO
+                       else "contexto", bloqueado=True, motivo=f"router:{metodo}", metodo=metodo, fonte=[])
 
-    # --- 3. Redação ------------------------------------------------------
-    reply = None
-    origem_resposta = "regras"
+    # --- Dados ------------------------------------------------------------
+    fatos = _buscar_fatos(intencao, ctx, usuario_id, charger_id, parametros)
 
-    intencoes_sem_llm = {R.TENTATIVA_INJECAO, R.FORA_DE_ESCOPO}
-    if llm.llm_ligado() and intencao not in intencoes_sem_llm:
-        candidata = llm.redigir(mensagem, intencao, fatos, ctx)
+    # --- Redação + 3. Saída ------------------------------------------------
+    reply, camada, motivo, origem = None, "redacao_regras", None, "regras"
+    if llm.llm_ligado():
+        candidata = llm.redigir(texto, intencao, fatos, ctx)
         if candidata:
-            ok, motivo = verificador.aprovado(candidata, fatos)
+            ok, limpa, motivo_saida = saida.verificar(candidata, fatos)
             if ok:
-                reply = candidata
-                origem_resposta = "llm"
+                reply, camada, origem = limpa, "redacao_llm", "llm"
             else:
-                print(f"[CHATBOT] resposta do LLM reprovada ({motivo}) - usando regras")
-
+                camada, motivo = "saida", motivo_saida
+                print(f"[CHATBOT] camada de saída reprovou o LLM ({motivo_saida}) - usando regras")
     if reply is None:
         reply = respostas.redigir(intencao, fatos, ctx)
 
-    # --- 4. Log ----------------------------------------------------------
-    _registrar(usuario_id, charger_id, mensagem, reply)
+    return _fechar(texto, reply, ctx, usuario_id, charger_id, inicio, intencao=intencao,
+                   camada=camada, bloqueado=False, motivo=motivo, metodo=metodo,
+                   fonte=(fatos or {}).get("fonte", []), origem=origem)
 
+
+def _fechar(pergunta, reply, ctx, usuario_id, charger_id, inicio, *, intencao, camada,
+            bloqueado, motivo, metodo, fonte, origem="regras") -> dict:
+    latencia = round((time.perf_counter() - inicio) * 1000)
+    modelo = llm.OLLAMA_MODEL if origem == "llm" else "regras"
+    auditoria.registrar(usuario_id, charger_id, pergunta, reply, intencao=intencao, camada=camada,
+                        bloqueado=bloqueado, motivo=motivo, modelo=modelo, latencia_ms=latencia)
     return {
         "reply": reply,
-        "timestamp": datetime.utcnow().isoformat(),
-        # campos aditivos - não quebram o contrato
+        "timestamp": agora_iso(),
         "intencao": intencao,
-        "fonte": (fatos or {}).get("fonte", []),
-        "condominio_id": condominio_id,
+        "camada": camada,
+        "bloqueado": bloqueado,
+        "motivo": motivo,
+        "fonte": fonte,
+        "condominio_id": ctx.get("condominio_id"),
         "condominio_nome": ctx.get("condominio_nome"),
-        "modelo": llm.OLLAMA_MODEL if origem_resposta == "llm" else "regras",
+        "modelo": modelo,
         "roteador": metodo,
-        "latencia_ms": round((time.perf_counter() - inicio) * 1000),
+        "latencia_ms": latencia,
     }
 
 
-def _buscar_fatos(intencao, ctx, usuario_id, condominio_id, charger_id, params):
-    """Despacha para a função de leitura correta. Só o enum chega até aqui."""
-    if not ctx.get("encontrado") and intencao not in (R.AJUDA, R.FORA_DE_ESCOPO,
-                                                      R.TENTATIVA_INJECAO):
+def _buscar_fatos(intencao, ctx, usuario_id, charger_id, params):
+    """Despacha para a função de leitura correta. Só o enum chega aqui."""
+    if not ctx.get("encontrado") and intencao != R.AJUDA:
         return {"fonte": []}
+    condominio_id = ctx.get("condominio_id")
 
     if intencao in (R.TEMPO_RESTANTE, R.STATUS_RECARGA, R.CUSTO_ATUAL):
         return D.sessao_ativa(usuario_id)
-
     if intencao == R.TARIFA:
         return D.tarifas(condominio_id)
-
     if intencao == R.CARREGADORES_DISPONIVEIS:
         return D.carregadores(condominio_id)
-
     if intencao == R.INFO_CARREGADOR:
-        # `info_carregador` filtra por condomínio, então um charger_id de outro
-        # local simplesmente não é encontrado. É o comportamento certo: o
-        # escopo do chat é o local escolhido, não a tela anterior.
-        return D.info_carregador(
-            condominio_id,
-            numero=params.get("numero_carregador"),
-            charger_id=None if params.get("numero_carregador") else charger_id,
-        )
-
+        return D.info_carregador(condominio_id, numero=params.get("numero_carregador"),
+                                 charger_id=None if params.get("numero_carregador") else charger_id)
     if intencao == R.FILA_STATUS:
         return D.fila(condominio_id, usuario_id)
-
     if intencao == R.MEU_SALDO:
         return D.meu_saldo(ctx)
-
     if intencao == R.MEUS_VEICULOS:
         return D.veiculos(usuario_id)
-
     if intencao == R.HISTORICO_RECENTE:
         return D.historico_recente(usuario_id, params.get("limite", 5))
-
     if intencao == R.SIMULAR_RECARGA:
-        return D.simular_recarga(
-            usuario_id, condominio_id,
-            numero=params.get("numero_carregador"),
-            charger_id=None if params.get("numero_carregador") else charger_id,
-            alvo=params.get("alvo", 100.0),
-        )
-
+        return D.simular_recarga(usuario_id, condominio_id, numero=params.get("numero_carregador"),
+                                 charger_id=None if params.get("numero_carregador") else charger_id,
+                                 alvo=params.get("alvo", 100.0), condominio=ctx.get("condominio"))
+    if intencao == R.DEMANDA:
+        return D.demanda(ctx.get("condominio"))
+    if intencao == R.COBRANCA:
+        return D.cobranca(usuario_id, ctx.get("condominio"))
     return {"fonte": []}
-
-
-def _registrar(usuario_id, charger_id, pergunta, reply):
-    """
-    Grava as duas pontas em chat_mensagens (auditoria).
-
-    Falha de log NUNCA pode derrubar a resposta: se o insert quebrar, o
-    usuário ainda recebe o que perguntou.
-    """
-    try:
-        sb().table("chat_mensagens").insert({
-            "usuario_id": usuario_id, "carregador_id": charger_id,
-            "remetente": "usuario", "mensagem": pergunta,
-        }).execute()
-        sb().table("chat_mensagens").insert({
-            "usuario_id": usuario_id, "carregador_id": charger_id,
-            "remetente": "bot", "mensagem": reply,
-        }).execute()
-    except Exception as e:
-        print(f"[CHATBOT] falha ao gravar histórico: {e}")

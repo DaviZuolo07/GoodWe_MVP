@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import { brl, energia, num, potencia } from '../lib/formato.js'
 
 /* Ícones locais em SVG — nenhuma dependência nova, ~200 bytes cada. */
 const ICONES = {
@@ -49,10 +50,10 @@ function Icone({ nome, className }) {
 
 function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
   // ---- cálculo inalterado ----
-  const limiteEnergia = condominio?.limite_energia_kw ?? 80
+  const limitePotencia = condominio?.limite_potencia_kw ?? 80
 
-  const potenciaEmUso = sessions.reduce((soma, s) => soma + (s.potencia_atual_kw || 0), 0)
-  const energiaDisponivel = Math.max(0, limiteEnergia - potenciaEmUso)
+  const potenciaEmUso = sessions.reduce((soma, s) => soma + Number(s.potencia_atual_kw || 0), 0)
+  const potenciaDisponivel = Math.max(0, limitePotencia - potenciaEmUso)
 
   const emUsoCount = chargers.filter((c) => c.status === 'em_uso').length
   const totalCarregadores = chargers.length
@@ -80,10 +81,10 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
       icone: 'energia',
       cor: 'text-flux',
       fundo: 'bg-flux/10',
-      label: 'Energia disponível',
-      value: `${energiaDisponivel.toFixed(1)} kW`,
-      sub: `de ${limiteEnergia} kW de limite`,
-      barra: limiteEnergia > 0 ? energiaDisponivel / limiteEnergia : 0,
+      label: 'Potência disponível',
+      value: potencia(potenciaDisponivel, 1),
+      sub: `de ${potencia(limitePotencia, 0)} do condomínio · ${potencia(potenciaEmUso, 2)} em uso`,
+      barra: limitePotencia > 0 ? potenciaDisponivel / limitePotencia : 0,
       barraCor: 'bg-flux',
     },
     {
@@ -92,7 +93,7 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
       fundo: 'bg-live/10',
       label: 'Carregadores em uso',
       value: `${emUsoCount} / ${totalCarregadores}`,
-      sub: totalCarregadores > 0 ? `${Math.round(ocupacao * 100)}% ocupados` : 'Nenhum cadastrado',
+      sub: totalCarregadores > 0 ? `${num(ocupacao * 100, 0)}% ocupados` : 'Nenhum cadastrado',
       barra: ocupacao,
       barraCor: 'bg-live',
     },
@@ -109,8 +110,8 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
       cor: 'text-live',
       fundo: 'bg-live/10',
       label: 'Energia entregue hoje',
-      value: `${energiaHoje.toFixed(1)} kWh`,
-      sub: `Custo gerado: R$ ${custoHoje.toFixed(2)}`,
+      value: energia(energiaHoje, 2),
+      sub: `Faturamento estimado: ${brl(custoHoje)}`,
     },
   ]
 

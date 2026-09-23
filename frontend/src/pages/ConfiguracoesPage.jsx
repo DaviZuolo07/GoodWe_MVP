@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { API_URL } from '../config.js'
+import { post } from '../lib/api.js'
+import { potencia } from '../lib/formato.js'
 import { useTema } from '../lib/tema.js'
 
 /**
@@ -113,23 +114,15 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
 
     setSalvando(true)
     try {
-      const res = await fetch(`${API_URL}/usuarios/${usuario.id}/vincular-rfid`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rfid_uid: valor }),
-      })
-      const data = await res.json()
-
-      if (!res.ok) {
-        setErro(data.detail || 'Não foi possível vincular esse cartão.')
-        return
-      }
-
+      // A rota é /me/cartao: o backend vincula ao dono do token, não a um id
+      // que viesse na URL - era por ali que dava para pendurar o próprio
+      // cartão na conta de outro morador e carregar com o saldo dele.
+      const data = await post('/me/cartao', { rfid_uid: valor })
       onUsuarioAtualizado?.({ rfid_uid: data.rfid_uid })
       setOk('Cartão vinculado. Ele já autoriza recargas no leitor físico.')
       setUid('')
-    } catch {
-      setErro('Não foi possível conectar ao servidor. O backend está rodando?')
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setSalvando(false)
     }
@@ -200,8 +193,8 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
           </form>
 
           <p className="mt-3 text-xs leading-relaxed text-dim">
-            O UID aparece no monitor serial do leitor quando você aproxima o cartão. Cada cartão só
-            pode pertencer a um usuário.
+            O UID aparece no monitor serial do ESP32 quando você aproxima o cartão. Cada cartão só
+            pode pertencer a um usuário — e só o dono da conta logada pode vinculá-lo.
           </p>
         </Secao>
 
@@ -246,7 +239,7 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
           />
           <Campo
             label="Potência aceita"
-            valor={veiculo?.potencia_carro_kw ? `${veiculo.potencia_carro_kw} kW` : null}
+            valor={veiculo?.potencia_carro_kw ? potencia(veiculo.potencia_carro_kw) : null}
             mono
           />
         </Secao>
@@ -259,8 +252,8 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
           <Campo label="Condomínio" valor={condominio?.nome} />
           <Campo label="Endereço" valor={condominio?.endereco} />
           <Campo
-            label="Limite de energia"
-            valor={condominio?.limite_energia_kw ? `${condominio.limite_energia_kw} kW` : null}
+            label="Limite de potência"
+            valor={condominio?.limite_potencia_kw ? potencia(condominio.limite_potencia_kw) : null}
             mono
           />
         </Secao>

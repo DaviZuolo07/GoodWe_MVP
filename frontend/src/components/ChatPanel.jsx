@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { API_URL } from '../config.js'
+import { del, get, post } from '../lib/api.js'
 
 /**
  * Assistente ChargeOps.
@@ -272,9 +272,7 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
   const carregarLocais = useCallback(async () => {
     if (!usuarioId) return null
     try {
-      const res = await fetch(`${API_URL}/usuarios/${usuarioId}/locais`)
-      if (!res.ok) return null
-      const data = await res.json()
+      const data = await get('/me/locais')
       setLocais(data)
       return data
     } catch {
@@ -333,12 +331,7 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
   async function favoritar(condId) {
     setSalvandoFavorito(true)
     try {
-      const res = await fetch(`${API_URL}/usuarios/${usuarioId}/favoritos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condominio_id: condId }),
-      })
-      if (res.ok) setLocais(await res.json())
+      setLocais(await post('/me/favoritos', { condominio_id: condId }))
     } catch {
       setErro('Não foi possível salvar o favorito.')
     } finally {
@@ -349,24 +342,15 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
   async function desfavoritar(condId) {
     setSalvandoFavorito(true)
     try {
-      const res = await fetch(
-        `${API_URL}/usuarios/${usuarioId}/favoritos/${condId}`,
-        { method: 'DELETE' },
-      )
-      if (res.ok) {
-        const data = await res.json()
-        setLocais(data)
-        // Tirou dos favoritos o local que estava ativo: volta para a moradia.
-        if (condId === localAtivoId) {
-          setLocalAtivoId(data.padrao_id || data.favoritos?.[0]?.id || null)
-          setMensagens([])
-        }
-      } else {
-        const data = await res.json().catch(() => ({}))
-        setErro(data.detail || 'Não foi possível remover o favorito.')
+      const data = await del(`/me/favoritos/${condId}`)
+      setLocais(data)
+      // Tirou dos favoritos o local que estava ativo: volta para a moradia.
+      if (condId === localAtivoId) {
+        setLocalAtivoId(data.padrao_id || data.favoritos?.[0]?.id || null)
+        setMensagens([])
       }
-    } catch {
-      setErro('Não foi possível remover o favorito.')
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setSalvandoFavorito(false)
     }
@@ -387,22 +371,14 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
     ])
 
     try {
-      const res = await fetch(`${API_URL}/chatbot`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: conteudo,
-          usuario_id: usuarioId,
-          charger_id: chargerId || null,
-          condominio_id: localAtivoId || null,
-        }),
+      // Sem `usuario_id`: quem pergunta sai do token (Bloco 2). O
+      // `condominio_id` é pedido, não permissão - o backend valida contra a
+      // lista de favoritos antes de responder sobre aquele local.
+      const data = await post('/chatbot', {
+        message: conteudo,
+        charger_id: chargerId || null,
+        condominio_id: localAtivoId || null,
       })
-      const data = await res.json()
-
-      if (!res.ok) {
-        setErro(data.detail || 'O assistente não respondeu. Tente de novo.')
-        return
-      }
 
       setMensagens((m) => [
         ...m,
@@ -413,8 +389,8 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
           hora: horaDe(data.timestamp || new Date().toISOString()),
         },
       ])
-    } catch {
-      setErro('Sem conexão com o servidor. O backend está rodando?')
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setPensando(false)
     }

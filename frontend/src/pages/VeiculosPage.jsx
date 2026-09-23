@@ -1,13 +1,20 @@
 import { useState } from 'react'
+import { post } from '../lib/api.js'
+import { energia, potencia } from '../lib/formato.js'
 
-const API_URL = import.meta.env.VITE_API_URL
+/** Presets: o celular da bancada do ESP32 tem ~15 Wh e puxa ~18 W. */
+const PRESETS = {
+  carro: { capacidade: 40, potencia: 7.4, rotulo: 'Carro elétrico' },
+  celular: { capacidade: 0.015, potencia: 0.018, rotulo: 'Celular (bancada ESP32)' },
+}
 
-function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
+function VeiculosPage({ veiculos, onVeiculoAdicionado }) {
   const [mostrarForm, setMostrarForm] = useState(false)
+  const [tipo, setTipo] = useState('carro')
   const [modelo, setModelo] = useState('')
   const [placa, setPlaca] = useState('')
   const [capacidade, setCapacidade] = useState(40)
-  const [potencia, setPotencia] = useState(7.4)
+  const [potenciaKw, setPotenciaKw] = useState(7.4)
   const [erro, setErro] = useState('')
   const [carregando, setCarregando] = useState(false)
 
@@ -16,30 +23,17 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
     setErro('')
     setCarregando(true)
     try {
-      const res = await fetch(`${API_URL}/veiculos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          usuario_id: sessao.usuario.id,
-          modelo,
-          placa,
-          capacidade_bateria_kwh: Number(capacidade),
-          potencia_carro_kw: Number(potencia),
-        }),
+      await post('/me/veiculos', {
+        modelo,
+        placa: placa || null,
+        tipo,
+        capacidade_bateria_kwh: Number(capacidade),
+        potencia_carro_kw: Number(potenciaKw),
       })
-      const data = await res.json()
-      if (!res.ok) {
-        setErro(data.detail || 'Não foi possível adicionar o veículo.')
-        return
-      }
       onVeiculoAdicionado()
-      setModelo('')
-      setPlaca('')
-      setCapacidade(40)
-      setPotencia(7.4)
-      setMostrarForm(false)
-    } catch {
-      setErro('Não foi possível conectar ao servidor.')
+      setModelo(''); setPlaca(''); setMostrarForm(false)
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setCarregando(false)
     }
@@ -68,6 +62,27 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
               {erro}
             </div>
           )}
+          <div>
+            <label className={labelClass}>Tipo</label>
+            <div className="flex gap-2">
+              {Object.entries(PRESETS).map(([chave, preset]) => (
+                <button key={chave} type="button"
+                        onClick={() => {
+                          setTipo(chave)
+                          setCapacidade(preset.capacidade)
+                          setPotenciaKw(preset.potencia)
+                        }}
+                        className={`flex-1 rounded-chip py-2 text-sm transition ${
+                          tipo === chave ? 'bg-flux text-white' : 'bg-raise text-mute hover:bg-line'}`}>
+                  {preset.rotulo}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-xs text-dim">
+              O ponto do ESP32 é uma bancada USB: só aceita dispositivos do tipo celular.
+            </p>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelClass}>Modelo</label>
@@ -81,11 +96,11 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={labelClass}>Capacidade da bateria (kWh)</label>
-              <input className={inputClass} type="number" value={capacidade} onChange={(e) => setCapacidade(e.target.value)} />
+              <input className={inputClass} type="number" step="0.001" value={capacidade} onChange={(e) => setCapacidade(e.target.value)} />
             </div>
             <div>
-              <label className={labelClass}>Potência do carro (kW)</label>
-              <input className={inputClass} type="number" step="0.1" value={potencia} onChange={(e) => setPotencia(e.target.value)} />
+              <label className={labelClass}>Potência aceita (kW)</label>
+              <input className={inputClass} type="number" step="0.001" value={potenciaKw} onChange={(e) => setPotenciaKw(e.target.value)} />
             </div>
           </div>
           <button
@@ -101,16 +116,25 @@ function VeiculosPage({ sessao, veiculos, onVeiculoAdicionado }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {veiculos.map((v) => (
           <div key={v.id} className="bg-panel border border-line rounded-xl p-4">
-            <p className="font-medium text-ink">{v.modelo}</p>
-            <p className="text-xs text-dim mb-3">{v.placa || 'Sem placa cadastrada'}</p>
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate font-medium text-ink">{v.modelo}</p>
+                <p className="text-xs text-dim">{v.placa || (v.tipo === 'celular' ? 'Dispositivo de bancada' : 'Sem placa')}</p>
+              </div>
+              {v.tipo === 'celular' && (
+                <span className="rounded-md border border-flux/30 bg-flux/10 px-1.5 py-0.5 text-[0.5625rem] text-flux">
+                  ESP32
+                </span>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-2 text-xs text-mute">
               <div>
                 <p className="text-dim">Bateria</p>
-                <p className="text-ink">{v.capacidade_bateria_kwh} kWh</p>
+                <p className="num text-ink">{energia(v.capacidade_bateria_kwh, 3)}</p>
               </div>
               <div>
                 <p className="text-dim">Potência</p>
-                <p className="text-ink">{v.potencia_carro_kw} kW</p>
+                <p className="num text-ink">{potencia(v.potencia_carro_kw)}</p>
               </div>
             </div>
           </div>

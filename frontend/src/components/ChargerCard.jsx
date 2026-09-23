@@ -1,19 +1,13 @@
 import { memo } from 'react'
 import ArteCarregador from './ArteCarregador.jsx'
 import ArteVeiculo from './ArteVeiculo.jsx'
+import { brl, duracao, energia, potencia } from '../lib/formato.js'
 
 const STATUS = {
   disponivel: { label: 'Disponível', cor: 'text-live', dot: 'bg-live', borda: 'hover:border-live/50' },
   em_uso: { label: 'Em uso', cor: 'text-flux', dot: 'bg-flux', borda: 'hover:border-flux/50' },
   fila: { label: 'Fila', cor: 'text-queue', dot: 'bg-queue', borda: 'hover:border-queue/50' },
   offline: { label: 'Offline', cor: 'text-dim', dot: 'bg-off', borda: 'hover:border-line' },
-}
-
-/** 72 -> "1h 12m" | 58 -> "58 min" */
-function tempo(min) {
-  if (min == null) return '—'
-  if (min < 60) return `${min} min`
-  return `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
 }
 
 function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
@@ -36,8 +30,15 @@ function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
       {selecionado && <span className="bus" aria-hidden="true" />}
 
       <div className="relative flex items-start justify-between gap-3">
-        <span className="num rounded-chip bg-raise px-2.5 py-1 text-sm font-semibold text-ink">
-          {charger.numero}
+        <span className="flex items-center gap-2">
+          <span className="num rounded-chip bg-raise px-2.5 py-1 text-sm font-semibold text-ink">
+            {charger.numero}
+          </span>
+          {charger.origem === 'hardware' && (
+            <span className="rounded-md border border-flux/30 bg-flux/10 px-1.5 py-0.5 text-[0.5625rem] text-flux">
+              ESP32
+            </span>
+          )}
         </span>
 
         <span className={`flex items-center gap-2 text-xs font-medium ${st.cor}`}>
@@ -82,31 +83,27 @@ function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
           <dl className="grid grid-cols-3 gap-2 border-t border-hair pt-3">
             <div>
               <dt className="eyebrow text-[10px]">Potência</dt>
-              <dd className="num text-sm text-ink">{sessao.potencia_atual_kw} kW</dd>
+              <dd className="num text-sm text-ink">{potencia(sessao.potencia_atual_kw)}</dd>
             </div>
             <div>
               <dt className="eyebrow text-[10px]">Energia</dt>
-              <dd className="num text-sm text-ink">
-                {Number(sessao.energia_entregue_kwh || 0).toFixed(2)} kWh
-              </dd>
+              <dd className="num text-sm text-ink">{energia(sessao.energia_entregue_kwh)}</dd>
             </div>
             <div>
               <dt className="eyebrow text-[10px]">Restante</dt>
-              <dd className="num text-sm text-ink">{tempo(sessao.tempo_estimado_min)}</dd>
+              <dd className="num text-sm text-ink">{duracao(sessao.tempo_estimado_min)}</dd>
             </div>
           </dl>
         </div>
       ) : (
         <div className="relative">
           <p className="num text-lg font-semibold text-ink">
-            {charger.tipo} {charger.potencia_maxima_kw} kW
+            {charger.tipo} {potencia(charger.potencia_maxima_kw)}
           </p>
           <p className="mb-3 text-xs text-mute">{charger.conector}</p>
 
           <div className="flex items-center justify-between border-t border-hair pt-3">
-            <span className="num text-xs text-dim">
-              R$ {Number(charger.tarifa_kwh).toFixed(2)} / kWh
-            </span>
+            <span className="num text-xs text-dim">{brl(charger.tarifa_kwh)} / kWh</span>
             <span
               className={`flex items-center gap-1.5 text-xs font-medium transition-colors ${
                 charger.status === 'disponivel' ? 'text-flux group-hover:text-flare' : 'text-dim'

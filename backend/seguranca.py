@@ -158,8 +158,8 @@ def validar_token(token: str) -> str:
 
 def usuario_atual(authorization: str = Header(None)) -> str:
     """
-    Dependência do FastAPI. No Bloco 2 ela entra em todo endpoint que hoje
-    recebe `usuario_id` no corpo: a identidade passa a vir daqui, e só daqui.
+    Dependência do FastAPI (Bloco 2): TODO endpoint de morador recebe a
+    identidade daqui, e só daqui. Nenhum modelo Pydantic tem `usuario_id`.
     """
     erro = HTTPException(
         status_code=401,
@@ -242,11 +242,24 @@ class LimitadorTentativas:
             for chave in chaves:
                 self._falhas.pop(chave, None)
 
+    def consumir(self, *chaves: str) -> None:
+        """Conta TODA chamada, não só falha: vira limite de taxa (rate limit)."""
+        self.verificar(*chaves)
+        self.registrar_falha(*chaves)
+
 
 # 5 erros por nome em 5 min protege uma conta; 20 por IP freia quem testa
 # muitos nomes com a mesma senha (password spraying).
 limitador_por_nome = LimitadorTentativas(maximo=5, janela_s=300)
 limitador_por_ip = LimitadorTentativas(maximo=20, janela_s=300)
+
+# Cadastro: 5 contas por IP a cada 10 min. Sem isto, um script cria milhares
+# de contas e cada uma ganha o crédito inicial.
+limitador_cadastro = LimitadorTentativas(maximo=5, janela_s=600)
+
+# Chatbot: 20 mensagens por minuto por morador. Cada mensagem pode virar
+# chamada paga ao modelo na nuvem - sem teto, um laço esgota a cota da demo.
+limitador_chat = LimitadorTentativas(maximo=20, janela_s=60)
 
 
 # ===========================================================================

@@ -1,8 +1,15 @@
 import { useState } from 'react'
 import CondominioSelect, { useCondominios } from '../components/CondominioSelect.jsx'
-import { API_URL, CONDOMINIO_PADRAO } from '../config.js'
+import { CONDOMINIO_PADRAO } from '../config.js'
+import { post } from '../lib/api.js'
 
-function Login({ onLoginSuccess }) {
+/** Presets do cadastro: carro elétrico ou o celular da bancada do ESP32. */
+const PRESETS = {
+  carro: { capacidade: 40, potencia: 7.4, rotulo: 'Carro elétrico', exemplo: 'BYD Dolphin Mini' },
+  celular: { capacidade: 0.015, potencia: 0.018, rotulo: 'Celular (bancada ESP32)', exemplo: 'Celular de bancada' },
+}
+
+function Login({ onLoginSuccess, aviso }) {
   const { condominios, carregando: carregandoCondominios } = useCondominios()
   const [modo, setModo] = useState('login') // 'login' | 'cadastro'
   const [carregando, setCarregando] = useState(false)
@@ -22,27 +29,16 @@ function Login({ onLoginSuccess }) {
   const [veiculoPlaca, setVeiculoPlaca] = useState('')
   const [capacidadeBateria, setCapacidadeBateria] = useState(40)
   const [potenciaCarro, setPotenciaCarro] = useState(7.4)
+  const [veiculoTipo, setVeiculoTipo] = useState('carro')
 
   async function handleLogin(e) {
     e.preventDefault()
     setErro('')
     setCarregando(true)
     try {
-      const res = await fetch(`${API_URL}/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nome: loginNome, senha: loginSenha }),
-      })
-      const data = await res.json()
-
-      if (!res.ok) {
-        setErro(data.detail || 'Não foi possível entrar. Tente novamente.')
-        return
-      }
-
-      onLoginSuccess(data)
-    } catch {
-      setErro('Não foi possível conectar ao servidor. O backend está rodando?')
+      onLoginSuccess(await post('/login', { nome: loginNome, senha: loginSenha }))
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setCarregando(false)
     }
@@ -59,32 +55,20 @@ function Login({ onLoginSuccess }) {
 
     setCarregando(true)
     try {
-      const res = await fetch(`${API_URL}/cadastro`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          nome,
-          senha,
-          condominio_id: condominioId || CONDOMINIO_PADRAO,
-          tipo_usuario: tipoUsuario,
-          bloco_apto: blocoApto,
-          veiculo_modelo: veiculoModelo,
-          veiculo_placa: veiculoPlaca,
-          capacidade_bateria_kwh: Number(capacidadeBateria),
-          potencia_carro_kw: Number(potenciaCarro),
-        }),
-      })
-      const data = await res.json()
-
-      if (!res.ok) {
-        // 409 = nome duplicado (mensagem do backend já explica isso)
-        setErro(data.detail || 'Não foi possível cadastrar. Tente novamente.')
-        return
-      }
-
-      onLoginSuccess(data)
-    } catch {
-      setErro('Não foi possível conectar ao servidor. O backend está rodando?')
+      onLoginSuccess(await post('/cadastro', {
+        nome,
+        senha,
+        condominio_id: condominioId || CONDOMINIO_PADRAO,
+        tipo_usuario: tipoUsuario,
+        bloco_apto: blocoApto,
+        veiculo_modelo: veiculoModelo,
+        veiculo_placa: veiculoPlaca || null,
+        veiculo_tipo: veiculoTipo,
+        capacidade_bateria_kwh: Number(capacidadeBateria),
+        potencia_carro_kw: Number(potenciaCarro),
+      }))
+    } catch (e) {
+      setErro(e.message)
     } finally {
       setCarregando(false)
     }
@@ -101,6 +85,12 @@ function Login({ onLoginSuccess }) {
         <p className="text-mute mb-6">
           {modo === 'login' ? 'Entrar na sua conta' : 'Criar seu cadastro'}
         </p>
+
+        {aviso && !erro && (
+          <div className="mb-4 rounded-lg border border-queue/40 bg-queue/10 px-4 py-2 text-sm text-queue">
+            {aviso}
+          </div>
+        )}
 
         {erro && (
           <div className="bg-flux/10 border border-flux/40 text-flux text-sm rounded-lg px-4 py-2 mb-4">
@@ -196,7 +186,23 @@ function Login({ onLoginSuccess }) {
             </div>
 
             <hr className="border-line my-2" />
-            <p className="text-sm text-mute">Dados do veículo</p>
+            <p className="text-sm text-mute">O que você vai carregar</p>
+
+            <div className="flex gap-2">
+              {Object.entries(PRESETS).map(([chave, preset]) => (
+                <button key={chave} type="button"
+                        onClick={() => {
+                          setVeiculoTipo(chave)
+                          setCapacidadeBateria(preset.capacidade)
+                          setPotenciaCarro(preset.potencia)
+                          if (!veiculoModelo) setVeiculoModelo(preset.exemplo)
+                        }}
+                        className={`flex-1 rounded-lg py-2 text-sm transition ${
+                          veiculoTipo === chave ? 'bg-flux text-white' : 'bg-raise text-mute hover:bg-line'}`}>
+                  {preset.rotulo}
+                </button>
+              ))}
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -212,11 +218,11 @@ function Login({ onLoginSuccess }) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={labelClass}>Capacidade da bateria (kWh)</label>
-                <input className={inputClass} type="number" value={capacidadeBateria} onChange={(e) => setCapacidadeBateria(e.target.value)} />
+                <input className={inputClass} type="number" step="0.001" value={capacidadeBateria} onChange={(e) => setCapacidadeBateria(e.target.value)} />
               </div>
               <div>
-                <label className={labelClass}>Potência do carro (kW)</label>
-                <input className={inputClass} type="number" step="0.1" value={potenciaCarro} onChange={(e) => setPotenciaCarro(e.target.value)} />
+                <label className={labelClass}>Potência aceita (kW)</label>
+                <input className={inputClass} type="number" step="0.001" value={potenciaCarro} onChange={(e) => setPotenciaCarro(e.target.value)} />
               </div>
             </div>
             <p className="text-xs text-dim">

@@ -46,6 +46,7 @@ except ImportError:  # httpx não instalado: o modo regras continua funcionando
 
 from .loader import carregar_prompt, carregar_few_shot
 from . import router as R
+from .contexto import contexto_para_modelo
 
 CHAT_MODO = os.getenv("CHAT_MODO", "regras").strip().lower()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
@@ -178,8 +179,7 @@ def redigir(pergunta: str, intencao: str, fatos: dict, ctx: dict):
 
     contexto = {
         "intencao": intencao,
-        "usuario": {"nome": (ctx or {}).get("nome"),
-                    "condominio": (ctx or {}).get("condominio_nome")},
+        "usuario": contexto_para_modelo(ctx),
         "fatos": _limpar(fatos),
     }
     mensagens.append({
@@ -209,4 +209,5 @@ def _limpar(fatos: dict) -> dict:
     """Tira chaves internas que o modelo não precisa ver (ids crus, etc.)."""
     if not isinstance(fatos, dict):
         return {}
-    return {k: v for k, v in fatos.items() if k not in ("id", "sessao_id", "fonte")}
+    ocultas = {"id", "sessao_id", "fonte", "usuario_id", "carregador_id", "veiculo_id", "iniciado_em"}
+    return {k: v for k, v in fatos.items() if k not in ocultas}

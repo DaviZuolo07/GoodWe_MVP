@@ -1,44 +1,60 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
+import { post } from '../lib/api.js'
+import { brl, dataHora } from '../lib/formato.js'
 
-const API_URL = import.meta.env.VITE_API_URL
+/**
+ * Carteira - e, principalmente, o EXTRATO.
+ *
+ * Toda movimentação vira linha em `movimentacoes_carteira`: crédito, reserva
+ * (pré-autorização ao aproximar o cartão) e estorno da diferença no fim.
+ * Mostrar as três é o que torna a cobrança explicável - era o ponto que a
+ * banca apontou como pouco claro.
+ */
+
+const ROTULOS = {
+  credito: { texto: 'Crédito adicionado', cor: 'text-live', sinal: '+' },
+  pre_autorizacao: { texto: 'Reservado para a recarga', cor: 'text-flux', sinal: '−' },
+  estorno: { texto: 'Estorno da diferença', cor: 'text-live', sinal: '+' },
+  ajuste: { texto: 'Ajuste', cor: 'text-mute', sinal: '' },
+}
 
 function CarteiraPage({ sessao, onSaldoAtualizado }) {
   const [valor, setValor] = useState(50)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState('')
-  const [historico, setHistorico] = useState([])
+  const [extrato, setExtrato] = useState([])
 
-  useEffect(() => {
-    async function carregarHistorico() {
-      const { data } = await supabase
-        .from('pagamentos')
-        .select('*, sessoes_recarga(iniciado_em, carregadores(numero))')
-        .order('criado_em', { ascending: false })
-        .limit(20)
-      setHistorico(data || [])
-    }
-    carregarHistorico()
+  const carregarExtrato = useCallback(async () => {
+    const { data } = await supabase
+      .from('movimentacoes_carteira')
+      .select('*')
+      .order('criado_em', { ascending: false })
+      .limit(40)
+    setExtrato(data || [])
   }, [])
 
-  async function handleRecarregar(e) {
+  useEffect(() => {
+    carregarExtrato()
+    // Realtime: a reserva e o estorno acontecem no backend, disparados pelo
+    // cartão e pelo fim da recarga - não por um clique nesta tela.
+    const canal = supabase
+      .channel('extrato-carteira')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'movimentacoes_carteira' },
+        carregarExtrato)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [carregarExtrato])
+
+  async function creditar(e) {
     e.preventDefault()
-    setErro('')
-    setCarregando(true)
+    setErro(''); setCarregando(true)
     try {
-      const res = await fetch(`${API_URL}/usuarios/${sessao.usuario.id}/recarregar-saldo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ valor: Number(valor) }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setErro(data.detail || 'Não foi possível recarregar o saldo.')
-        return
-      }
-      onSaldoAtualizado(data.saldo_atual)
-    } catch {
-      setErro('Não foi possível conectar ao servidor.')
+      const d = await post('/me/carteira/creditar', { valor: Number(valor) })
+      onSaldoAtualizado(d.saldo_atual)
+      carregarExtrato()
+    } catch (e2) {
+      setErro(e2.message)
     } finally {
       setCarregando(false)
     }
@@ -46,58 +62,68 @@ function CarteiraPage({ sessao, onSaldoAtualizado }) {
 
   return (
     <div>
-      <h2 className="text-xl font-bold mb-6">Carteira</h2>
-
-      <div className="bg-panel border border-line rounded-xl p-6 mb-6">
-        <p className="text-sm text-dim mb-1">Saldo atual</p>
-        <p className="text-3xl font-bold text-live mb-4">R$ {sessao.usuario.saldo.toFixed(2)}</p>
-
-        {erro && (
-          <div className="bg-flux/10 border border-flux/40 text-flux text-sm rounded-lg px-3 py-2 mb-3">
-            {erro}
-          </div>
-        )}
-
-        <form onSubmit={handleRecarregar} className="flex gap-3">
-          <input
-            type="number"
-            min="1"
-            step="any"
-            value={valor}
-            onChange={(e) => setValor(e.target.value)}
-            className="bg-raise border border-line rounded-lg px-4 py-2 text-ink w-40"
-          />
-          <button
-            type="submit"
-            disabled={carregando}
-            className="bg-flux hover:bg-flare disabled:opacity-50 px-5 py-2 rounded-lg font-medium transition"
-          >
-            {carregando ? 'Processando...' : 'Adicionar saldo'}
-          </button>
-        </form>
-        <p className="text-xs text-dim mt-2">
-          Simulação de recarga de saldo — não é uma cobrança real.
-        </p>
+      <div className="mb-8">
+        <h2 className="text-xl font-semibold tracking-tight text-ink lg:text-[1.375rem]">Carteira</h2>
+        <p className="mt-1 text-sm text-dim">Seu saldo, o que foi reservado e o que voltou.</p>
       </div>
 
-      <h3 className="text-lg font-semibold mb-3">Histórico de pagamentos</h3>
-      <div className="bg-panel border border-line rounded-xl divide-y divide-hair">
-        {historico.length === 0 && (
-          <p className="p-4 text-sm text-dim">Nenhum pagamento ainda.</p>
-        )}
-        {historico.map((p) => (
-          <div key={p.id} className="p-4 flex justify-between items-center text-sm">
-            <div>
-              <p className="text-ink">
-                Carregador {p.sessoes_recarga?.carregadores?.numero || '—'}
-              </p>
-              <p className="text-xs text-dim">
-                {p.criado_em ? new Date(p.criado_em).toLocaleString('pt-BR') : ''}
-              </p>
-            </div>
-            <span className="text-flux font-medium">R$ {Number(p.valor).toFixed(2)}</span>
-          </div>
-        ))}
+      <div className="mb-5 grid gap-5 lg:grid-cols-[1fr_1.2fr]">
+        <div className="rounded-panel border border-line bg-panel p-6">
+          <p className="text-sm text-dim">Saldo disponível</p>
+          <p className="num mb-5 mt-1 text-3xl font-semibold text-live">{brl(sessao.usuario.saldo)}</p>
+
+          {erro && (
+            <div className="mb-3 rounded-chip border border-flux/40 bg-flux/10 px-3 py-2 text-sm text-flux">{erro}</div>
+          )}
+
+          <form onSubmit={creditar} className="flex gap-3">
+            <input type="number" min="1" max="500" step="any" value={valor}
+                   onChange={(e) => setValor(e.target.value)}
+                   className="w-32 rounded-chip border border-line bg-raise px-4 py-2 text-ink" />
+            <button type="submit" disabled={carregando}
+                    className="flex-1 rounded-chip bg-flux px-5 py-2 font-medium text-white transition
+                               hover:bg-flare disabled:opacity-40">
+              {carregando ? 'Processando...' : 'Adicionar saldo'}
+            </button>
+          </form>
+          <p className="mt-2 text-xs text-dim">Crédito simulado — não há cobrança real por trás.</p>
+        </div>
+
+        <div className="rounded-panel border border-line bg-panel p-6">
+          <h3 className="font-medium text-ink">Como a cobrança funciona</h3>
+          <ol className="mt-3 space-y-2.5 text-sm leading-relaxed text-mute">
+            <li><span className="text-ink">1. Reserva.</span> Ao aproximar o cartão, o valor estimado da recarga
+              fica reservado no seu saldo. Sem saldo, a recarga não começa.</li>
+            <li><span className="text-ink">2. Medição.</span> Cada kWh é contado pela tarifa do horário em que foi
+              entregue — na ponta custa mais.</li>
+            <li><span className="text-ink">3. Teto.</span> Se o consumo alcançar o valor reservado, a recarga para
+              sozinha. Você nunca paga mais do que autorizou.</li>
+            <li><span className="text-ink">4. Estorno.</span> No fim, cobramos só o consumo real e a diferença
+              volta na hora para a carteira.</li>
+          </ol>
+        </div>
+      </div>
+
+      <h3 className="mb-3 text-lg font-semibold text-ink">Extrato</h3>
+      <div className="overflow-hidden rounded-panel border border-line bg-panel">
+        {extrato.length === 0 && <p className="p-5 text-sm text-dim">Nenhuma movimentação ainda.</p>}
+        <div className="divide-y divide-hair">
+          {extrato.map((m) => {
+            const r = ROTULOS[m.tipo] || ROTULOS.ajuste
+            return (
+              <div key={m.id} className="flex items-center justify-between gap-4 px-5 py-3.5">
+                <div className="min-w-0">
+                  <p className="text-sm text-ink">{r.texto}</p>
+                  <p className="truncate text-xs text-dim">{m.descricao} · {dataHora(m.criado_em)}</p>
+                </div>
+                <div className="text-right">
+                  <p className={`num text-sm font-medium ${r.cor}`}>{r.sinal} {brl(m.valor)}</p>
+                  <p className="num text-[0.625rem] text-dim">saldo {brl(m.saldo_apos)}</p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

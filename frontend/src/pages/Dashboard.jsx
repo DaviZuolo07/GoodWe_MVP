@@ -1,6 +1,11 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
-import { API_URL, CONDOMINIO_PADRAO } from '../config.js'
+import { CONDOMINIO_PADRAO } from '../config.js'
+import { get, post } from '../lib/api.js'
+import { brl, energia, potencia } from '../lib/formato.js'
+import MonitorRecarga from '../components/MonitorRecarga.jsx'
+import GestorPage from './GestorPage.jsx'
+import ComoFuncionaPage from './ComoFuncionaPage.jsx'
 import Sidebar, { NavCompacta } from '../components/Sidebar.jsx'
 import TopStats from '../components/TopStats.jsx'
 import ChargerCard from '../components/ChargerCard.jsx'
@@ -100,6 +105,9 @@ function PainelCarregador({ charger, sessaoAtiva, ehMinhaSessao, onFechar, onIni
         <div>
           <p className="eyebrow">Carregador</p>
           <p className="num mt-1 text-2xl font-semibold text-ink">{charger.numero}</p>
+          {charger.origem === 'hardware' && (
+            <p className="eyebrow mt-1 text-[0.5625rem] text-flux">ESP32 · medição real</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Chip status={charger.status} />
@@ -119,11 +127,11 @@ function PainelCarregador({ charger, sessaoAtiva, ehMinhaSessao, onFechar, onIni
       <div className="divide-y divide-hair px-5">
         <Spec label="Modelo" valor={charger.modelo || '—'} />
         <Spec label="Tipo" valor={charger.tipo} />
-        <Spec label="Potência máxima" valor={`${charger.potencia_maxima_kw} kW`} />
+        <Spec label="Potência máxima" valor={potencia(charger.potencia_maxima_kw)} />
         <Spec label="Conector" valor={charger.conector} />
         {charger.tensao_v != null && <Spec label="Tensão" valor={`${charger.tensao_v} V`} />}
         {charger.corrente_maxima_a != null && <Spec label="Corrente máxima" valor={`${charger.corrente_maxima_a} A`} />}
-        <Spec label="Tarifa" valor={`R$ ${Number(charger.tarifa_kwh).toFixed(2)} / kWh`} />
+        <Spec label="Tarifa base" valor={`${brl(charger.tarifa_kwh)} / kWh`} />
         {temTemperatura && (
           <Spec
             label="Temperatura"
@@ -143,35 +151,43 @@ function PainelCarregador({ charger, sessaoAtiva, ehMinhaSessao, onFechar, onIni
       {/* Sessão em andamento neste carregador */}
       {sessaoAtiva && (
         <div className="mx-5 mb-4 rounded-panel border border-hair bg-raise/40 p-4">
-          <div className="flex items-baseline justify-between gap-3">
+          <div className="mb-3 flex items-baseline justify-between gap-3">
             <p className="truncate font-medium text-ink">{sessaoAtiva.veiculos?.modelo || 'Veículo'}</p>
-            <p className="num text-sm text-mute">{sessaoAtiva.veiculos?.placa}</p>
+            <p className="num text-sm text-mute">{sessaoAtiva.veiculos?.placa || ''}</p>
           </div>
 
-          <div className="mt-3 flex items-center gap-3">
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raise">
-              <div
-                className="flux-bar h-full rounded-full transition-[width] duration-700 ease-out"
-                style={{ width: `${sessaoAtiva.percentual_bateria_atual || 0}%` }}
-              />
-            </div>
-            <span className="num text-sm font-semibold text-ink">
-              {Math.round(sessaoAtiva.percentual_bateria_atual || 0)}%
-            </span>
-          </div>
-
-          <div className="mt-4 grid grid-cols-3 gap-3">
-            {[
-              ['Potência', `${sessaoAtiva.potencia_atual_kw} kW`],
-              ['Energia', `${Number(sessaoAtiva.energia_entregue_kwh || 0).toFixed(2)} kWh`],
-              ['Restante', `${sessaoAtiva.tempo_estimado_min} min`],
-            ].map(([label, valor]) => (
-              <div key={label}>
-                <p className="text-[0.6875rem] text-dim">{label}</p>
-                <p className="num mt-0.5 text-sm text-ink">{valor}</p>
+          {ehMinhaSessao ? (
+            // Minha recarga: monitor completo, com a série do medidor.
+            <MonitorRecarga
+              sessaoId={sessaoAtiva.id}
+              sessaoInicial={sessaoAtiva}
+              temSensor={charger.origem === 'hardware'}
+              compacto
+            />
+          ) : (
+            // Recarga do vizinho: só o que a view expõe (sem custo nem placa).
+            <>
+              <div className="flex items-center gap-3">
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raise">
+                  <div className="flux-bar h-full rounded-full transition-[width] duration-700 ease-out"
+                       style={{ width: `${sessaoAtiva.percentual_bateria_atual || 0}%` }} />
+                </div>
+                <span className="num text-sm font-semibold text-ink">
+                  {Math.round(sessaoAtiva.percentual_bateria_atual || 0)}%
+                </span>
               </div>
-            ))}
-          </div>
+              <div className="mt-4 grid grid-cols-3 gap-3">
+                {[['Potência', potencia(sessaoAtiva.potencia_atual_kw)],
+                  ['Energia', energia(sessaoAtiva.energia_entregue_kwh)],
+                  ['Restante', `${sessaoAtiva.tempo_estimado_min ?? '—'} min`]].map(([label, valor]) => (
+                  <div key={label}>
+                    <p className="text-[0.6875rem] text-dim">{label}</p>
+                    <p className="num mt-0.5 text-sm text-ink">{valor}</p>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -246,6 +262,9 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
   const [realtime, setRealtime] = useState('CONNECTING')
   const [chatAberto, setChatAberto] = useState(false)
   const [naoLidas, setNaoLidas] = useState(0)
+  const [erroAcao, setErroAcao] = useState('')
+  const debounce = useRef(null)
+  const ehGestor = sessaoInicial.usuario?.tipo_usuario === 'gestor'
 
   // Local ativo: começa no condomínio do usuário e pode ser trocado no topo.
   // Trocar aqui recarrega carregadores, sessões e fila daquele local.
@@ -253,6 +272,15 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
     sessaoInicial.usuario?.condominio_id || CONDOMINIO_PADRAO,
   )
   const { condominios, carregando: carregandoCondominios } = useCondominios()
+
+// Saldo e veículos vêm do backend (a tabela `usuarios` é fechada pelo RLS).
+  const atualizarSaldo = useCallback(async () => {
+    try {
+      const d = await get('/me')
+      setSessao((s) => ({ ...s, usuario: d.usuario, veiculo: d.veiculo, veiculos: d.veiculos }))
+      setVeiculos(d.veiculos || [])
+    } catch { /* silencioso: a tela continua com o valor anterior */ }
+  }, [])
 
   const carregarDados = useCallback(async () => {
     // Duas etapas de propósito.
@@ -328,19 +356,31 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
 
   useEffect(() => {
     carregarDados()
+    atualizarSaldo()
+
+    // O simulador mexe em vários carregadores por ciclo. Sem agrupar, cada
+    // linha alterada dispararia uma recarga completa do painel.
+    const recarregar = () => {
+      clearTimeout(debounce.current)
+      debounce.current = setTimeout(carregarDados, 250)
+    }
 
     const canal = supabase
       .channel('dashboard-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'carregadores' }, carregarDados)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sessoes_recarga' }, carregarDados)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notificacoes' }, carregarDados)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'fila' }, carregarDados)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'carregadores' }, recarregar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sessoes_recarga' }, recarregar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notificacoes' }, recarregar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'fila' }, recarregar)
+      // Reserva e estorno acontecem no backend: o saldo na tela segue o extrato.
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'movimentacoes_carteira' },
+        atualizarSaldo)
       .subscribe((status) => setRealtime(status))
 
     return () => {
+      clearTimeout(debounce.current)
       supabase.removeChannel(canal)
     }
-  }, [carregarDados])
+  }, [carregarDados, atualizarSaldo])
 
   function sessaoDoCarregador(chargerId) {
     return sessions.find((s) => s.carregador_id === chargerId) || null
@@ -349,17 +389,19 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
   async function handleEncerrarRecarga(sessaoId) {
     setEncerrando(true)
     try {
-      await fetch(`${API_URL}/charge/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessao_id: sessaoId }),
-      })
+      // O backend confere que a sessão é minha, calcula o custo real e
+      // devolve a diferença do valor reservado. Por isso o saldo é relido.
+      await post(`/recargas/${sessaoId}/encerrar`)
+      await atualizarSaldo()
       setModalStopAberto(false)
       setSelectedCharger(null)
+    } catch (e) {
+      setErroAcao(e.message)
     } finally {
       setEncerrando(false)
     }
   }
+
 
   // O carregador selecionado precisa refletir o estado mais recente do banco
   // (status muda sozinho pelo realtime) — por isso reconciliamos com a lista.
@@ -393,6 +435,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
     <div className="ambient flex min-h-screen bg-void font-display text-ink">
       <Sidebar
         sessao={sessao}
+        ehGestor={ehGestor}
         paginaAtiva={pagina}
         onNavigate={setPagina}
         onLogout={onLogout}
@@ -455,7 +498,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
 
           {/* Navegação compacta abaixo de lg, onde a sidebar não aparece */}
           <div className="px-5 pb-3 lg:hidden">
-            <NavCompacta paginaAtiva={pagina} onNavigate={setPagina} />
+            <NavCompacta paginaAtiva={pagina} onNavigate={setPagina} ehGestor={ehGestor} />
           </div>
         </header>
 
@@ -463,8 +506,15 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
         <div className="flex min-w-0 flex-1">
           <main className="min-w-0 flex-1 px-5 py-7 lg:px-9 lg:py-9">
             <div className="mx-auto w-full max-w-[1360px]">
+              {erroAcao && (
+                <div className="mb-5 flex items-center justify-between gap-3 rounded-chip border border-flux/40
+                                bg-flux/10 px-4 py-2.5 text-sm text-flux">
+                  {erroAcao}
+                  <button onClick={() => setErroAcao('')} className="text-flux/70 hover:text-flux">✕</button>
+                </div>
+              )}
               {pagina === 'veiculos' && (
-                <VeiculosPage sessao={sessao} veiculos={veiculos} onVeiculoAdicionado={carregarDados} />
+                <VeiculosPage veiculos={veiculos} onVeiculoAdicionado={atualizarSaldo} />
               )}
 
               {pagina === 'carteira' && (
@@ -491,6 +541,10 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
               )}
 
               {pagina === 'suporte' && <SuportePage onAbrirChat={() => setChatAberto(true)} />}
+
+              {pagina === 'gestao' && <GestorPage />}
+
+              {pagina === 'como-funciona' && <ComoFuncionaPage condominio={condominio} />}
 
               {pagina === 'inicio' && (
                 <>
@@ -608,9 +662,10 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
           charger={chargerSelecionado}
           sessao={sessao}
           veiculos={veiculos}
+          onSaldo={atualizarSaldo}
           onClose={() => setModalPagamentoAberto(false)}
-          onSucesso={(novoSaldo) => {
-            setSessao((s) => ({ ...s, usuario: { ...s.usuario, saldo: novoSaldo } }))
+          onSucesso={() => {
+            atualizarSaldo()
             setModalPagamentoAberto(false)
             setSelectedCharger(null)
           }}

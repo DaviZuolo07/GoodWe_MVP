@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { API_URL } from '../config.js'
+import { get } from '../lib/api.js'
 
 /**
  * Seletor de condomínio.
@@ -22,8 +22,7 @@ export function useCondominios() {
 
     async function carregar() {
       try {
-        const res = await fetch(`${API_URL}/condominios`)
-        const data = await res.json()
+        const data = await get('/condominios')
         if (cancelado) return
         setCondominios(Array.isArray(data) ? data : [])
       } catch {

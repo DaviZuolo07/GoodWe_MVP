@@ -28,6 +28,8 @@ MEU_SALDO = "meu_saldo"
 MEUS_VEICULOS = "meus_veiculos"
 SIMULAR_RECARGA = "simular_recarga"
 HISTORICO_RECENTE = "historico_recente"
+DEMANDA = "demanda"
+COBRANCA = "cobranca"
 AJUDA = "ajuda"
 FORA_DE_ESCOPO = "fora_de_escopo"
 TENTATIVA_INJECAO = "tentativa_injecao"
@@ -35,7 +37,7 @@ TENTATIVA_INJECAO = "tentativa_injecao"
 INTENCOES = {
     TEMPO_RESTANTE, STATUS_RECARGA, CUSTO_ATUAL, TARIFA,
     CARREGADORES_DISPONIVEIS, INFO_CARREGADOR, FILA_STATUS, MEU_SALDO,
-    MEUS_VEICULOS, SIMULAR_RECARGA, HISTORICO_RECENTE, AJUDA,
+    MEUS_VEICULOS, SIMULAR_RECARGA, HISTORICO_RECENTE, DEMANDA, COBRANCA, AJUDA,
     FORA_DE_ESCOPO, TENTATIVA_INJECAO,
 }
 
@@ -82,6 +84,15 @@ PADROES_FORA_DE_ESCOPO = [
 # --- Regras de intenção, da mais específica para a mais geral -------------
 # Cada tupla: (intenção, regex). A primeira que casar vence.
 REGRAS = [
+    # Cobrança antes de tudo que fala de preço: "por que reservou R$ 3" não é
+    # pergunta de tarifa nem de custo atual, é sobre COMO a conta funciona.
+    (COBRANCA, r"estorn|reserv|pre[\s-]?autoriz|devolu|como\s+(funciona|e\s+feita|eh\s+feita)\s+a\s+"
+               r"(cobranca|conta)|por\s*que\s+(debit|descont|cobr)|como\s+(voces\s+)?cobra"),
+
+    (DEMANDA, r"horario\s+de\s+ponta|\bponta\b|demanda|limite\s+(de\s+)?(potencia|energia|do\s+condominio)|"
+              r"potencia\s+(do|disponivel\s+no)\s+condominio|disjuntor|sobrecarga|"
+              r"carga\s+do\s+(predio|condominio)|por\s*que\s+(esta\s+)?(lent|devagar)"),
+
     # TARIFA antes de CUSTO. Esta ordem é o conserto do bug da tela.
     (TARIFA, r"tarifa|por\s*kwh|/\s*kwh|do\s+kwh|o\s+kwh\s+(custa|sai)|"
              r"pre[c]o\s+(do|por|da)\s+(kwh|energia)|valor\s+(do|por)\s+kwh|"

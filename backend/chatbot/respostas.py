@@ -29,6 +29,21 @@ def num(valor, casas: int = 2) -> str:
     return (texto or "0").replace(".", ",")
 
 
+def energia(kwh) -> str:
+    """Celular de bancada entrega Wh, não kWh: 0,0065 kWh vira 6,5 Wh."""
+    if kwh is None:
+        return "—"
+    kwh = float(kwh)
+    return f"{num(kwh * 1000, 1)} Wh" if kwh < 1 else f"{num(kwh)} kWh"
+
+
+def potencia(kw) -> str:
+    if kw is None:
+        return "—"
+    kw = float(kw)
+    return f"{num(kw * 1000, 1)} W" if kw < 1 else f"{num(kw)} kW"
+
+
 def duracao(minutos) -> str:
     if minutos is None:
         return "—"
@@ -87,8 +102,8 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
             saudacao += f"Você está vendo o {local}. "
         return (saudacao + "Posso responder sobre: tempo restante e status da sua "
                 "recarga, quanto ela está custando, tarifa por kWh de cada ponto, "
-                "carregadores disponíveis, fila, seu saldo, seus veículos e seu "
-                "histórico de recargas.")
+                "carregadores disponíveis, fila, seu saldo, seus veículos, seu "
+                "histórico, a potência do condomínio e como a cobrança funciona.")
 
     if intencao == R.TARIFA:
         itens = f.get("tarifas") or []
@@ -104,24 +119,26 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
         if not f.get("ativa"):
             return SEM_RECARGA + " Se quiser, posso te dizer a tarifa por kWh de cada ponto."
         return (f"Sua recarga no carregador {f['carregador_numero']} já consumiu "
-                f"{num(f['energia_entregue_kwh'])} kWh, o que dá "
+                f"{energia(f['energia_entregue_kwh'])}, o que dá "
                 f"{brl(f['custo_ate_agora'])} até agora "
-                f"(tarifa de {brl(f['tarifa_kwh'])} por kWh).")
+                f"(tarifa de {brl(f['tarifa_kwh'])} por kWh"
+                + (f"; o teto reservado é {brl(f['valor_reservado'])}" if f.get('valor_reservado') else "")
+                + ").")
 
     if intencao == R.TEMPO_RESTANTE:
         if not f.get("ativa"):
             return SEM_RECARGA
         return (f"Faltam cerca de {duracao(f['tempo_estimado_min'])} para completar. "
                 f"A bateria está em {num(f['percentual_atual'], 1)}% e o carregador "
-                f"está entregando {num(f['potencia_atual_kw'])} kW agora.")
+                f"está entregando {potencia(f['potencia_atual_kw'])} agora.")
 
     if intencao == R.STATUS_RECARGA:
         if not f.get("ativa"):
             return SEM_RECARGA
         return (f"Recarga do {f.get('veiculo_modelo') or 'seu veículo'} no carregador "
                 f"{f['carregador_numero']}: bateria em {num(f['percentual_atual'], 1)}%, "
-                f"potência de {num(f['potencia_atual_kw'])} kW, "
-                f"{num(f['energia_entregue_kwh'])} kWh entregues e "
+                f"potência de {potencia(f['potencia_atual_kw'])}, "
+                f"{energia(f['energia_entregue_kwh'])} entregues e "
                 f"{duracao(f['tempo_estimado_min'])} restantes.")
 
     if intencao == R.CARREGADORES_DISPONIVEIS:
@@ -156,8 +173,9 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
         return f"Há {total} na fila do condomínio: {lista(partes)}. Você não está na fila."
 
     if intencao == R.MEU_SALDO:
-        return (f"Seu saldo é de {brl(f.get('saldo'))}. Ele é debitado no início da "
-                "recarga pela estimativa até 100%.")
+        return (f"Seu saldo é de {brl(f.get('saldo'))}. Ao aproximar o cartão, o valor "
+                "estimado da recarga fica reservado; no fim, a diferença para o consumo "
+                "real volta para a carteira.")
 
     if intencao == R.MEUS_VEICULOS:
         vs = f.get("veiculos") or []
@@ -182,10 +200,11 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
             return motivos.get(f.get("motivo"), "Não consegui montar a simulação agora.")
         return (f"Levar o {f['veiculo_modelo']} de {num(f['percentual_atual'], 0)}% até "
                 f"{num(f['alvo_percentual'], 0)}% no carregador {f['carregador_numero']}: "
-                f"cerca de {num(f['energia_kwh'])} kWh, {duracao(f['tempo_min'])} e "
+                f"cerca de {energia(f['energia_kwh'])}, {duracao(f['tempo_min'])} e "
                 f"{brl(f['custo'])} pela tarifa de {brl(f['tarifa_kwh'])}/kWh. "
                 f"A {num(f['temperatura_c'], 0)} °C o ponto entrega "
-                f"{num(f['potencia_kw'])} kW.")
+                f"{potencia(f['potencia_kw'])}"
+                + (" (horário de ponta: tarifa maior agora)." if f.get("em_ponta") else "."))
 
     if intencao == R.HISTORICO_RECENTE:
         recargas = f.get("recargas") or []
@@ -195,6 +214,31 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
                 f"{num(f['total_kwh'])} kWh e {brl(f['total_gasto'])}. "
                 f"A mais recente entregou {num(recargas[0]['energia_kwh'])} kWh "
                 f"por {brl(recargas[0]['custo'])}.")
+
+    if intencao == R.DEMANDA:
+        if not f.get("encontrado"):
+            return "Não encontrei os dados de potência deste condomínio."
+        ponta = (f"Agora é horário de ponta ({f['ponta_inicio']} às {f['ponta_fim']}): o limite "
+                 f"para recarga cai para {f['ponta_percentual_limite']}% e a tarifa fica "
+                 f"{num(f['ponta_multiplicador'], 2)}x maior."
+                 if f.get("em_ponta") else
+                 f"O horário de ponta é das {f['ponta_inicio']} às {f['ponta_fim']} em dias "
+                 "úteis; nele o limite cai e a tarifa sobe.")
+        return (f"O condomínio{onde(ctx)} libera até {potencia(f['limite_agora_kw'])} para "
+                f"recarga e está usando {potencia(f['carga_agora_kw'])} em "
+                f"{f['recargas_ativas']} recarga(s). O sistema divide essa potência entre os "
+                f"carros para nunca passar do limite do quadro. {ponta}")
+
+    if intencao == R.COBRANCA:
+        base = ("Funciona como pré-autorização: ao aproximar o cartão, reservamos o custo "
+                "estimado; cada kWh é cobrado pela tarifa do horário em que foi entregue "
+                f"(na ponta, {f['ponta_inicio']} às {f['ponta_fim']}, fica "
+                f"{num(f['ponta_multiplicador'], 2)}x); ao terminar, a diferença volta na hora.")
+        u = f.get("ultima")
+        if u and u.get("reservado") is not None:
+            base += (f" Na sua última recarga: reservado {brl(u['reservado'])}, custo real "
+                     f"{brl(u['custo_final'])}, estorno de {brl(u.get('estornado') or 0)}.")
+        return base
 
     return ("Posso ajudar com sua recarga, carregadores, fila, tarifas, saldo e "
             "veículos. O que você quer saber?")

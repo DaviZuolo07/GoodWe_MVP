@@ -17,7 +17,7 @@ consultadas. É o que permite o bot dizer de onde saiu cada número - a primeira
 pergunta que uma banca faz.
 """
 
-from .contexto import sb, CTX
+from .deps import sb, CTX
 
 # Só estas tabelas podem ser lidas pelo chatbot. Nenhuma função abaixo toca em
 # `pagamentos` ou grava qualquer coisa: o chat é somente leitura.
@@ -25,116 +25,6 @@ TABELAS_PERMITIDAS = {
     "usuarios", "condominios", "carregadores", "veiculos",
     "sessoes_recarga", "fila", "notificacoes", "condominios_favoritos",
 }
-
-
-# ---------------------------------------------------------------------------
-# Contexto do usuário - a origem única da identidade
-# ---------------------------------------------------------------------------
-
-def locais_permitidos(usuario_id: str, condominio_moradia: str = None) -> set:
-    """
-    Allowlist de locais deste usuário: favoritos + o condomínio onde ele mora.
-
-    ESTA FUNÇÃO É A TRAVA DE ESCOPO. A partir do momento em que o frontend
-    passou a mandar qual local o usuário escolheu, o `condominio_id` deixou de
-    ser um dado confiável - virou entrada. Sem validar contra esta lista,
-    bastaria alterar o corpo da requisição para ler carregadores, tarifas e
-    fila de um condomínio onde a pessoa não tem vínculo nenhum.
-
-    Mesmo princípio do briefing aplicado ao local, não só à identidade: o que
-    vem do cliente é pedido, não permissão.
-    """
-    permitidos = set()
-    if condominio_moradia:
-        permitidos.add(condominio_moradia)
-
-    if not usuario_id:
-        return permitidos
-
-    try:
-        r = (
-            sb().table("condominios_favoritos")
-            .select("condominio_id")
-            .eq("usuario_id", usuario_id)
-            .execute()
-        )
-        permitidos.update(f["condominio_id"] for f in (r.data or []))
-    except Exception as e:
-        # Tabela ainda não criada (migration 08 não rodou): degrada para o
-        # comportamento antigo em vez de derrubar o chat.
-        print(f"[CHATBOT] favoritos indisponíveis ({e}) - usando só a moradia")
-
-    return permitidos
-
-
-def ctx_usuario(usuario_id: str, condominio_escolhido: str = None) -> dict:
-    """
-    Resolve quem é o usuário e sobre QUAL LOCAL ele está perguntando.
-
-    Duas coisas diferentes moram aqui:
-      - identidade  -> sempre do banco, nunca negociável;
-      - local ativo -> o escolhido no seletor do chat, SE estiver na allowlist;
-                       caso contrário cai para o condomínio de moradia.
-
-    Repare que os dados pessoais (saldo, veículos, sessão ativa) continuam
-    seguindo o usuário, não o local. Só carregadores, tarifas e fila mudam
-    quando ele troca de lugar - que é exatamente como funciona na vida real.
-    """
-    vazio = {"encontrado": False, "fonte": ["usuarios"]}
-    if not usuario_id:
-        return vazio
-
-    r = (
-        sb().table("usuarios")
-        .select("id, nome, tipo_usuario, condominio_id, bloco_apto, saldo")
-        .eq("id", usuario_id)
-        .execute()
-    )
-    if not r.data:
-        return vazio
-
-    u = r.data[0]
-    moradia_id = u.get("condominio_id") or CTX.condominio_padrao
-
-    condominio_id = moradia_id
-    local_ajustado = False
-    if condominio_escolhido and condominio_escolhido != moradia_id:
-        if condominio_escolhido in locais_permitidos(usuario_id, moradia_id):
-            condominio_id = condominio_escolhido
-        else:
-            # Pedido recusado em silêncio: responde sobre a moradia e sinaliza
-            # para quem chamou. Não é erro de usuário, é escopo negado.
-            local_ajustado = True
-            print(f"[CHATBOT] local fora da allowlist ({condominio_escolhido}) "
-                  f"- respondendo sobre {moradia_id}")
-
-    nome_condominio = None
-    limite_kw = None
-    if condominio_id:
-        c = (
-            sb().table("condominios")
-            .select("nome, limite_energia_kw")
-            .eq("id", condominio_id)
-            .execute()
-        )
-        if c.data:
-            nome_condominio = c.data[0].get("nome")
-            limite_kw = c.data[0].get("limite_energia_kw")
-
-    return {
-        "encontrado": True,
-        "usuario_id": u["id"],
-        "nome": u.get("nome"),
-        "tipo_usuario": u.get("tipo_usuario"),
-        "bloco_apto": u.get("bloco_apto"),
-        "saldo": u.get("saldo"),
-        "condominio_id": condominio_id,
-        "condominio_nome": nome_condominio,
-        "condominio_moradia_id": moradia_id,
-        "local_ajustado": local_ajustado,
-        "limite_energia_kw": limite_kw,
-        "fonte": ["usuarios", "condominios"],
-    }
 
 
 def meu_saldo(ctx: dict) -> dict:
@@ -174,8 +64,9 @@ def sessao_ativa(usuario_id: str) -> dict:
     carregador = _carregador_por_id(s.get("carregador_id"))
     veiculo = _veiculo_por_id(s.get("veiculo_id"))
 
-    tarifa = _tarifa(carregador)
+    tarifa = float(s.get("tarifa_kwh") or _tarifa(carregador))
     energia = float(s.get("energia_entregue_kwh") or 0)
+    custo = CTX.custo_da_sessao(s) if CTX.custo_da_sessao else round(energia * tarifa, 2)
 
     return {
         "ativa": True,
@@ -184,10 +75,12 @@ def sessao_ativa(usuario_id: str) -> dict:
         "percentual_atual": s.get("percentual_bateria_atual"),
         "percentual_inicial": s.get("percentual_bateria_inicial"),
         "potencia_atual_kw": s.get("potencia_atual_kw"),
-        "energia_entregue_kwh": round(energia, 2),
+        "energia_entregue_kwh": round(energia, 4),
+        "energia_entregue_wh": round(energia * 1000, 1),
         "tempo_estimado_min": s.get("tempo_estimado_min"),
-        "custo_ate_agora": round(energia * tarifa, 2),
-        "custo_estimado_total": s.get("custo_estimado"),
+        "custo_ate_agora": custo,
+        "valor_reservado": s.get("valor_pre_autorizado"),
+        "potencia_alocada_kw": s.get("potencia_alocada_kw"),
         "tarifa_kwh": tarifa,
         "carregador_numero": (carregador or {}).get("numero"),
         "carregador_temperatura_c": (carregador or {}).get("temperatura_c"),
@@ -377,7 +270,7 @@ def veiculos(usuario_id: str) -> dict:
 
 
 def simular_recarga(usuario_id: str, condominio_id: str, numero=None,
-                    charger_id: str = None, alvo: float = 100.0) -> dict:
+                    charger_id: str = None, alvo: float = 100.0, condominio: dict = None) -> dict:
     """
     Estimativa de energia, tempo e custo - via `calcular_estimativa` do main.py.
 
@@ -411,7 +304,7 @@ def simular_recarga(usuario_id: str, condominio_id: str, numero=None,
     ).data[0]
 
     soc = float(veiculo.get("percentual_bateria") or 0)
-    est = CTX.calcular_estimativa(bruto, veiculo, soc, alvo)
+    est = CTX.calcular_estimativa(bruto, veiculo, soc, alvo, condominio)
 
     return {
         "disponivel": True,
@@ -425,8 +318,65 @@ def simular_recarga(usuario_id: str, condominio_id: str, numero=None,
         "potencia_kw": est["potencia_agora_kw"],
         "temperatura_c": est["temperatura_c"],
         "fator_termico": est["fator_termico"],
-        "tarifa_kwh": bruto.get("tarifa_kwh"),
+        "tarifa_kwh": est["tarifa_kwh"],
+        "em_ponta": est["em_ponta"],
         "fonte": ["carregadores", "veiculos"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Demanda e cobrança - o "por quê" dos números (Bloco 3 explicado ao morador)
+# ---------------------------------------------------------------------------
+
+def demanda(condominio: dict) -> dict:
+    """Limite, carga agora e horário de ponta do local. Números do banco."""
+    from fisica import em_horario_de_ponta
+    cid = (condominio or {}).get("id")
+    if not cid:
+        return {"encontrado": False, "fonte": ["condominios"]}
+    chargers = sb().table("carregadores").select("id").eq("condominio_id", cid).execute().data or []
+    ids = [c["id"] for c in chargers]
+    ativas = []
+    if ids:
+        ativas = sb().table("sessoes_recarga").select("potencia_atual_kw, potencia_alocada_kw") \
+            .eq("status", "carregando").in_("carregador_id", ids).execute().data or []
+    limite = float(condominio.get("limite_potencia_kw") or 0)
+    ponta = em_horario_de_ponta(condominio)
+    disponivel = round(limite * float(condominio.get("ponta_fator_limite") or 1), 1) if ponta else limite
+    carga = round(sum(float(a.get("potencia_atual_kw") or 0) for a in ativas), 2)
+    return {
+        "encontrado": True,
+        "limite_kw": limite,
+        "limite_agora_kw": disponivel,
+        "carga_agora_kw": carga,
+        "folga_kw": round(max(0.0, disponivel - carga), 2),
+        "recargas_ativas": len(ativas),
+        "em_ponta": ponta,
+        "ponta_inicio": str(condominio.get("ponta_inicio") or "18:00")[:5],
+        "ponta_fim": str(condominio.get("ponta_fim") or "21:00")[:5],
+        "ponta_percentual_limite": round(float(condominio.get("ponta_fator_limite") or 1) * 100),
+        "ponta_multiplicador": float(condominio.get("ponta_multiplicador_tarifa") or 1),
+        "fonte": ["condominios", "sessoes_recarga"],
+    }
+
+
+def cobranca(usuario_id: str, condominio: dict) -> dict:
+    """Como a conta é feita, com a última recarga do morador como exemplo."""
+    ultima = sb().table("sessoes_recarga").select(
+        "custo_final, valor_pre_autorizado, valor_estornado, energia_entregue_kwh, energia_ponta_kwh"
+    ).eq("usuario_id", usuario_id).eq("status", "finalizada") \
+        .order("finalizado_em", desc=True).limit(1).execute().data
+    u = ultima[0] if ultima else None
+    return {
+        "ponta_inicio": str((condominio or {}).get("ponta_inicio") or "18:00")[:5],
+        "ponta_fim": str((condominio or {}).get("ponta_fim") or "21:00")[:5],
+        "ponta_multiplicador": float((condominio or {}).get("ponta_multiplicador_tarifa") or 1),
+        "ultima": {
+            "reservado": u.get("valor_pre_autorizado"),
+            "custo_final": u.get("custo_final"),
+            "estornado": u.get("valor_estornado"),
+        } if u else None,
+        "fonte": ["condominios", "sessoes_recarga"],
     }
 
 
