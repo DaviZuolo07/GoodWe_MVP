@@ -190,6 +190,29 @@ python provisionar.py cartao-compartilhado \
 Não sabe o UID? Prepare uma recarga no app e encoste o cartão: a tela de
 espera mostra o número lido e oferece o cadastro ali mesmo.
 
+### Qualquer carregador pode ser físico
+
+Não existe carregador especial. O `b0000000-...-0001` é apenas o ponto que o
+seed marcou como físico. Um ponto vira ESP32 quando três coisas são verdade:
+
+1. `carregadores.origem = 'hardware'` — o simulador para de mexer nele;
+2. existe uma linha em `dispositivos` apontando para esse carregador, com o
+   hash do token (a coluna `carregador_id` é única: **uma placa, um ponto**);
+3. uma placa foi gravada com esse token.
+
+Um comando faz os dois primeiros e devolve o token:
+
+```bash
+python provisionar.py ponto-fisico \
+  --carregador d0000000-0000-0000-0000-000000000001 \
+  --nome "ESP32 do Kayo" --perfil bancada --potencia-kw 0.025
+```
+
+Para o morador, ponto físico e ponto simulado se comportam igual: mesma tela,
+mesmo fluxo, mesma cobrança, mesma gestão de demanda. A diferença é de onde
+vem o número de energia — do sensor da placa ou do modelo físico do
+`fisica.py`. Uma segunda placa é só repetir o comando acima em outro ponto.
+
 ### O fluxo, passo a passo
 
 ```
@@ -330,6 +353,23 @@ bordas) **contra o endpoint real** e grava
 `evals/resultados/<rotulo>.md` com conformidade, latência e caso a caso. Para a
 tabela antes/depois, rode uma vez com `CHAT_MODO=regras` e outra com
 `CHAT_MODO=llm`, ou antes e depois de mexer no prompt.
+
+---
+
+## 8.1 ESP32 virtual: testar sem a placa
+
+`backend/testes/simular_esp32.py` fala o mesmo protocolo do firmware contra o
+backend de verdade — handshake, polling de 2 s, cartão e telemetria com
+energia integrada. Com o backend rodando:
+
+```bash
+cd backend
+python testes/simular_esp32.py --token gw_dev_o_token_da_placa --uid A1B2C3D4 --auto
+```
+
+Serve para testar o fluxo físico antes de a placa existir, para o Gus comparar
+(se funciona aqui e não na placa dele, o problema é WiFi, token ou fiação) e
+como plano B se o hardware falhar no dia da apresentação.
 
 ---
 

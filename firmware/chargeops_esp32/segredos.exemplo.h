@@ -19,4 +19,4 @@ const char* BACKEND_URL = "http://192.168.0.100:8000";
 // Gere com, de dentro de backend/:
 //   python provisionar.py token-esp --carregador <uuid-do-carregador>
 // O banco guarda só o hash: este texto aparece uma única vez.
-const char* DEVICE_TOKEN = "gw_dev_cole_o_token_gerado_aqui";
+const char* DEVICE_TOKEN = "gw_dev_hyqVlMDocgVztPTrxMEDAUCf4vphlpNjlk0RMkwrxpw";

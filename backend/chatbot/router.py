@@ -87,11 +87,11 @@ REGRAS = [
     # Cobrança antes de tudo que fala de preço: "por que reservou R$ 3" não é
     # pergunta de tarifa nem de custo atual, é sobre COMO a conta funciona.
     (COBRANCA, r"estorn|reserv|pre[\s-]?autoriz|devolu|como\s+(funciona|e\s+feita|eh\s+feita)\s+a\s+"
-               r"(cobranca|conta)|por\s*que\s+(debit|descont|cobr)|como\s+(voces\s+)?cobra"),
+               r"(cobranca|conta)|por\s*que\s+(voces\s+|vcs\s+|ja\s+)?(debit|descont|cobr|reserv|tirou|saiu)|como\s+(voces\s+)?cobra"),
 
     (DEMANDA, r"horario\s+de\s+ponta|\bponta\b|demanda|limite\s+(de\s+)?(potencia|energia|do\s+condominio)|"
               r"potencia\s+(do|disponivel\s+no)\s+condominio|disjuntor|sobrecarga|"
-              r"carga\s+do\s+(predio|condominio)|por\s*que\s+(esta\s+)?(lent|devagar)"),
+              r"carga\s+do\s+(predio|condominio)|\b(lent[ao]|devagar|demorando|mais\s+devagar)\b"),
 
     # TARIFA antes de CUSTO. Esta ordem é o conserto do bug da tela.
     (TARIFA, r"tarifa|por\s*kwh|/\s*kwh|do\s+kwh|o\s+kwh\s+(custa|sai)|"

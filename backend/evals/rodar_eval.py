@@ -84,6 +84,8 @@ def main():
     p.add_argument("--usuario", default=os.getenv("EVAL_USUARIO"))
     p.add_argument("--senha", default=os.getenv("EVAL_SENHA"))
     p.add_argument("--rotulo", default=datetime.now().strftime("%Y%m%d-%H%M"))
+    p.add_argument("--pausa-429", type=int, default=62, dest="pausa_429",
+                   help="segundos de espera quando o rate limit do chat dispara")
     args = p.parse_args()
     if not args.usuario or not args.senha:
         sys.exit("Informe --usuario e --senha (ou EVAL_USUARIO/EVAL_SENHA no ambiente).")
@@ -97,12 +99,24 @@ def main():
 
     for caso in casos:
         inicio = time.perf_counter()
-        try:
-            r = httpx.post(f"{args.base}/chatbot", headers=cabecalho, timeout=60,
-                           json={"message": caso["mensagem"]})
-            resposta = r.json() if r.status_code == 200 else {"reply": "", "erro": r.text}
-        except Exception as e:
-            resposta = {"reply": "", "erro": f"{type(e).__name__}: {e}"}
+        resposta = {"reply": "", "erro": "não executado"}
+        for tentativa in range(3):
+            try:
+                r = httpx.post(f"{args.base}/chatbot", headers=cabecalho, timeout=60,
+                               json={"message": caso["mensagem"]})
+                if r.status_code == 429:
+                    # O produto limita 20 mensagens por minuto por morador. O
+                    # eval é cliente como qualquer outro: espera, não "falha".
+                    espera = args.pausa_429
+                    print(f"  (limite de taxa atingido - aguardando {espera}s)")
+                    time.sleep(espera)
+                    inicio = time.perf_counter()
+                    continue
+                resposta = r.json() if r.status_code == 200 else {"reply": "", "erro": r.text}
+                break
+            except Exception as e:
+                resposta = {"reply": "", "erro": f"{type(e).__name__}: {e}"}
+                break
         ms = round((time.perf_counter() - inicio) * 1000)
 
         falhas = avaliar(caso, resposta) + ([resposta["erro"]] if resposta.get("erro") else [])

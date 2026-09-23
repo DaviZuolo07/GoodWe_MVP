@@ -50,7 +50,20 @@ FRONTEND_ORIGINS = [
 # --- Fuso ----------------------------------------------------------------
 # Horário de ponta é local. O `tzdata` do requirements garante que isto
 # funcione no Windows, que não traz a base de fusos do sistema.
-FUSO = ZoneInfo(os.getenv("FUSO_HORARIO", "America/Sao_Paulo"))
+try:
+    FUSO = ZoneInfo(os.getenv("FUSO_HORARIO", "America/Sao_Paulo"))
+except Exception:
+    # tzdata não instalado (comum no Windows na primeira vez). Rode:
+    #   pip install tzdata
+    # Enquanto isso, usa UTC como fallback de segurança.
+    from datetime import timezone as _tz
+    FUSO = _tz.utc                      # type: ignore[assignment]
+    print(
+        "[CONFIG] AVISO: fuso 'America/Sao_Paulo' nao encontrado. "
+        "Usando UTC como fallback.\n"
+        "         Para corrigir: pip install tzdata\n"
+        "         (o horario de ponta ficara desabilitado enquanto isso)"
+    )
 
 CONDOMINIO_PADRAO = "11111111-1111-1111-1111-111111111111"
 

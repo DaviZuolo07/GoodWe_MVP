@@ -16,6 +16,11 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
   python provisionar.py token-esp --carregador <uuid-do-carregador>
       Gera o token novo do ESP32, grava só o hash e mostra o token UMA vez.
 
+  python provisionar.py ponto-fisico --carregador <uuid> [--perfil bancada]
+      Converte qualquer carregador em ponto físico: marca origem=hardware,
+      cria o dispositivo e devolve o token da placa. Não há carregador
+      "especial" - é isto que faz um ponto virar ESP32.
+
   python provisionar.py cartao-compartilhado --uid A1B2C3D4 --condominio <uuid>
       Cadastra o cartão da bancada como cartão DO CONDOMÍNIO: autoriza a
       recarga preparada no ponto e cobra de quem preparou no app. Um cartão
@@ -132,6 +137,57 @@ def cmd_token_esp(args):
     print("O token antigo deixou de funcionar.\n")
 
 
+def cmd_ponto_fisico(args):
+    """
+    Converte QUALQUER carregador do catálogo em ponto físico com ESP32.
+
+    Não existe carregador "especial": o b0000000-...-0001 é só o que veio
+    marcado no seed. Um ponto vira físico quando três coisas são verdade:
+      1. `carregadores.origem = 'hardware'` (o simulador para de mexer nele)
+      2. existe uma linha em `dispositivos` apontando para ele, com o hash
+         do token
+      3. uma placa foi gravada com esse token
+
+    Este comando faz 1 e 2 e imprime o token para você fazer o 3. Rode uma
+    vez por placa; cada placa atende UM carregador (a coluna carregador_id
+    em dispositivos é única).
+    """
+    from seguranca import gerar_token_dispositivo, hash_token_dispositivo
+
+    sb = _supabase()
+    c = sb.table("carregadores").select("id, numero, condominio_id, origem, perfil") \
+        .eq("id", args.carregador).execute()
+    if not c.data:
+        sys.exit("Carregador não encontrado. Confira o UUID em `select id, numero from carregadores`.")
+    carregador = c.data[0]
+
+    mudancas = {"origem": "hardware"}
+    if args.perfil:
+        mudancas["perfil"] = args.perfil
+    if args.potencia_kw:
+        mudancas["potencia_maxima_kw"] = args.potencia_kw
+    sb.table("carregadores").update(mudancas).eq("id", args.carregador).execute()
+
+    token = gerar_token_dispositivo()
+    existente = sb.table("dispositivos").select("id").eq("carregador_id", args.carregador).execute()
+    dados = {"nome": args.nome or f"ESP32 - ponto {carregador['numero']}",
+             "token_hash": hash_token_dispositivo(token),
+             "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2}
+    if existente.data:
+        sb.table("dispositivos").update(dados).eq("id", existente.data[0]["id"]).execute()
+        acao = "atualizado"
+    else:
+        sb.table("dispositivos").insert({**dados, "carregador_id": args.carregador}).execute()
+        acao = "criado"
+
+    print(f"\nPonto {carregador['numero']} agora é FÍSICO (dispositivo {acao}).")
+    print(f"Perfil: {mudancas.get('perfil', carregador.get('perfil'))}")
+    print("\nToken (aparece só agora; o banco guardou apenas o hash):\n")
+    print(f"  {token}\n")
+    print("Cole em DEVICE_TOKEN no segredos.h da placa que vai atender este ponto.")
+    print("Enquanto a placa não fizer handshake, o ponto aparece como offline.\n")
+
+
 def cmd_cartao_compartilhado(args):
     """
     Cadastra o cartão físico da bancada como CARTÃO DO CONDOMÍNIO.
@@ -237,6 +293,15 @@ def main():
     t = sub.add_parser("token-esp")
     t.add_argument("--carregador", required=True)
     t.set_defaults(fn=cmd_token_esp)
+
+    f = sub.add_parser("ponto-fisico")
+    f.add_argument("--carregador", required=True, help="UUID do carregador que ganhará uma placa")
+    f.add_argument("--nome", help="Nome do dispositivo (ex.: 'ESP32 do Gus')")
+    f.add_argument("--perfil", choices=["veicular", "bancada"],
+                   help="bancada = porta USB de celular; veicular = wallbox")
+    f.add_argument("--potencia-kw", type=float, dest="potencia_kw",
+                   help="Potência máxima real do ponto (ex.: 0.025 para bancada USB)")
+    f.set_defaults(fn=cmd_ponto_fisico)
 
     c = sub.add_parser("cartao-compartilhado")
     c.add_argument("--uid", required=True, help="UID lido pelo leitor (ex.: A1B2C3D4)")
