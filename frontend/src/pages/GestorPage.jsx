@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { get, patch } from '../lib/api.js'
+import { del, get, patch, post } from '../lib/api.js'
 import { brl, energia, num, potencia } from '../lib/formato.js'
 
 /**
@@ -62,6 +62,8 @@ function GestorPage() {
   const [erro, setErro] = useState('')
   const [salvando, setSalvando] = useState(false)
   const [form, setForm] = useState(null)
+  const [cartoes, setCartoes] = useState([])
+  const [novoUid, setNovoUid] = useState('')
 
   const carregar = useCallback(async () => {
     try {
@@ -79,11 +81,16 @@ function GestorPage() {
     }
   }, [])
 
+  const carregarCartoes = useCallback(async () => {
+    try { setCartoes(await get('/gestor/cartoes')) } catch { /* seção vazia */ }
+  }, [])
+
   useEffect(() => {
     carregar()
+    carregarCartoes()
     const id = setInterval(carregar, 10000)     // mesmo ritmo do alocador
     return () => clearInterval(id)
-  }, [carregar])
+  }, [carregar, carregarCartoes])
 
   async function salvar(e) {
     e.preventDefault()
@@ -222,6 +229,67 @@ function GestorPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Cartões compartilhados */}
+      <div className="mt-5 rounded-panel border border-line bg-panel p-5">
+        <h3 className="font-medium text-ink">Cartões do condomínio</h3>
+        <p className="mt-1 text-sm leading-relaxed text-dim">
+          Um cartão compartilhado prova PRESENÇA no ponto, não identidade: ele libera a recarga que
+          estiver preparada ali, e a cobrança sai de quem a preparou no aplicativo. É assim que um
+          único cartão físico atende todos os moradores. Quem quiser trava por pessoa cadastra um
+          cartão pessoal em Configurações — esse passa a valer só para ele.
+        </p>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <input className="w-44 rounded-chip border border-line bg-raise/50 px-3 py-2 text-sm text-ink"
+                 placeholder="UID (ex.: A1B2C3D4)" value={novoUid}
+                 onChange={(e) => setNovoUid(e.target.value)} />
+          <button
+            disabled={!novoUid.trim()}
+            onClick={async () => {
+              setErro('')
+              try {
+                await post('/gestor/cartoes', { uid: novoUid.trim() })
+                setNovoUid('')
+                await carregarCartoes()
+              } catch (e) { setErro(e.message) }
+            }}
+            className="rounded-chip bg-flux px-4 py-2 text-sm font-medium text-white transition
+                       hover:bg-flare disabled:opacity-40">
+            Cadastrar cartão
+          </button>
+        </div>
+
+        {cartoes.length > 0 ? (
+          <ul className="mt-4 space-y-2">
+            {cartoes.map((c) => (
+              <li key={c.uid}
+                  className="flex items-center justify-between gap-3 rounded-chip border border-hair
+                             bg-raise/40 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="num truncate text-sm text-ink">{c.uid}</p>
+                  <p className="truncate text-xs text-dim">
+                    {c.apelido || 'Cartão do condomínio'}
+                    {c.ultimo_uso ? ` · último uso ${new Date(c.ultimo_uso).toLocaleString('pt-BR')}` : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    try { await del(`/gestor/cartoes/${c.uid}`); await carregarCartoes() }
+                    catch (e) { setErro(e.message) }
+                  }}
+                  className="shrink-0 text-xs text-dim transition-colors hover:text-flux">
+                  remover
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-4 rounded-chip border border-dashed border-line px-4 py-3 text-xs text-dim">
+            Nenhum cartão compartilhado. Sem ele, cada morador precisa cadastrar o próprio cartão.
+          </p>
+        )}
       </div>
 
       {/* Configuração */}

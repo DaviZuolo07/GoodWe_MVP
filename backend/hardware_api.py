@@ -324,8 +324,17 @@ def receber_telemetria(payload: TelemetriaPayload, x_device_token: str = Header(
 # 5. Diagnóstico (só gestor)
 # ---------------------------------------------------------------------------
 
+def _ponto_do_gestor(carregador_id: str, gestor: dict) -> dict:
+    """Gestor só enxerga (e cutuca) equipamento do PRÓPRIO condomínio."""
+    c = recarga.carregador(carregador_id)
+    if c["condominio_id"] != gestor.get("condominio_id"):
+        raise HTTPException(status_code=404, detail="Carregador não encontrado.")
+    return c
+
+
 @router.get("/status/{carregador_id}")
-def status_dispositivo(carregador_id: str, _gestor: dict = Depends(gestor_logado)):
+def status_dispositivo(carregador_id: str, gestor: dict = Depends(gestor_logado)):
+    _ponto_do_gestor(carregador_id, gestor)
     d = dispositivos.dispositivo_do_carregador(carregador_id)
     if not d:
         raise HTTPException(status_code=404, detail="Nenhum dispositivo neste carregador")
@@ -342,8 +351,9 @@ def status_dispositivo(carregador_id: str, _gestor: dict = Depends(gestor_logado
 
 
 @router.post("/ping/{carregador_id}")
-def ping(carregador_id: str, _gestor: dict = Depends(gestor_logado)):
+def ping(carregador_id: str, gestor: dict = Depends(gestor_logado)):
     """Se o LED da placa piscar 3 vezes, a ponta inteira funciona."""
+    _ponto_do_gestor(carregador_id, gestor)
     if not dispositivos.enfileirar(carregador_id, "ping"):
         raise HTTPException(status_code=404, detail="Nenhum dispositivo neste carregador")
     return {"ok": True}

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { post } from '../lib/api.js'
+import { useCallback, useEffect, useState } from 'react'
+import { del, get, post } from '../lib/api.js'
 import { potencia } from '../lib/formato.js'
 import { useTema } from '../lib/tema.js'
 
@@ -103,28 +103,48 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState('')
   const [ok, setOk] = useState('')
+  const [cartoes, setCartoes] = useState({ pessoais: [], compartilhados: [] })
+
+  const carregarCartoes = useCallback(async () => {
+    try {
+      setCartoes(await get('/me/cartoes'))
+    } catch { /* a seção fica vazia; o resto da página continua */ }
+  }, [])
+
+  useEffect(() => { carregarCartoes() }, [carregarCartoes])
 
   async function vincularRfid(e) {
     e.preventDefault()
-    setErro('')
-    setOk('')
+    setErro(''); setOk('')
 
     const valor = uid.trim().toUpperCase()
     if (!valor) return
 
     setSalvando(true)
     try {
-      // A rota é /me/cartao: o backend vincula ao dono do token, não a um id
-      // que viesse na URL - era por ali que dava para pendurar o próprio
-      // cartão na conta de outro morador e carregar com o saldo dele.
-      const data = await post('/me/cartao', { rfid_uid: valor })
-      onUsuarioAtualizado?.({ rfid_uid: data.rfid_uid })
-      setOk('Cartão vinculado. Ele já autoriza recargas no leitor físico.')
+      // /me/cartao cadastra um cartão PESSOAL para o dono do token. Não há
+      // id na URL: era por ali que dava para pendurar o próprio cartão na
+      // conta de outro morador e carregar com o saldo dele.
+      await post('/me/cartao', { rfid_uid: valor })
+      await carregarCartoes()
+      onUsuarioAtualizado?.({})
+      setOk('Cartão pessoal cadastrado. Ele autoriza só as suas recargas.')
       setUid('')
     } catch (e) {
       setErro(e.message)
     } finally {
       setSalvando(false)
+    }
+  }
+
+  async function removerCartao(valor) {
+    setErro(''); setOk('')
+    try {
+      await del(`/me/cartao/${valor}`)
+      await carregarCartoes()
+      setOk('Cartão removido.')
+    } catch (e) {
+      setErro(e.message)
     }
   }
 
@@ -141,25 +161,11 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
-        {/* ---------------- RFID: a única parte que grava hoje ---------------- */}
+        {/* ---------------- Cartões RFID ---------------- */}
         <Secao
-          titulo="Cartão RFID"
-          descricao="Vincule o cartão físico que você aproxima do leitor para liberar a recarga."
+          titulo="Cartões RFID"
+          descricao="O cartão diz que você está no ponto. Quem paga é quem preparou a recarga no app."
         >
-          <div className="mb-5 flex items-center gap-3 rounded-chip border border-hair bg-raise/40 px-4 py-3">
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${usuario.rfid_uid ? 'bg-live' : 'bg-off'}`}
-            />
-            <div className="min-w-0">
-              <p className="text-sm text-ink">
-                {usuario.rfid_uid ? 'Cartão vinculado' : 'Nenhum cartão vinculado'}
-              </p>
-              {usuario.rfid_uid && (
-                <p className="num mt-0.5 truncate text-xs text-dim">{usuario.rfid_uid}</p>
-              )}
-            </div>
-          </div>
-
           {erro && (
             <p className="mb-3 rounded-chip border border-flux/30 bg-flux/10 px-3 py-2 text-xs text-flux">
               {erro}
@@ -168,6 +174,45 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
           {ok && (
             <p className="mb-3 rounded-chip border border-live/30 bg-live/10 px-3 py-2 text-xs text-live">
               {ok}
+            </p>
+          )}
+
+          {/* Cartão do condomínio: um plástico só, que atende todo mundo. */}
+          {cartoes.compartilhados?.length > 0 && (
+            <div className="mb-4 rounded-chip border border-hair bg-raise/40 px-4 py-3">
+              <p className="text-sm text-ink">Cartão do condomínio</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-dim">
+                Já existe um cartão compartilhado no seu condomínio
+                {cartoes.compartilhados.map((c) => ` (${c.uid})`).join('')}. Você pode usá-lo sem
+                cadastrar nada: prepare a recarga no app e aproxime. A cobrança sai da SUA carteira,
+                porque a recarga é sua.
+              </p>
+            </div>
+          )}
+
+          <p className="mb-2 text-xs uppercase tracking-wider text-dim">Meus cartões pessoais</p>
+          {cartoes.pessoais?.length > 0 ? (
+            <ul className="mb-4 space-y-2">
+              {cartoes.pessoais.map((c) => (
+                <li key={c.uid}
+                    className="flex items-center justify-between gap-3 rounded-chip border border-hair
+                               bg-raise/40 px-4 py-2.5">
+                  <div className="min-w-0">
+                    <p className="num truncate text-sm text-ink">{c.uid}</p>
+                    <p className="truncate text-xs text-dim">{c.apelido || 'Cartão pessoal'}</p>
+                  </div>
+                  <button onClick={() => removerCartao(c.uid)}
+                          className="shrink-0 text-xs text-dim transition-colors hover:text-flux">
+                    remover
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mb-4 rounded-chip border border-dashed border-line px-4 py-3 text-xs
+                          leading-relaxed text-dim">
+              Nenhum cartão pessoal. Cadastre um se quiser que só o SEU cartão libere as suas
+              recargas — é a trava mais forte, e dispensa o cartão do condomínio.
             </p>
           )}
 
@@ -188,13 +233,13 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
                          transition-all duration-200 hover:bg-flare hover:shadow-flux
                          disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {salvando ? 'Vinculando...' : usuario.rfid_uid ? 'Trocar cartão' : 'Vincular cartão'}
+              {salvando ? 'Cadastrando...' : 'Cadastrar cartão pessoal'}
             </button>
           </form>
 
           <p className="mt-3 text-xs leading-relaxed text-dim">
-            O UID aparece no monitor serial do ESP32 quando você aproxima o cartão. Cada cartão só
-            pode pertencer a um usuário — e só o dono da conta logada pode vinculá-lo.
+            Não sabe o UID? Prepare uma recarga no ponto físico e aproxime o cartão: a tela de espera
+            mostra o número lido e oferece o cadastro ali mesmo.
           </p>
         </Secao>
 

@@ -20,7 +20,7 @@ function minutos(min) {
   return `${Math.floor(min / 60)}h ${String(min % 60).padStart(2, '0')}m`
 }
 
-function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
+function FilaPanel({ charger, sessaoAtiva }) {
   // Este painel aparece duas vezes na árvore: na coluna lateral (xl) e no
   // fluxo (abaixo de xl). O CSS esconde uma, mas o React monta as duas — e o
   // supabase-js lança exceção se dois canais assinarem o mesmo tópico. Por
@@ -33,10 +33,10 @@ function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
 
   const carregarFila = useCallback(async () => {
     const { data } = await supabase
-      .from('fila')
-      // Sem o join em `usuarios`: a tabela é fechada pelo RLS e o nome dos
-      // vizinhos não sai do banco. Quem não é você aparece como "Morador".
-      .select('id, carregador_id, usuario_id, posicao, criado_em')
+      // v_fila_local: a view devolve posição e um "esse sou eu". Nem o nome
+      // nem o id dos vizinhos saem do banco.
+      .from('v_fila_local')
+      .select('id, carregador_id, posicao, criado_em, eh_meu')
       .eq('carregador_id', charger.id)
       .order('posicao')
 
@@ -57,7 +57,7 @@ function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
     }
   }, [carregarFila, charger.id, instancia])
 
-  const minhaPosicao = fila.find((f) => f.usuario_id === usuarioId)?.posicao || null
+  const minhaPosicao = fila.find((f) => f.eh_meu)?.posicao || null
 
   async function acao(caminho) {
     setErro('')
@@ -127,7 +127,7 @@ function FilaPanel({ charger, sessaoAtiva, usuarioId }) {
         ) : (
           <ol className="space-y-2">
             {fila.map((f) => {
-              const meu = f.usuario_id === usuarioId
+              const meu = f.eh_meu
               return (
                 <li
                   key={f.id}

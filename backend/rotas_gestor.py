@@ -20,11 +20,17 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+import cartoes
 import demanda
 from config import FUSO, para_datetime, supabase, um
 from identidade import gestor_logado
 
 router = APIRouter(prefix="/gestor", tags=["gestor"])
+
+
+class CartaoCondominio(BaseModel):
+    uid: str = Field(..., min_length=4, max_length=40)
+    apelido: Optional[str] = Field(None, max_length=40)
 
 
 class ConfigDemanda(BaseModel):
@@ -130,3 +136,31 @@ def configurar(payload: ConfigDemanda, gestor: dict = Depends(gestor_logado)):
     supabase.table("condominios").update(dados).eq("id", gestor["condominio_id"]).execute()
     # Mudou o limite: a divisão vale na hora, não no próximo ciclo.
     return {"success": True, "agora": demanda.alocar(gestor["condominio_id"])}
+
+
+# ---------------------------------------------------------------------------
+# Cartões compartilhados do condomínio
+# ---------------------------------------------------------------------------
+
+@router.get("/cartoes")
+def listar_cartoes(gestor: dict = Depends(gestor_logado)):
+    return cartoes.do_condominio(gestor["condominio_id"])
+
+
+@router.post("/cartoes")
+def cadastrar_cartao(payload: CartaoCondominio, gestor: dict = Depends(gestor_logado)):
+    """
+    Cartão compartilhado: prova PRESENÇA no ponto, não identidade. Autoriza a
+    recarga preparada ali, e a cobrança sai de quem a preparou no app. É o que
+    permite um único cartão físico atender todos os moradores.
+    """
+    return {"success": True,
+            "cartao": cartoes.registrar_compartilhado(gestor["condominio_id"], payload.uid,
+                                                      payload.apelido)}
+
+
+@router.delete("/cartoes/{uid}")
+def remover_cartao(uid: str, gestor: dict = Depends(gestor_logado)):
+    if not cartoes.remover(uid, condominio_id=gestor["condominio_id"]):
+        raise HTTPException(status_code=404, detail="Cartão não encontrado neste condomínio.")
+    return {"success": True}

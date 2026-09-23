@@ -20,7 +20,7 @@ from config import supabase, um
 from seguranca import usuario_atual
 
 CAMPOS_PUBLICOS = ("id, nome, papel, tipo_usuario, condominio_id, bloco_apto, "
-                   "saldo, rfid_uid, criado_em")
+                   "saldo, criado_em")
 
 
 def usuario_logado(usuario_id: str = Depends(usuario_atual)) -> dict:

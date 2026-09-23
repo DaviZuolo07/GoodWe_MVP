@@ -11,6 +11,7 @@ apenas o cartão DE QUEM ESTÁ LOGADO.
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+import cartoes
 import recarga
 from config import agora_iso, supabase
 from identidade import usuario_logado
@@ -24,18 +25,30 @@ class MeuCartaoRequest(BaseModel):
 
 @router.post("/meu-cartao")
 def aproximar_meu_cartao(payload: MeuCartaoRequest, usuario: dict = Depends(usuario_logado)):
-    """Faz o que o ESP32 faria ao ler o SEU cartão neste carregador."""
-    if not usuario.get("rfid_uid"):
-        raise HTTPException(status_code=400, detail="Vincule um cartão em Configurações primeiro.")
-    resposta = recarga.processar_cartao(payload.charger_id, usuario["rfid_uid"])
+    """
+    Faz o que o ESP32 faria ao ler um cartão válido seu neste carregador:
+    o pessoal, se você tiver um, senão o compartilhado do seu condomínio.
+    """
+    meus = cartoes.do_usuario(usuario["id"])
+    compartilhados = cartoes.do_condominio(usuario["condominio_id"]) if usuario.get("condominio_id") else []
+    disponivel = (meus or compartilhados)
+    if not disponivel:
+        raise HTTPException(status_code=400, detail=(
+            "Nenhum cartão cadastrado: registre um pessoal em Configurações ou peça ao "
+            "gestor para cadastrar o cartão do condomínio."))
+    resposta = recarga.processar_cartao(payload.charger_id, disponivel[0]["uid"])
     resposta.pop("sessao", None)
     return resposta
 
 
 @router.post("/esp32-online/{charger_id}")
-def simular_esp32_online(charger_id: str, _usuario: dict = Depends(usuario_logado)):
+def simular_esp32_online(charger_id: str, usuario: dict = Depends(usuario_logado)):
     """O que o handshake faria: ponto físico volta a disponível."""
     c = recarga.carregador(charger_id)
+    # Mesmo em demo, ninguém "conserta" ponto de outro condomínio: isso
+    # mascararia uma queda real de equipamento alheio.
+    if c["condominio_id"] != usuario.get("condominio_id"):
+        raise HTTPException(status_code=404, detail="Carregador não encontrado.")
     ativa = recarga.sessao_ativa_do_carregador(charger_id)
     supabase.table("carregadores").update({"status": "em_uso" if ativa else "disponivel"}) \
         .eq("id", charger_id).execute()

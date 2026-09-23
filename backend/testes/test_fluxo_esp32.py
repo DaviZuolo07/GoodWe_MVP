@@ -30,6 +30,8 @@ CLIENTE = TestClient(main.app)
 TOKEN_ESP = "gw_dev_token_de_teste"
 COND = "c0000000-0000-0000-0000-000000000002"
 PONTO = "b0000000-0000-0000-0000-000000000001"
+CARTAO_BANCADA = "A1B2C3D4"      # compartilhado: serve para todo mundo
+CARTAO_PESSOAL = "FFFF0001"      # pessoal do "Outro Morador"
 SENHA = "SenhaDemo#2026"
 
 ok_total = falhas = 0
@@ -57,14 +59,20 @@ def semear():
         "token_hash": hash_token_dispositivo(TOKEN_ESP), "online": False,
         "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2})
 
-    for uid, nome, saldo, rfid in [("u-gus", "Gus Bancada", 0.0, "A1B2C3D4"),
-                                   ("u-outro", "Outro Morador", 50.0, "FFFF0001")]:
+    for uid, nome, saldo in [("u-gus", "Gus Bancada", 0.0), ("u-outro", "Outro Morador", 50.0)]:
         fake.t("usuarios").append({"id": uid, "nome": nome, "tipo_usuario": "morador",
-                                   "condominio_id": COND, "bloco_apto": "A1", "saldo": saldo,
-                                   "rfid_uid": rfid})
+                                   "condominio_id": COND, "bloco_apto": "A1", "saldo": saldo})
         fake.t("credenciais_usuario").append({"usuario_id": uid, "senha_hash": gerar_hash_senha(SENHA)})
     fake.t("usuarios").append({"id": "u-sindico", "nome": "Sindico Portal", "tipo_usuario": "gestor",
-                               "condominio_id": COND, "saldo": 0, "rfid_uid": None})
+                               "condominio_id": COND, "saldo": 0})
+
+    # UM cartão físico, do CONDOMÍNIO, e um cartão pessoal do "Outro Morador".
+    fake.t("cartoes_rfid").append({"uid": CARTAO_BANCADA, "escopo": "compartilhado",
+                                   "condominio_id": COND, "apelido": "Cartão da bancada",
+                                   "ativo": True, "usuario_id": None})
+    fake.t("cartoes_rfid").append({"uid": CARTAO_PESSOAL, "escopo": "pessoal",
+                                   "usuario_id": "u-outro", "apelido": "Cartão do Outro",
+                                   "ativo": True, "condominio_id": None})
     fake.t("credenciais_usuario").append({"usuario_id": "u-sindico", "senha_hash": gerar_hash_senha(SENHA)})
 
     fake.t("veiculos").append({"id": "v-celular", "usuario_id": "u-gus",
@@ -93,8 +101,10 @@ def main_teste():
     checar(CLIENTE.get("/me").status_code == 401, "sem token, /me recusa")
     checar(CLIENTE.post("/me/carteira/creditar", json={"valor": 10}).status_code == 401,
            "sem token, não dá para creditar saldo")
-    r = CLIENTE.post("/me/cartao", json={"rfid_uid": "A1B2C3D4"}, headers=outro)
-    checar(r.status_code == 409, "cartão de outro morador não pode ser vinculado", r.text)
+    r = CLIENTE.post("/me/cartao", json={"rfid_uid": CARTAO_PESSOAL}, headers=gus)
+    checar(r.status_code == 409, "cartão pessoal de outro morador não pode ser roubado", r.text)
+    r = CLIENTE.post("/me/cartao", json={"rfid_uid": CARTAO_BANCADA}, headers=gus)
+    checar(r.status_code == 409, "cartão compartilhado não vira cartão pessoal de ninguém", r.text)
     checar(CLIENTE.get("/gestor/painel", headers=gus).status_code == 403,
            "morador não abre o painel do gestor")
 
@@ -138,19 +148,27 @@ def main_teste():
     esp("POST", f"/hardware/comandos/{cmds[0]['id']}/confirmar", {"sucesso": True})
 
     print("\n5. Cartão: dono, saldo e nova tentativa")
-    r = esp("POST", "/hardware/rfid", {"uid": "FFFF0001"}).json()
-    checar(not r["autorizado"] and r["motivo"] == "cartao_de_outro_usuario", "cartão de outro não libera", r)
-    checar(round(float(fake.t("usuarios")[1]["saldo"]), 2) == 50.0, "e não toca no saldo de quem passou o cartão")
+    r = esp("POST", "/hardware/rfid", {"uid": "DEADBEEF"}).json()
+    checar(not r["autorizado"] and r["motivo"] == "cartao_nao_cadastrado" and r["uid"] == "DEADBEEF",
+           "cartão desconhecido: recusa e devolve o uid para cadastro", r)
+    s_espera = [x for x in fake.t("sessoes_recarga") if x["status"] == "aguardando_rfid"][0]
+    checar(s_espera.get("ultimo_uid_lido") == "DEADBEEF", "uid lido fica na sessão para o app mostrar")
 
-    r = esp("POST", "/hardware/rfid", {"uid": "A1B2C3D4"}).json()
+    r = esp("POST", "/hardware/rfid", {"uid": CARTAO_PESSOAL}).json()
+    checar(not r["autorizado"] and r["motivo"] == "cartao_de_outro_usuario",
+           "cartão PESSOAL de outro morador não libera", r)
+    checar(round(float([u for u in fake.t("usuarios") if u["id"] == "u-outro"][0]["saldo"]), 2) == 50.0,
+           "e não toca no saldo do dono do cartão")
+
+    r = esp("POST", "/hardware/rfid", {"uid": CARTAO_BANCADA}).json()
     checar(not r["autorizado"] and r["motivo"] == "saldo_insuficiente" and r["continuar_aguardando"],
            "sem saldo: pede para adicionar e continua esperando", r)
 
     r = CLIENTE.post("/me/carteira/creditar", json={"valor": 5}, headers=gus)
     checar(r.status_code == 200 and r.json()["saldo_atual"] == 5.0, "morador adiciona saldo pelo app", r.text)
 
-    r = esp("POST", "/hardware/rfid", {"uid": "A1B2C3D4"}).json()
-    checar(r["autorizado"], "cartão aprovado na segunda tentativa", r)
+    r = esp("POST", "/hardware/rfid", {"uid": CARTAO_BANCADA}).json()
+    checar(r["autorizado"], "cartão compartilhado aprovado depois do crédito", r)
     reservado = r["valor_reservado"]
     checar(0 < reservado <= 5, f"valor reservado: R$ {reservado}")
     checar(CLIENTE.get("/me", headers=gus).json()["usuario"]["saldo"] == round(5 - reservado, 2),
@@ -218,6 +236,27 @@ def main_teste():
     checar(r.status_code == 200, "gestor muda o limite de potência", r.text)
     checar(CLIENTE.patch("/gestor/condominio", json={"limite_potencia_kw": 30},
                          headers=gus).status_code == 403, "morador não muda o limite")
+
+    print("\n10. O MESMO cartão, outro morador, outra carteira")
+    fake.t("veiculos").append({"id": "v-celular2", "usuario_id": "u-outro",
+                               "modelo": "Celular do Outro", "tipo": "celular",
+                               "capacidade_bateria_kwh": 0.015, "potencia_carro_kw": 0.018})
+    saldo_gus_antes = CLIENTE.get("/me", headers=gus).json()["usuario"]["saldo"]
+
+    r = CLIENTE.post("/recargas/preparar", json={"charger_id": PONTO, "veiculo_id": "v-celular2",
+                                                 "percentual_bateria_atual": 30, "alvo_percentual": 50},
+                     headers=outro)
+    checar(r.status_code == 200, "agora quem prepara é o Outro Morador", r.text)
+    esp("GET", "/hardware/comandos")
+    r = esp("POST", "/hardware/rfid", {"uid": CARTAO_BANCADA}).json()
+    checar(r["autorizado"], "o MESMO cartão da bancada autoriza a recarga do Outro", r)
+
+    saldo_outro = CLIENTE.get("/me", headers=outro).json()["usuario"]["saldo"]
+    saldo_gus = CLIENTE.get("/me", headers=gus).json()["usuario"]["saldo"]
+    checar(saldo_outro < 50.0, f"a reserva saiu da carteira do Outro (saldo {saldo_outro})")
+    checar(saldo_gus == saldo_gus_antes, "e não encostou no saldo do Gus")
+    sessao_outro = [x for x in fake.t("sessoes_recarga") if x["status"] == "carregando"][0]
+    checar(sessao_outro["usuario_id"] == "u-outro", "a sessão ativa é do Outro Morador")
 
     print(f"\n{ok_total} verificações passaram, {falhas} falharam.\n")
     return 1 if falhas else 0

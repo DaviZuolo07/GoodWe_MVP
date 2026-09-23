@@ -27,6 +27,7 @@ from datetime import timedelta
 
 from fastapi import HTTPException
 
+import cartoes
 import carteira
 import demanda
 import dispositivos
@@ -155,9 +156,6 @@ def preparar(usuario: dict, charger_id: str, veiculo_id: str, soc: float, alvo: 
         raise HTTPException(status_code=400, detail="O alvo precisa ser maior que a bateria atual.")
 
     fisico = charger.get("origem") == "hardware"
-    if fisico and not usuario.get("rfid_uid"):
-        raise HTTPException(status_code=400, detail=(
-            "Vincule seu cartão RFID em Configurações antes de usar o leitor físico."))
 
     ja = supabase.table("sessoes_recarga").select("id, usuario_id").eq("carregador_id", charger_id) \
         .eq("status", "aguardando_rfid").execute()
@@ -199,8 +197,13 @@ def preparar(usuario: dict, charger_id: str, veiculo_id: str, soc: float, alvo: 
     if fisico:
         dispositivos.enfileirar(charger_id, "solicitar_cartao", nova["id"],
                                 dispositivos.payload_pedido(nova))
+        # Existe algum cartão que consiga liberar esta recarga? O pessoal
+        # dela, ou o compartilhado do condomínio. Se não houver, a tela avisa
+        # antes de o morador ficar dois minutos encostando plástico à toa.
+        tem_cartao = bool(cartoes.do_usuario(usuario["id"])
+                          or cartoes.do_condominio(charger["condominio_id"]))
         return {"sessao": nova, "estimativa": est, "aguardando_cartao": True,
-                "saldo_suficiente": saldo_suficiente,
+                "saldo_suficiente": saldo_suficiente, "cartao_disponivel": tem_cartao,
                 "segundos_para_aproximar": SEGUNDOS_ESPERA_CARTAO}
 
     # Ponto simulado não tem leitor: o próprio app autoriza.
@@ -228,28 +231,54 @@ def sessao_ativa_do_carregador(carregador_id: str) -> dict | None:
 
 def processar_cartao(carregador_id: str, uid: str) -> dict:
     """
-    Decisão do cartão, SEM autenticação de dispositivo (a rota autentica).
-    Ordem: há recarga preparada aqui? o cartão é do dono? o saldo cobre?
+    Decisão do cartão (a rota já autenticou o dispositivo).
+
+    Ordem: existe recarga preparada aqui? o cartão está cadastrado? ele pode
+    confirmar ESTA recarga? o saldo de quem preparou cobre?
+
+    Quem paga é sempre o dono da SESSÃO - nunca o dono do cartão. Com o cartão
+    compartilhado do condomínio, isso é o que faz o mesmo plástico atender
+    todo mundo: quem preparou no app é quem é cobrado.
     """
-    uid = (uid or "").strip().upper()
+    try:
+        uid = cartoes.normalizar(uid)
+    except HTTPException:
+        return {"autorizado": False, "motivo": "uid_invalido", "continuar_aguardando": True,
+                "mensagem": "Leitura do cartão veio corrompida. Aproxime de novo."}
     s = sessao_aguardando(carregador_id)
     if not s:
         return {"autorizado": False, "motivo": "sem_recarga_preparada",
                 "mensagem": "Nenhuma recarga preparada aqui. Use o app primeiro.", "uid": uid}
 
-    u = um(supabase.table("usuarios").select("id, nome").eq("rfid_uid", uid).execute())
-    if not u:
-        return {"autorizado": False, "motivo": "cartao_nao_vinculado", "continuar_aguardando": True,
-                "mensagem": "Cartão não reconhecido. Vincule-o em Configurações.", "uid": uid}
+    charger = carregador(carregador_id)
+    cartao = cartoes.por_uid(uid)
 
-    if u["id"] != s["usuario_id"]:
-        # Cartão válido, mas de outra pessoa: NÃO cancela a espera do dono, e
-        # NUNCA cobra do dono do cartão. Era por aqui que um morador podia
-        # acabar pagando com o saldo de outro.
-        return {"autorizado": False, "motivo": "cartao_de_outro_usuario", "continuar_aguardando": True,
-                "mensagem": "Este ponto está aguardando o cartão de outro morador."}
+    if not cartao:
+        # Guarda o uid na sessão: o app mostra "cartão XXXX não cadastrado"
+        # com o botão de cadastrar, sem ninguém abrir o monitor serial.
+        supabase.table("sessoes_recarga").update({
+            "ultimo_uid_lido": uid, "motivo_recusa": "cartao_nao_cadastrado",
+        }).eq("id", s["id"]).eq("status", "aguardando_rfid").execute()
+        return {"autorizado": False, "motivo": "cartao_nao_cadastrado", "continuar_aguardando": True,
+                "uid": uid,
+                "mensagem": f"Cartão {uid} não cadastrado. Cadastre-o pelo app e aproxime de novo."}
 
-    return confirmar(s, metodo="rfid_hardware")
+    pode, recusa = cartoes.autoriza(cartao, s, charger["condominio_id"])
+    if not pode:
+        # NÃO cancela a espera do dono e NÃO cobra o dono do cartão.
+        supabase.table("sessoes_recarga").update({"ultimo_uid_lido": uid}) \
+            .eq("id", s["id"]).eq("status", "aguardando_rfid").execute()
+        mensagens = {
+            "cartao_de_outro_usuario": "Este cartão é pessoal de outro morador.",
+            "cartao_de_outro_condominio": "Este cartão pertence a outro condomínio.",
+        }
+        return {"autorizado": False, "motivo": recusa, "continuar_aguardando": True,
+                "mensagem": mensagens.get(recusa, "Cartão não autorizado aqui.")}
+
+    cartoes.marcar_uso(uid)
+    supabase.table("sessoes_recarga").update({"ultimo_uid_lido": uid}) \
+        .eq("id", s["id"]).eq("status", "aguardando_rfid").execute()
+    return confirmar({**s, "ultimo_uid_lido": uid}, metodo=f"rfid_{cartao['escopo']}")
 
 
 def confirmar(s: dict, metodo: str) -> dict:
@@ -292,6 +321,7 @@ def confirmar(s: dict, metodo: str) -> dict:
         "iniciado_em": agora_iso(),
         "expira_em": None,
         "motivo_recusa": None,
+        "ultimo_uid_lido": None,
         "custo_estimado": est["custo_estimado"],
         "valor_pre_autorizado": valor,
         "tempo_estimado_min": est["tempo_estimado_min"],
@@ -335,7 +365,7 @@ def _recusar_por_saldo(s: dict, valor: float, metodo: str) -> dict:
     recebe esta resposta é a placa, não o celular do morador.
     """
     tentativas = int(s.get("tentativas_cartao") or 0) + 1
-    if metodo != "rfid_hardware" or tentativas >= MAX_TENTATIVAS_CARTAO:
+    if not metodo.startswith("rfid_") or tentativas >= MAX_TENTATIVAS_CARTAO:
         _encerrar_espera(s, "recusada", "saldo_insuficiente", tentativas)
         return {"autorizado": False, "motivo": "saldo_insuficiente", "continuar_aguardando": False,
                 "mensagem": f"Saldo insuficiente para reservar {brl(valor)}. Recarga recusada."}

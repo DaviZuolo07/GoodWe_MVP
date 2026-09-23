@@ -14,6 +14,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+import cartoes
 import carteira
 from config import CONDOMINIO_PADRAO, CREDITO_MAXIMO, supabase, um
 from identidade import CAMPOS_PUBLICOS, usuario_logado
@@ -24,7 +25,6 @@ from seguranca import (SENHA_MAX, conferir_senha, emitir_token, gerar_hash_senha
 router = APIRouter(tags=["conta"])
 
 NOME_VALIDO = re.compile(r"[A-Za-zÀ-ÿ0-9 .'\-]{2,60}")
-UID_VALIDO = re.compile(r"[0-9A-F]{4,32}")
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,7 @@ class CreditoRequest(BaseModel):
 
 class CartaoRequest(BaseModel):
     rfid_uid: str = Field(..., min_length=4, max_length=40)
+    apelido: Optional[str] = Field(None, max_length=40)
 
 
 class FavoritoRequest(BaseModel):
@@ -88,14 +89,8 @@ def _resposta_autenticada(usuario: dict) -> dict:
     usuario = {k: usuario.get(k) for k in CAMPOS_PUBLICOS.replace(" ", "").split(",")}
     usuario["saldo"] = round(float(usuario.get("saldo") or 0), 2)
     return {"success": True, "usuario": usuario, "veiculo": vs[0] if vs else None,
-            "veiculos": vs, **emitir_token(usuario["id"])}
-
-
-def _normalizar_uid(uid: str) -> str:
-    limpo = re.sub(r"[\s:\-]", "", uid or "").upper()
-    if not UID_VALIDO.fullmatch(limpo):
-        raise HTTPException(status_code=400, detail="UID inválido: use só hexadecimal (ex.: A1B2C3D4).")
-    return limpo
+            "veiculos": vs, "cartoes": cartoes.do_usuario(usuario["id"]),
+            **emitir_token(usuario["id"])}
 
 
 def _placa(bruta: Optional[str]) -> Optional[str]:
@@ -206,7 +201,14 @@ def login(payload: LoginRequest, request: Request):
 def eu(usuario: dict = Depends(usuario_logado)):
     """O frontend relê daqui o saldo depois de cada movimento da carteira."""
     vs = _veiculos(usuario["id"])
-    return {"usuario": usuario, "veiculo": vs[0] if vs else None, "veiculos": vs}
+    return {
+        "usuario": usuario,
+        "veiculo": vs[0] if vs else None,
+        "veiculos": vs,
+        "cartoes": cartoes.do_usuario(usuario["id"]),
+        "cartoes_compartilhados": (cartoes.do_condominio(usuario["condominio_id"])
+                                   if usuario.get("condominio_id") else []),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +222,31 @@ def creditar(payload: CreditoRequest, usuario: dict = Depends(usuario_logado)):
     return {"success": True, "saldo_atual": saldo}
 
 
+@router.get("/me/cartoes")
+def meus_cartoes(usuario: dict = Depends(usuario_logado)):
+    """Os meus cartões pessoais + os compartilhados do condomínio onde moro."""
+    return {
+        "pessoais": cartoes.do_usuario(usuario["id"]),
+        "compartilhados": cartoes.do_condominio(usuario["condominio_id"]) if usuario.get("condominio_id") else [],
+    }
+
+
 @router.post("/me/cartao")
 def vincular_cartao(payload: CartaoRequest, usuario: dict = Depends(usuario_logado)):
-    uid = _normalizar_uid(payload.rfid_uid)
-    dono = um(supabase.table("usuarios").select("id").eq("rfid_uid", uid).execute())
-    if dono and dono["id"] != usuario["id"]:
-        raise HTTPException(status_code=409, detail="Esse cartão já está vinculado a outro usuário.")
-    supabase.table("usuarios").update({"rfid_uid": uid}).eq("id", usuario["id"]).execute()
-    return {"success": True, "rfid_uid": uid}
+    """
+    Cadastra um cartão PESSOAL. A partir daí ele autoriza só as recargas
+    desta conta. Não é obrigatório: onde há cartão compartilhado do
+    condomínio, ele já atende (ver cartoes.py).
+    """
+    cartao = cartoes.registrar_pessoal(usuario["id"], payload.rfid_uid, payload.apelido)
+    return {"success": True, "cartao": cartao, "rfid_uid": cartao["uid"]}
+
+
+@router.delete("/me/cartao/{uid}")
+def remover_cartao(uid: str, usuario: dict = Depends(usuario_logado)):
+    if not cartoes.remover(uid, usuario_id=usuario["id"]):
+        raise HTTPException(status_code=404, detail="Cartão não encontrado nos seus cartões.")
+    return {"success": True}
 
 
 @router.get("/me/veiculos")

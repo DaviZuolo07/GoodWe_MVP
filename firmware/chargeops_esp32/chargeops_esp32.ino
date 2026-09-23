@@ -426,8 +426,11 @@ void enviarTelemetria() {
   // latência do fim da recarga: não esperamos o próximo poll de comandos.
   bool deveLiberar = r["deve_liberar"] | false;
   if (releLigado && !deveLiberar) {
+    // `| "fim"` protege o printf quando o motivo vem nulo: as<String>() num
+    // campo ausente imprimiria "null" no lugar da explicação.
+    const char* motivo = r["motivo"] | "fim";
     Serial.printf("[FIM] %s - %.2f Wh entregues, R$ %.2f\n",
-                  r["motivo"].as<String>().c_str(), energiaWh, r["custo_ate_agora"] | 0.0);
+                  motivo, energiaWh, (double)(r["custo_ate_agora"] | 0.0));
     aplicarRele(false);
     estado = OCIOSO;
     piscarRapido(2);
@@ -465,15 +468,17 @@ void enviarCartao(String uid) {
   JsonDocument r;
   if (deserializeJson(r, resposta)) return;
 
-  String mensagem = r["mensagem"].as<String>();
+  const char* mensagem = r["mensagem"] | "";
   if (r["autorizado"] | false) {
     Serial.printf("[CARTAO] APROVADO - %s (reservado R$ %.2f)\n",
-                  mensagem.c_str(), r["valor_reservado"] | 0.0);
+                  mensagem, (double)(r["valor_reservado"] | 0.0));
     estado = AUTORIZADO;
     piscarRapido(2);
     buscarComandos();                 // o `liberar` costuma já estar na fila
   } else {
-    Serial.printf("[CARTAO] NEGADO - %s\n", mensagem.c_str());
+    // A mensagem do backend já traz o uid quando o cartão é desconhecido -
+    // o mesmo número aparece no app, com o botão de cadastrar.
+    Serial.printf("[CARTAO] NEGADO - %s\n", mensagem);
     piscarRapido(4);
     if (!(r["continuar_aguardando"] | false) && estado == AGUARDANDO_CARTAO) {
       estado = OCIOSO;

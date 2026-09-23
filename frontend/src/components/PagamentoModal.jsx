@@ -25,6 +25,7 @@ const ETAPAS = { BATERIA: 'bateria', CONFIRMAR: 'confirmar', AGUARDANDO: 'aguard
                  MONITOR: 'monitor', FIM: 'fim' }
 
 const MOTIVOS = {
+  cartao_nao_cadastrado: 'O cartão aproximado não está cadastrado.',
   tempo_esgotado: 'O tempo para aproximar o cartão se esgotou.',
   cancelado_pelo_usuario: 'A recarga foi cancelada.',
   saldo_insuficiente: 'Saldo insuficiente para esta recarga.',
@@ -81,6 +82,9 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
   const [creditando, setCreditando] = useState(false)
   const [mensagemFim, setMensagemFim] = useState('')
   const [saldo, setSaldo] = useState(usuario.saldo)
+  const [uidDesconhecido, setUidDesconhecido] = useState('')
+  const [semCartao, setSemCartao] = useState(false)
+  const [cadastrando, setCadastrando] = useState(false)
 
   const temSensor = charger.origem === 'hardware'
   const reserva = Math.max(previa?.custo_estimado || 0, 1)
@@ -114,6 +118,10 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
             setSemSaldo(false)
             setEtapa(ETAPAS.MONITOR)
             onSaldo?.()
+          } else if (nova.status === 'aguardando_rfid' && nova.motivo_recusa === 'cartao_nao_cadastrado') {
+            // A placa leu um cartão que o sistema não conhece. Em vez de
+            // mandar o morador abrir o monitor serial, mostramos o UID aqui.
+            setUidDesconhecido(nova.ultimo_uid_lido || '')
           } else if (nova.status === 'aguardando_rfid' && nova.motivo_recusa === 'saldo_insuficiente') {
             setSemSaldo(true)          // cartão lido, saldo curto: espera continua
           } else if (nova.status === 'recusada' || nova.status === 'cancelada') {
@@ -144,6 +152,7 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
       if (d.aguardando_cartao) {
         setSegundos(d.segundos_para_aproximar || 120)
         setSemSaldo(d.saldo_suficiente === false)
+        setSemCartao(d.cartao_disponivel === false)
         setEtapa(ETAPAS.AGUARDANDO)
       } else {
         setEtapa(ETAPAS.MONITOR)      // ponto simulado: o app é o cartão
@@ -153,6 +162,22 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
       setErro(e.message)
     } finally {
       setEnviando(false)
+    }
+  }
+
+  async function cadastrarCartao(escopo) {
+    setCadastrando(true)
+    try {
+      if (escopo === 'condominio') {
+        await post('/gestor/cartoes', { uid: uidDesconhecido, apelido: 'Cartão do ponto' })
+      } else {
+        await post('/me/cartao', { rfid_uid: uidDesconhecido })
+      }
+      setUidDesconhecido('')
+    } catch (e) {
+      setErro(e.message)
+    } finally {
+      setCadastrando(false)
     }
   }
 
@@ -307,10 +332,41 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
 
           <p className="mb-1 font-medium text-ink">Aproxime seu cartão do leitor</p>
           <p className="mb-5 text-xs leading-relaxed text-dim">
-            O leitor do carregador {charger.numero} já está pedindo o cartão. A recarga só começa na leitura.
+            O leitor do carregador {charger.numero} já está pedindo o cartão. A recarga só começa na
+            leitura — e a cobrança sai da sua carteira, porque a recarga é sua.
           </p>
 
-          {semSaldo ? (
+          {semCartao && !uidDesconhecido && (
+            <p className="mb-4 rounded-chip border border-queue/30 bg-queue/10 px-3 py-2 text-left
+                          text-xs leading-relaxed text-queue">
+              Nenhum cartão cadastrado ainda neste condomínio. Aproxime o cartão mesmo assim: a tela
+              mostra o número lido e oferece o cadastro na hora.
+            </p>
+          )}
+
+          {uidDesconhecido ? (
+            <div className="mb-4 rounded-panel border border-queue/40 bg-queue/10 p-4 text-left">
+              <p className="mb-1 text-sm font-medium text-queue">Cartão não cadastrado</p>
+              <p className="mb-3 text-xs leading-relaxed text-mute">
+                O leitor recebeu o cartão <span className="num text-ink">{uidDesconhecido}</span>, que o
+                sistema não conhece. Cadastre e aproxime de novo — a espera continua valendo.
+              </p>
+              <div className="flex flex-col gap-2">
+                <button disabled={cadastrando} onClick={() => cadastrarCartao('pessoal')}
+                        className="rounded-chip bg-flux py-2 text-sm font-medium text-white
+                                   transition hover:bg-flare disabled:opacity-40">
+                  Cadastrar como meu cartão pessoal
+                </button>
+                {usuario.tipo_usuario === 'gestor' && (
+                  <button disabled={cadastrando} onClick={() => cadastrarCartao('condominio')}
+                          className="rounded-chip bg-raise py-2 text-sm font-medium text-mute
+                                     transition hover:bg-line hover:text-ink disabled:opacity-40">
+                    Cadastrar como cartão do condomínio (serve para todos)
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : semSaldo ? (
             <div className="mb-4 rounded-panel border border-flux/40 bg-flux/10 p-4 text-left">
               <p className="mb-1 text-sm font-medium text-flux">Saldo insuficiente</p>
               <p className="mb-3 text-xs leading-relaxed text-mute">

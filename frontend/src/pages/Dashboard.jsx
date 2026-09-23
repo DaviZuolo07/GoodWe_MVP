@@ -24,7 +24,7 @@ import SuportePage from './SuportePage.jsx'
 const STATUS = {
   disponivel: { label: 'Disponível', cor: 'text-live', ponto: 'bg-live', borda: 'border-live/30', fundo: 'bg-live/10' },
   em_uso: { label: 'Em uso', cor: 'text-flux', ponto: 'bg-flux', borda: 'border-flux/30', fundo: 'bg-flux/10' },
-  fila: { label: 'Fila', cor: 'text-queue', ponto: 'bg-queue', borda: 'border-queue/30', fundo: 'bg-queue/10' },
+  manutencao: { label: 'Manutenção', cor: 'text-queue', ponto: 'bg-queue', borda: 'border-queue/30', fundo: 'bg-queue/10' },
   offline: { label: 'Offline', cor: 'text-dim', ponto: 'bg-off', borda: 'border-line', fundo: 'bg-raise' },
 }
 
@@ -218,9 +218,9 @@ function PainelCarregador({ charger, sessaoAtiva, ehMinhaSessao, onFechar, onIni
           </p>
         )}
 
-        {charger.status === 'fila' && (
-          <p className="rounded-chip border border-queue/25 bg-queue/8 px-4 py-3 text-center text-sm text-queue">
-            Aguardando liberação
+        {charger.status === 'offline' && (
+          <p className="rounded-chip border border-hair bg-raise/40 px-4 py-3 text-center text-sm text-dim">
+            Ponto offline: sem contato com o equipamento.
           </p>
         )}
       </div>
@@ -323,7 +323,9 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
           .select('*')
           .eq('status', 'carregando')
           .in('carregador_id', idsDoLocal),
-        supabase.from('fila').select('id').in('carregador_id', idsDoLocal),
+        // v_fila_local em vez da tabela: desde a migration 13 o id dos
+        // vizinhos não sai do banco (ver db/13_cartoes.sql).
+        supabase.from('v_fila_local').select('id').in('carregador_id', idsDoLocal),
         // Tudo que rodou hoje neste local, encerrado ou não. Sem isso, a
         // energia do dia zerava toda vez que uma recarga terminava — como se
         // o que já foi entregue deixasse de existir.
@@ -567,7 +569,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                     </div>
 
                     <div className="flex items-center gap-4">
-                      {['disponivel', 'em_uso', 'fila'].map((s) => (
+                      {['disponivel', 'em_uso', 'offline'].map((s) => (
                         <span key={s} className="flex items-center gap-2 text-xs text-mute">
                           <span className={`h-1.5 w-1.5 rounded-full ${STATUS[s].ponto}`} />
                           {STATUS[s].label}
@@ -607,13 +609,9 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                   {chargerSelecionado && (
                     <div className="mt-6 xl:hidden">
                       {painel}
-                      {chargerSelecionado.status === 'fila' && (
+                      {chargerSelecionado.status === 'em_uso' && (
                         <div className="mt-6">
-                          <FilaPanel
-                            charger={chargerSelecionado}
-                            sessaoAtiva={sessaoSelecionada}
-                            usuarioId={sessao.usuario.id}
-                          />
+                          <FilaPanel charger={chargerSelecionado} sessaoAtiva={sessaoSelecionada} />
                         </div>
                       )}
                     </div>
@@ -629,13 +627,9 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                 <p className="eyebrow mb-3">Detalhe</p>
                 {painel}
 
-                {chargerSelecionado?.status === 'fila' && (
+                {chargerSelecionado?.status === 'em_uso' && (
                   <div className="mt-6 border-t border-hair pt-6">
-                    <FilaPanel
-                      charger={chargerSelecionado}
-                      sessaoAtiva={sessaoSelecionada}
-                      usuarioId={sessao.usuario.id}
-                    />
+                    <FilaPanel charger={chargerSelecionado} sessaoAtiva={sessaoSelecionada} />
                   </div>
                 )}
 

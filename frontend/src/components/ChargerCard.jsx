@@ -6,7 +6,7 @@ import { brl, duracao, energia, potencia } from '../lib/formato.js'
 const STATUS = {
   disponivel: { label: 'Disponível', cor: 'text-live', dot: 'bg-live', borda: 'hover:border-live/50' },
   em_uso: { label: 'Em uso', cor: 'text-flux', dot: 'bg-flux', borda: 'hover:border-flux/50' },
-  fila: { label: 'Fila', cor: 'text-queue', dot: 'bg-queue', borda: 'hover:border-queue/50' },
+  manutencao: { label: 'Manutenção', cor: 'text-queue', dot: 'bg-queue', borda: 'hover:border-queue/50' },
   offline: { label: 'Offline', cor: 'text-dim', dot: 'bg-off', borda: 'hover:border-line' },
 }
 

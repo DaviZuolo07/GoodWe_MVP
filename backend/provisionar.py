@@ -16,6 +16,11 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
   python provisionar.py token-esp --carregador <uuid-do-carregador>
       Gera o token novo do ESP32, grava só o hash e mostra o token UMA vez.
 
+  python provisionar.py cartao-compartilhado --uid A1B2C3D4 --condominio <uuid>
+      Cadastra o cartão da bancada como cartão DO CONDOMÍNIO: autoriza a
+      recarga preparada no ponto e cobra de quem preparou no app. Um cartão
+      físico atende todos os moradores.
+
   python provisionar.py verificar
       Teste de invasão contra o banco real. Precisa de SUPABASE_ANON_KEY no
       .env (a mesma chave pública que o frontend usa). Imprime PASSOU/FALHOU.
@@ -127,6 +132,22 @@ def cmd_token_esp(args):
     print("O token antigo deixou de funcionar.\n")
 
 
+def cmd_cartao_compartilhado(args):
+    """
+    Cadastra o cartão físico da bancada como CARTÃO DO CONDOMÍNIO.
+
+    Ele não pertence a ninguém: autoriza a recarga que estiver preparada no
+    ponto e a cobrança sai de quem preparou no app. É isso que faz um único
+    cartão atender todos os moradores na demonstração.
+    """
+    import cartoes
+    cartao = cartoes.registrar_compartilhado(args.condominio, args.uid, args.apelido)
+    print(f"\nCartão {cartao['uid']} cadastrado como compartilhado "
+          f"({cartao.get('apelido')}) no condomínio {args.condominio}.")
+    print("Agora qualquer morador desse condomínio pode preparar a recarga no app,")
+    print("encostar este cartão e ser cobrado na própria carteira.\n")
+
+
 def cmd_verificar(_args):
     """
     Cada caso tenta algo que deveria ser PROIBIDO. Passar = foi bloqueado.
@@ -216,6 +237,12 @@ def main():
     t = sub.add_parser("token-esp")
     t.add_argument("--carregador", required=True)
     t.set_defaults(fn=cmd_token_esp)
+
+    c = sub.add_parser("cartao-compartilhado")
+    c.add_argument("--uid", required=True, help="UID lido pelo leitor (ex.: A1B2C3D4)")
+    c.add_argument("--condominio", required=True, help="UUID do condomínio")
+    c.add_argument("--apelido", default="Cartão da bancada")
+    c.set_defaults(fn=cmd_cartao_compartilhado)
 
     sub.add_parser("verificar").set_defaults(fn=cmd_verificar)
 
