@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+AUDITORIA.md
 
 # Firmware: credenciais reais da placa (o exemplo fica versionado)
 firmware/**/segredos.h
