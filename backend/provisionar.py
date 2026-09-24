@@ -16,6 +16,11 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
   python provisionar.py token-esp --carregador <uuid-do-carregador>
       Gera o token novo do ESP32, grava só o hash e mostra o token UMA vez.
 
+  python provisionar.py limpar
+      Mostra o que existe de operação no banco (recargas, fila, pagamentos,
+      extrato, leituras). Repita com --sim para apagar, e --contas para
+      remover também os cadastros de teste. Estrutura e cartões ficam.
+
   python provisionar.py ponto-fisico --carregador <uuid> [--perfil bancada]
       Converte qualquer carregador em ponto físico: marca origem=hardware,
       cria o dispositivo e devolve o token da placa. Não há carregador
@@ -135,6 +140,127 @@ def cmd_token_esp(args):
     print(f"  {token}\n")
     print("Cole em DEVICE_TOKEN no firmware/chargeops_esp32/segredos.h e grave na placa.")
     print("O token antigo deixou de funcionar.\n")
+
+
+# Contas que nascem das migrations. Tudo fora desta lista é cadastro de
+# teste e pode ser apagado pelo comando `limpar --contas`.
+USUARIOS_DO_SEED = (
+    "22222222-2222-2222-2222-222222222222",   # Davi Zuolo        (02_seed)
+    "e0000000-0000-0000-0000-000000000001",   # Sindico Portal    (12_produto)
+    "e0000000-0000-0000-0000-000000000002",   # Sindico FIAP      (12_produto)
+    "e0000000-0000-0000-0000-000000000003",   # Gus Bancada       (12_produto)
+)
+
+# Tabelas de OPERAÇÃO: o histórico do que aconteceu. Apagar não quebra nada -
+# condomínios, carregadores, dispositivos e cartões ficam de pé.
+TABELAS_OPERACIONAIS = (
+    ("comandos_dispositivo", "id"),
+    ("leituras_hardware", "id"),
+    ("movimentacoes_carteira", "id"),
+    ("pagamentos", "id"),
+    ("fila", "id"),
+    ("notificacoes", "id"),
+    ("chat_mensagens", "id"),
+    ("sessoes_recarga", "id"),
+    ("consumo_horario", "hora"),
+)
+
+
+def _contar(sb, tabela, coluna):
+    try:
+        r = sb.table(tabela).select(coluna, count="exact").limit(1).execute()
+        if getattr(r, "count", None) is not None:
+            return r.count
+    except Exception:
+        pass
+    try:                                  # sem count exato: conta as linhas
+        return len(sb.table(tabela).select(coluna).execute().data or [])
+    except Exception:
+        return 0
+
+
+def _apagar_tudo(sb, tabela, coluna):
+    """PostgREST exige um filtro em DELETE. Este casa com qualquer linha."""
+    if coluna == "hora":
+        return sb.table(tabela).delete().gte("hora", "1970-01-01").execute()
+    return sb.table(tabela).delete().neq(coluna, "00000000-0000-0000-0000-000000000000").execute()
+
+
+def cmd_limpar(args):
+    """
+    Zera a operação: recargas, fila, pagamentos, extrato, notificações,
+    leituras do ESP32, comandos e histórico do chat.
+
+    O que NUNCA é apagado: condomínios, carregadores, dispositivos (e portanto
+    o token da placa) e os cartões cadastrados. A estrutura fica de pé; some
+    só o que "aconteceu".
+
+    Com --contas, apaga também os cadastros de teste - qualquer usuário que
+    não venha das migrations. O CASCADE do banco leva junto os veículos,
+    credenciais, cartões pessoais e favoritos dessas contas.
+
+    Sem --sim, só mostra o que seria apagado.
+    """
+    sb = _supabase()
+
+    print("\nInventário atual:\n")
+    total = 0
+    for tabela, coluna in TABELAS_OPERACIONAIS:
+        n = _contar(sb, tabela, coluna)
+        total += n
+        print(f"  {tabela:<24} {n:>6} linha(s)")
+
+    ativas = sb.table("sessoes_recarga").select(
+        "id, status, carregador_id, veiculos(modelo)"
+    ).in_("status", ["carregando", "aguardando_rfid"]).execute().data or []
+    if ativas:
+        print("\n  Recargas presas (é o que trava o carregador na tela):")
+        for a in ativas:
+            print(f"    {a['id']}  {a['status']:<17} {(a.get('veiculos') or {}).get('modelo', '?')}")
+
+    usuarios = sb.table("usuarios").select("id, nome, tipo_usuario").execute().data or []
+    extras = [u for u in usuarios if u["id"] not in USUARIOS_DO_SEED]
+    print(f"\n  Contas do seed ...: {len(usuarios) - len(extras)}")
+    print(f"  Cadastros de teste: {len(extras)}")
+    for u in extras:
+        print(f"    {u['nome']} ({u['tipo_usuario']})")
+
+    if not args.sim:
+        print("\nNada foi apagado. Para executar de verdade, repita com --sim")
+        print("  (e acrescente --contas para remover também os cadastros de teste).\n")
+        return
+
+    print("\nApagando...")
+    for tabela, coluna in TABELAS_OPERACIONAIS:
+        _apagar_tudo(sb, tabela, coluna)
+        print(f"  {tabela} limpo")
+
+    if args.contas and extras:
+        for u in extras:
+            sb.table("usuarios").delete().eq("id", u["id"]).execute()
+        print(f"  {len(extras)} cadastro(s) de teste removido(s)")
+
+    # Carregador preso em 'em_uso' por causa de sessão que não existe mais.
+    # Ponto físico volta a 'offline' até a placa fazer handshake de novo.
+    fisicos = {c["id"] for c in (sb.table("carregadores").select("id")
+                                 .eq("origem", "hardware").execute().data or [])}
+    for c in (sb.table("carregadores").select("id").execute().data or []):
+        sb.table("carregadores").update({
+            "status": "offline" if c["id"] in fisicos else "disponivel",
+            "temperatura_c": 25,
+        }).eq("id", c["id"]).execute()
+    print("  carregadores liberados")
+
+    sb.table("dispositivos").update({"online": False}).neq(
+        "id", "00000000-0000-0000-0000-000000000000").execute()
+
+    if args.saldo is not None:
+        for u in (sb.table("usuarios").select("id").execute().data or []):
+            sb.table("usuarios").update({"saldo": args.saldo}).eq("id", u["id"]).execute()
+        print(f"  saldo de todas as contas ajustado para R$ {args.saldo:.2f}")
+
+    print("\nBanco limpo. A estrutura (condomínios, carregadores, dispositivos,")
+    print("cartões) continua intacta - o token da placa segue valendo.\n")
 
 
 def cmd_ponto_fisico(args):
@@ -293,6 +419,12 @@ def main():
     t = sub.add_parser("token-esp")
     t.add_argument("--carregador", required=True)
     t.set_defaults(fn=cmd_token_esp)
+
+    l = sub.add_parser("limpar")
+    l.add_argument("--sim", action="store_true", help="executa de verdade (sem isto, só mostra)")
+    l.add_argument("--contas", action="store_true", help="apaga também os cadastros de teste")
+    l.add_argument("--saldo", type=float, help="ajusta o saldo de todas as contas (ex.: 0)")
+    l.set_defaults(fn=cmd_limpar)
 
     f = sub.add_parser("ponto-fisico")
     f.add_argument("--carregador", required=True, help="UUID do carregador que ganhará uma placa")
