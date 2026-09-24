@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 AUDITORIA.md
+HANDOFF_FRONTEND.md
 
 # Firmware: credenciais reais da placa (o exemplo fica versionado)
 firmware/**/segredos.h
