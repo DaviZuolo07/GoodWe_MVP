@@ -6,6 +6,7 @@
 # Firmware: credenciais reais da placa (o exemplo fica versionado)
 firmware/**/segredos.h
 
+
 # Resultados locais do eval
 backend/evals/resultados/
 
