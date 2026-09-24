@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../supabaseClient.js'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase, canal as novoCanal } from '../supabaseClient.js'
 import { get } from '../lib/api.js'
 import { brl, duracao, energia, horaCurta, num, potencia } from '../lib/formato.js'
 
@@ -68,6 +68,12 @@ function MonitorRecarga({ sessaoId, sessaoInicial, temSensor, onEncerrada, compa
   const [s, setS] = useState(sessaoInicial || null)
   const [leituras, setLeituras] = useState([])
 
+  // O callback do pai costuma ser uma arrow function nova a cada render. Se
+  // entrasse nas dependências do efeito, o canal seria recriado a cada
+  // render do pai. Guardado num ref, o efeito depende só da sessão.
+  const onEncerradaRef = useRef(onEncerrada)
+  useEffect(() => { onEncerradaRef.current = onEncerrada }, [onEncerrada])
+
   // A linha da sessão: uma leitura e depois só Realtime.
   useEffect(() => {
     if (!sessaoId) return
@@ -79,18 +85,17 @@ function MonitorRecarga({ sessaoId, sessaoInicial, temSensor, onEncerrada, compa
     }
     carregar()
 
-    const canal = supabase
-      .channel(`monitor-${sessaoId}`)
+    const canal = novoCanal(`monitor-${sessaoId}`)
       .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'sessoes_recarga', filter: `id=eq.${sessaoId}` },
         (evento) => {
           setS(evento.new)
-          if (evento.new.status !== 'carregando') onEncerrada?.(evento.new)
+          if (evento.new.status !== 'carregando') onEncerradaRef.current?.(evento.new)
         })
       .subscribe()
 
     return () => { vivo = false; supabase.removeChannel(canal) }
-  }, [sessaoId, onEncerrada])
+  }, [sessaoId])
 
   // Série do medidor: carga inicial + cada leitura nova por Realtime.
   useEffect(() => {
@@ -101,8 +106,7 @@ function MonitorRecarga({ sessaoId, sessaoInicial, temSensor, onEncerrada, compa
       .then((dados) => { if (vivo) setLeituras((dados || []).slice().reverse().slice(-60)) })
       .catch(() => {})
 
-    const canal = supabase
-      .channel(`leituras-${sessaoId}`)
+    const canal = novoCanal(`leituras-${sessaoId}`)
       .on('postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'leituras_hardware', filter: `sessao_id=eq.${sessaoId}` },
         (evento) => setLeituras((atual) => [...atual, evento.new].slice(-60)))

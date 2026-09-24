@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { brl, energia as fmtEnergia } from '../lib/formato.js'
+import ReciboModal from '../components/ReciboModal.jsx'
 
 /**
  * Histórico de recargas — só as sessões do usuário logado.
@@ -70,7 +71,7 @@ function Resumo({ sessoes }) {
   )
 }
 
-function LinhaSessao({ s }) {
+function LinhaSessao({ s, onAbrir }) {
   const st = STATUS[s.status] || STATUS.cancelada
   const custo = Number(s.custo_final ?? s.custo_estimado ?? 0)
   const estorno = Number(s.valor_estornado ?? 0)
@@ -78,7 +79,13 @@ function LinhaSessao({ s }) {
   const final = s.percentual_bateria_atual
 
   return (
-    <div className="sweep group relative overflow-hidden border-b border-hair px-5 py-4 transition-colors duration-200 last:border-0 hover:bg-raise/40">
+    <button
+      type="button"
+      onClick={() => onAbrir(s.id)}
+      aria-label={`Ver recibo da recarga no ponto ${s.carregadores?.numero || ''}`}
+      className="sweep group relative block w-full overflow-hidden border-b border-hair px-5 py-4 text-left
+                 transition-colors duration-200 last:border-0 hover:bg-raise/40 focus-visible:bg-raise/40"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2.5">
@@ -126,7 +133,14 @@ function LinhaSessao({ s }) {
           <dd className="mt-0.5 text-sm capitalize text-mute">{s.origem || '—'}</dd>
         </div>
       </dl>
-    </div>
+
+      <p className="mt-3 flex items-center gap-1.5 text-xs font-medium text-mute transition-colors group-hover:text-flux">
+        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3z" /><path d="M9 8h6M9 12h6" />
+        </svg>
+        Ver recibo
+      </p>
+    </button>
   )
 }
 
@@ -135,6 +149,7 @@ function HistoricoPage({ sessao }) {
 
   const [sessoes, setSessoes] = useState([])
   const [carregando, setCarregando] = useState(true)
+  const [reciboId, setReciboId] = useState(null)
 
   useEffect(() => {
     let cancelado = false
@@ -166,7 +181,7 @@ function HistoricoPage({ sessao }) {
           Histórico de Recargas
         </h2>
         <p className="mt-1 text-sm text-dim">
-          Suas recargas, com energia medida, custo real e o que foi estornado.
+          Suas recargas, com energia medida, custo real e o que foi estornado. Toque numa recarga para ver o recibo.
         </p>
       </div>
 
@@ -189,11 +204,13 @@ function HistoricoPage({ sessao }) {
           <Resumo sessoes={sessoes} />
           <div className="overflow-hidden rounded-panel border border-line bg-panel">
             {sessoes.map((s) => (
-              <LinhaSessao key={s.id} s={s} />
+              <LinhaSessao key={s.id} s={s} onAbrir={setReciboId} />
             ))}
           </div>
         </>
       )}
+
+      {reciboId && <ReciboModal sessaoId={reciboId} onFechar={() => setReciboId(null)} />}
     </div>
   )
 }

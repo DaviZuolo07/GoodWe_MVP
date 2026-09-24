@@ -24,7 +24,13 @@ import { del, get, post } from '../lib/api.js'
  * thread é o tipo de coisa que confunde quem assiste.
  */
 
+// Pergunta que demonstra a gestão de demanda no vocabulário do morador: a
+// resposta explica se a lentidão vem do limite do prédio, do sensor ou da
+// curva da bateria. Fica visível mesmo depois que a conversa começa.
+const PERGUNTA_FIXA = 'Por que minha recarga está lenta?'
+
 const SUGESTOES = [
+  PERGUNTA_FIXA,
   'Quais carregadores estão disponíveis?',
   'Qual o preço por kWh aqui?',
   'Quanto tempo falta para minha recarga?',
@@ -506,6 +512,20 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
                 {s}
               </button>
             ))}
+          </div>
+        )}
+
+        {mensagens.length > 0 && (
+          <div className="px-5 pb-2">
+            <button
+              type="button"
+              onClick={() => enviar(PERGUNTA_FIXA)}
+              disabled={pensando}
+              className="rounded-chip border border-line bg-raise/40 px-3 py-1.5 text-xs text-mute transition-colors
+                         duration-200 hover:border-flux/40 hover:bg-flux/10 hover:text-ink disabled:opacity-40"
+            >
+              {PERGUNTA_FIXA}
+            </button>
           </div>
         )}
 

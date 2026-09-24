@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { supabase } from '../supabaseClient.js'
+import { supabase, canal as novoCanal } from '../supabaseClient.js'
 
 /**
  * Notificações do usuário logado.
@@ -46,8 +46,7 @@ function NotificacoesPage({ sessao }) {
   useEffect(() => {
     carregar()
 
-    const canal = supabase
-      .channel('notificacoes-page')
+    const canal = novoCanal('notificacoes-page')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notificacoes' }, carregar)
       .subscribe()
 

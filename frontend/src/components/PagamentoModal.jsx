@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { post } from '../lib/api.js'
-import { supabase } from '../supabaseClient.js'
-import { brl, duracao, energia, num, potencia } from '../lib/formato.js'
+import { supabase, canal as novoCanal } from '../supabaseClient.js'
+import { brl, duracao, energia, horaCurta, num, potencia } from '../lib/formato.js'
 import MonitorRecarga from './MonitorRecarga.jsx'
+import ReciboModal from './ReciboModal.jsx'
 
 /**
  * Início de recarga - o fluxo do cartão, de ponta a ponta.
@@ -37,6 +38,94 @@ function Linha({ rotulo, valor, cor }) {
     <div className="flex justify-between text-sm">
       <span className="text-dim">{rotulo}</span>
       <span className={`num ${cor || 'text-ink'}`}>{valor}</span>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------------------
+   Cobrança em duas linhas: o que custa e o que sai do saldo agora.
+   São números diferentes por causa da reserva mínima, e esconder isso fazia
+   o morador ver R$ 1,00 sumir sem entender por quê.
+   -------------------------------------------------------------------------- */
+function ResumoCobranca({ previa, saldo }) {
+  const custo = previa?.custo_estimado
+  const reservado = previa?.valor_reserva
+  const difere = reservado != null && custo != null && reservado > custo
+  const suficiente = previa?.saldo_suficiente !== false
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-panel border border-line">
+      <div className="grid grid-cols-2 divide-x divide-hair">
+        <div className="px-4 py-3">
+          <p className="text-[0.6875rem] text-dim">Custo estimado</p>
+          <p className="num mt-0.5 text-xl font-semibold text-ink">{brl(custo)}</p>
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-[0.6875rem] text-dim">Reservado agora</p>
+          <p className="num mt-0.5 text-xl font-semibold text-ink">{brl(reservado ?? custo)}</p>
+        </div>
+      </div>
+      <div className="border-t border-hair bg-raise/40 px-4 py-2.5">
+        {difere ? (
+          <p className="text-xs leading-relaxed text-mute">
+            A reserva mínima é maior que o custo desta recarga. No fim, cobramos só o
+            que for consumido e <span className="text-ink">a diferença volta para a carteira</span>.
+          </p>
+        ) : (
+          <p className="text-xs leading-relaxed text-mute">
+            No fim, cobramos só o que for consumido. Se sobrar, a diferença volta para a carteira.
+          </p>
+        )}
+        <div className="mt-2 flex items-baseline justify-between text-xs">
+          <span className="text-dim">Seu saldo</span>
+          <span className={`num ${suficiente ? 'text-live' : 'text-flux'}`}>{brl(saldo)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------------------
+   Horário de ponta: só aparece quando o backend calculou economia real.
+   A economia é integrada no tempo pelo backend (mesma regra da cobrança) —
+   aqui ninguém subtrai nada.
+   -------------------------------------------------------------------------- */
+function CardPonta({ previa, onEsperar }) {
+  const fim = previa.ponta_termina_em ? horaCurta(previa.ponta_termina_em) : null
+  const energiaPonta = Number(previa.energia_ponta_estimada_kwh) || 0
+
+  return (
+    <div className="mb-4 rounded-panel border border-queue/40 bg-queue/8 p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-queue/40 text-queue">
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" />
+          </svg>
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-ink">Agora é horário de ponta</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-mute">
+            A energia está {num(previa.multiplicador_ponta, 2)}× mais cara
+            {fim ? ` até as ${fim}` : ''}.
+            {energiaPonta > 0 && <> Desta recarga, {energia(energiaPonta)} cairiam dentro da ponta.</>}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1.5 rounded-chip bg-panel/70 px-3 py-2.5">
+        <Linha rotulo="Começando agora" valor={brl(previa.custo_estimado)} />
+        <Linha rotulo="Economia se esperar"
+               valor={brl(previa.economia_se_esperar)} cor="text-live" />
+      </div>
+
+
+      {onEsperar && (
+        <button onClick={onEsperar}
+                className="mt-3 w-full rounded-chip border border-queue/40 py-2 text-sm font-medium text-queue
+                           transition hover:bg-queue/10">
+          {fim ? `Vou esperar até as ${fim}` : 'Vou esperar'}
+        </button>
+      )}
     </div>
   )
 }
@@ -87,7 +176,12 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
   const [cadastrando, setCadastrando] = useState(false)
 
   const temSensor = charger.origem === 'hardware'
-  const reserva = Math.max(previa?.custo_estimado || 0, 1)
+  // O valor que SAI do saldo agora vem pronto do backend (valor_reserva).
+  // O fallback só existe para um backend anterior a esse campo.
+  const reserva = previa?.valor_reserva ?? Math.max(previa?.custo_estimado || 0, 1)
+  const [filaPosicao, setFilaPosicao] = useState(null)
+  const [reciboAberto, setReciboAberto] = useState(false)
+  const [entrandoFila, setEntrandoFila] = useState(false)
 
   // --- Prévia: sempre do backend ------------------------------------------
   useEffect(() => {
@@ -108,8 +202,7 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
   useEffect(() => {
     if (!sessaoPreparada?.id || (etapa !== ETAPAS.AGUARDANDO && etapa !== ETAPAS.MONITOR)) return
 
-    const canal = supabase
-      .channel(`espera-cartao-${sessaoPreparada.id}`)
+    const canal = novoCanal(`espera-cartao-${sessaoPreparada.id}`)
       .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'sessoes_recarga', filter: `id=eq.${sessaoPreparada.id}` },
         (evento) => {
@@ -277,33 +370,64 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
             <Linha rotulo="Carga" valor={`${percentual}% → ${alvo}%`} />
             <Linha rotulo="Energia necessária" valor={energia(previa?.energia_necessaria_kwh)} />
             <Linha rotulo="Tempo estimado" valor={duracao(previa?.tempo_estimado_min)} />
-            <Linha rotulo="Potência liberada" valor={potencia(previa?.potencia_efetiva_kw)} />
-            <hr className="border-line" />
+            <Linha rotulo="Potência liberada" valor={potencia(previa?.potencia_efetiva_kw)}
+                   cor={previa?.limitado_pela_demanda ? 'text-queue' : undefined} />
             <Linha rotulo={`Tarifa${previa?.em_ponta ? ' (ponta)' : ''}`}
                    valor={`${brl(previa?.tarifa_kwh)} / kWh`} cor={previa?.em_ponta ? 'text-queue' : undefined} />
-            <Linha rotulo="Custo estimado" valor={brl(previa?.custo_estimado)} />
-            <Linha rotulo="Seu saldo" valor={brl(saldo)}
-                   cor={previa && saldo < reserva ? 'text-flux' : 'text-live'} />
           </div>
 
-          {previa?.em_ponta && (
+          {previa?.em_ponta && Number(previa.economia_se_esperar) > 0 ? (
+            <CardPonta previa={previa} onEsperar={onClose} />
+          ) : previa?.em_ponta ? (
             <p className="mb-3 rounded-chip border border-queue/30 bg-queue/10 px-3 py-2 text-xs leading-relaxed text-queue">
-              Horário de ponta: a tarifa está {num(previa.multiplicador_ponta, 2)}x maior e o condomínio libera menos
-              potência. Fora da ponta, a mesma energia sairia por{' '}
-              {brl(previa.energia_necessaria_kwh * previa.tarifa_base_kwh)}.
+              Horário de ponta: a tarifa está {num(previa.multiplicador_ponta, 2)}× maior e o condomínio libera menos
+              potência.
             </p>
-          )}
+          ) : null}
+
           {previa?.limitado_pela_demanda && (
-            <p className="mb-3 rounded-chip border border-queue/30 bg-queue/10 px-3 py-2 text-xs leading-relaxed text-queue">
-              A gestão de demanda liberou {potencia(previa.potencia_prevista_kw)} para este ponto agora, por causa das
-              outras recargas em andamento. O tempo acima já considera isso.
-            </p>
+            <div className="mb-3 rounded-chip border border-queue/30 bg-queue/10 px-3 py-2.5">
+              <p className="text-xs font-medium text-queue">Recarga mais lenta por causa do prédio</p>
+              <p className="mt-1 text-xs leading-relaxed text-mute">
+                Outras recargas estão em andamento, e a gestão de demanda divide a potência do condomínio
+                entre elas. Este ponto recebe {potencia(previa.potencia_prevista_kw)} agora
+                {charger.potencia_maxima_kw ? <> (ele chega a {potencia(charger.potencia_maxima_kw)})</> : null}.
+                O tempo acima já considera isso.
+              </p>
+            </div>
           )}
+
           {previa && !previa.admissao?.ok && (
-            <p className="mb-3 rounded-chip border border-flux/30 bg-flux/10 px-3 py-2 text-xs leading-relaxed text-flux">
-              {previa.admissao.mensagem}
-            </p>
+            <div className="mb-3 rounded-chip border border-flux/30 bg-flux/10 px-3 py-2.5">
+              <p className="text-xs font-medium text-flux">O condomínio está no limite de potência</p>
+              <p className="mt-1 text-xs leading-relaxed text-mute">{previa.admissao.mensagem}</p>
+              {filaPosicao ? (
+                <p className="mt-2 text-xs font-medium text-ink">
+                  Você entrou na fila deste ponto na posição <span className="num">{filaPosicao}</span>.
+                </p>
+              ) : (
+                <button
+                  disabled={entrandoFila}
+                  onClick={async () => {
+                    setEntrandoFila(true); setErro('')
+                    try {
+                      const d = await post(`/fila/${charger.id}/entrar`)
+                      setFilaPosicao(d?.posicao || '—')
+                    } catch (e) {
+                      setErro(e.message)
+                    } finally {
+                      setEntrandoFila(false)
+                    }
+                  }}
+                  className="mt-2.5 w-full rounded-chip border border-flux/40 py-2 text-sm font-medium text-flux
+                             transition hover:bg-flux/10 disabled:opacity-40">
+                  {entrandoFila ? 'Entrando na fila...' : 'Entrar na fila deste ponto'}
+                </button>
+              )}
+            </div>
           )}
+
+          {previa && <ResumoCobranca previa={previa} saldo={saldo} />}
 
           {calculando && !previa ? (
             <p className="py-2 text-center text-sm text-dim">Calculando...</p>
@@ -311,7 +435,10 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
             <button onClick={preparar} disabled={enviando || !previa || !previa.admissao?.ok}
                     className="w-full rounded-chip bg-flux py-2.5 font-medium text-white transition
                                hover:bg-flare disabled:opacity-40">
-              {enviando ? 'Preparando...' : temSensor ? 'Confirmar e aproximar cartão' : 'Confirmar e iniciar'}
+              {enviando ? 'Preparando...'
+                : previa?.em_ponta && Number(previa.economia_se_esperar) > 0
+                  ? (temSensor ? 'Carregar agora e aproximar cartão' : 'Carregar agora')
+                  : temSensor ? 'Confirmar e aproximar cartão' : 'Confirmar e iniciar'}
             </button>
           )}
         </div>
@@ -429,6 +556,13 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
         <div className="py-3 text-center">
           <p className="mb-1 font-medium text-ink">Recarga encerrada</p>
           <p className="mb-5 text-sm leading-relaxed text-dim">{mensagemFim}</p>
+          {sessaoPreparada?.id && (
+            <button onClick={() => setReciboAberto(true)}
+                    className="mb-2 w-full rounded-chip border border-line py-2.5 font-medium text-ink transition
+                               hover:border-flux/40 hover:bg-flux/10">
+              Ver recibo detalhado
+            </button>
+          )}
           <div className="flex gap-2">
             <button onClick={() => { onSucesso?.(); onClose() }}
                     className="flex-1 rounded-chip bg-raise py-2.5 font-medium text-mute transition hover:bg-line hover:text-ink">
@@ -440,6 +574,10 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
             </button>
           </div>
         </div>
+      )}
+
+      {reciboAberto && sessaoPreparada?.id && (
+        <ReciboModal sessaoId={sessaoPreparada.id} onFechar={() => setReciboAberto(false)} />
       )}
     </Moldura>
   )

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { supabase } from '../supabaseClient.js'
+import { supabase, canal as novoCanal } from '../supabaseClient.js'
 import { CONDOMINIO_PADRAO } from '../config.js'
 import { get, post } from '../lib/api.js'
 import { brl, energia, potencia } from '../lib/formato.js'
@@ -367,8 +367,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
       debounce.current = setTimeout(carregarDados, 250)
     }
 
-    const canal = supabase
-      .channel('dashboard-realtime')
+    const canal = novoCanal('dashboard-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'carregadores' }, recarregar)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessoes_recarga' }, recarregar)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notificacoes' }, recarregar)

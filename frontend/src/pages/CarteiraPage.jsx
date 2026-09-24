@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { supabase } from '../supabaseClient.js'
+import { supabase, canal as novoCanal } from '../supabaseClient.js'
 import { post } from '../lib/api.js'
 import { brl, dataHora } from '../lib/formato.js'
 
@@ -38,8 +38,7 @@ function CarteiraPage({ sessao, onSaldoAtualizado }) {
     carregarExtrato()
     // Realtime: a reserva e o estorno acontecem no backend, disparados pelo
     // cartão e pelo fim da recarga - não por um clique nesta tela.
-    const canal = supabase
-      .channel('extrato-carteira')
+    const canal = novoCanal('extrato-carteira')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'movimentacoes_carteira' },
         carregarExtrato)
       .subscribe()

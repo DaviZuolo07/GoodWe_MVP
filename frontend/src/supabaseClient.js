@@ -23,6 +23,21 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
   accessToken: async () => tokenAtual,
 })
 
+/*
+ * Cria um canal Realtime com tópico único por chamada.
+ *
+ * O supabase-js devolve o canal EXISTENTE quando o tópico se repete. Se esse
+ * canal já passou pelo subscribe(), o .on() seguinte lança
+ * "cannot add postgres_changes callbacks ... after subscribe()". Isso
+ * acontece quando dois componentes escutam a mesma sessão ao mesmo tempo, ou
+ * quando o efeito roda de novo antes do removeChannel (assíncrono) terminar.
+ * O sufixo aleatório torna cada assinatura independente. Math.random e não
+ * crypto.randomUUID: este último não existe em http://192.168.x.x (celular).
+ */
+export function canal(nome) {
+  return supabase.channel(`${nome}-${Math.random().toString(36).slice(2, 10)}`)
+}
+
 export function definirToken(token) {
   tokenAtual = token
   // Sem argumento: o Realtime relê o token pelo callback acima. Importante

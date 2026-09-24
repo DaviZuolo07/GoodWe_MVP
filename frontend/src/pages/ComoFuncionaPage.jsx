@@ -60,12 +60,17 @@ function ComoFuncionaPage({ condominio }) {
             permite sinalizar), a recarga não começa e o morador entra na fila com aviso — em vez de uma recarga que
             não anda.
           </p>
+          <p>
+            No painel de gestão, o síndico vê o gráfico hora a hora do que o prédio teria puxado sem essa divisão e do
+            que puxou de fato, e um simulador que roda o mesmo alocador para qualquer número de carros.
+          </p>
         </Bloco>
 
         <Bloco titulo="Cobrança" subtitulo="Reserva, medição, teto e estorno — nessa ordem.">
           <Passo n="1" titulo="Reserva.">
-            Ao aproximar o cartão, o custo estimado fica reservado no saldo. Sem saldo, a recarga não começa: o app
-            avisa e você adiciona crédito sem perder a vez no ponto.
+            Ao aproximar o cartão, o custo estimado fica reservado no saldo, com mínimo de R$ 1,00. A tela de
+            confirmação mostra os dois valores: quanto a recarga deve custar e quanto sai do saldo agora. Sem saldo, a
+            recarga não começa: o app avisa e você adiciona crédito sem perder a vez no ponto.
           </Passo>
           <Passo n="2" titulo="Medição.">
             Cada kWh é contado pela tarifa do horário em que foi entregue. Na ponta, a energia custa {num(mult, 2)}x —
@@ -75,7 +80,8 @@ function ComoFuncionaPage({ condominio }) {
             Se o consumo alcançar o valor reservado, a recarga para sozinha. Ninguém paga mais do que autorizou.
           </Passo>
           <Passo n="4" titulo="Estorno.">
-            No fim, cobramos o consumo real e a diferença volta na hora. Tudo aparece no extrato da Carteira.
+            No fim, cobramos o consumo real e a diferença volta na hora. Cada recarga do Histórico abre um recibo
+            linha a linha: energia fora e dentro da ponta, tarifa de cada uma, reservado, cobrado e devolvido.
           </Passo>
         </Bloco>
 
@@ -96,9 +102,10 @@ function ComoFuncionaPage({ condominio }) {
 
         <Bloco titulo="Para o gestor e para a empresa">
           <p>
-            <span className="text-ink">Síndico:</span> vê a carga em tempo real contra o limite do quadro, a curva do
-            dia, o faturamento, os estornos e o consumo por morador para rateio. Muda o limite e a janela de ponta na
-            própria tela, sem chamar ninguém.
+            <span className="text-ink">Síndico:</span> vê a carga em tempo real contra o limite do quadro, o pico que
+            a gestão evitou, o faturamento, o custo estimado da energia e a margem, os estornos e o consumo por morador
+            para rateio. Muda o limite, a janela de ponta e as premissas de custo na própria tela, sem chamar
+            ninguém.
           </p>
           <p>
             <span className="text-ink">Administradora e revenda:</span> a mesma instalação atende vários condomínios,
@@ -108,7 +115,8 @@ function ComoFuncionaPage({ condominio }) {
           <p>
             <span className="text-ink">Fabricante:</span> a série medida fica gravada sessão a sessão, na mesma base
             que o app já usa. É o insumo para diagnóstico de equipamento, previsão de demanda e, no passo seguinte,
-            priorizar recarga quando houver excedente solar do inversor.
+            priorizar recarga quando houver excedente solar do inversor. O painel também estima quanto o condomínio
+            economizaria se a energia da ponta viesse de uma bateria carregada fora dela.
           </p>
         </Bloco>
       </div>
