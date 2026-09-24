@@ -60,7 +60,7 @@ GoodWe_MVP/
 │   ├── evals/               casos + runner contra o produto
 │   └── testes/              testes sem banco e sem placa
 │
-├── db/                      migrations, na ordem 01 -> 13
+├── db/                      migrations, na ordem 01 -> 14 (99 = limpeza)
 ├── firmware/chargeops_esp32/
 │   ├── chargeops_esp32.ino  firmware do ESP32
 │   └── segredos.exemplo.h   copie para segredos.h e preencha
@@ -78,7 +78,7 @@ Python 3.10+, Node 18+, conta no Supabase, conta no Ollama (grátis, opcional).
 ### Passo 1 — banco
 
 No **SQL Editor** do Supabase, rode os arquivos de `db/` **na ordem numérica**,
-do `01` ao `13`, um de cada vez. A ordem importa: cada um assume o estado
+do `01` ao `14`, um de cada vez. **Banco que já tinha 01–13: rode só o `14`.** A ordem importa: cada um assume o estado
 deixado pelo anterior.
 
 Depois, em **Settings → API**, copie a URL, a chave publicável (frontend) e a
@@ -139,7 +139,7 @@ cd backend
 python provisionar.py verificar
 ```
 
-São 15 tentativas de invasão contra o banco real (ler usuários, ler a carteira
+São 17 tentativas de invasão contra o banco real (ler usuários, ler a carteira
 do vizinho, forjar token, se dar crédito pelo RPC). Todas devem falhar, e o
 controle positivo no fim deve passar — se ele falhar, os "bloqueios" podem ser
 falso positivo.
@@ -297,12 +297,19 @@ precisa abrir o monitor serial para descobrir o número.
 
 ## 6. Como a cobrança funciona
 
-1. **Reserva.** Ao aproximar o cartão, o custo estimado (mínimo R$ 1,00) é
+1. **Prévia honesta.** A estimativa simula a recarga no tempo: cada kWh
+   previsto é precificado pelo horário em que vai ser entregue. Uma recarga
+   que começa às 17h30 e entra na ponta já mostra o custo com a ponta.
+   Na ponta, a prévia mostra também quanto o morador economiza esperando.
+2. **Reserva.** Ao aproximar o cartão, o custo estimado (mínimo R$ 1,00) é
    reservado no saldo. Sem saldo, a recarga não começa.
-2. **Medição.** Cada kWh é contado pela tarifa do horário em que foi entregue.
+3. **Medição.** Cada kWh é contado pela tarifa do horário em que foi entregue.
    Em dias úteis, das 18h às 21h, a energia custa 1,5x (configurável).
-3. **Teto.** Se o consumo alcançar o valor reservado, a recarga para sozinha.
-4. **Estorno.** No fim, cobra-se o consumo real e a diferença volta na hora.
+4. **Teto.** Se o consumo alcançar o valor reservado, a recarga para sozinha.
+5. **Estorno.** No fim, cobra-se o consumo real e a diferença volta na hora.
+6. **Recibo.** `GET /recargas/{id}/recibo` devolve a conta linha a linha
+   (kWh fora e na ponta, tarifa de cada um, subtotais que somam o total,
+   reservado, cobrado, devolvido e as movimentações da carteira).
 
 Débito e crédito acontecem dentro do Postgres, em uma instrução só
 (`debitar_saldo` / `creditar_saldo`), com a trava `saldo >= valor` no próprio
@@ -323,6 +330,24 @@ Débito e crédito acontecem dentro do Postgres, em uma instrução só
   230 V, mínimo da IEC 61851), ela é recusada com explicação e o morador é
   convidado para a fila.
 - O síndico vê tudo isso e muda os parâmetros em **Gestão do condomínio**.
+- A curva horária guarda **dois picos**: o que o prédio puxou (com gestão) e o
+  que teria puxado se todos carregassem no máximo (sem gestão). A diferença é
+  o pico evitado — a prova numérica do valor do alocador.
+- `POST /gestor/simular-demanda` roda o mesmo algoritmo para "e se N carros
+  ligarem juntos?", sem gravar nada (6 carros de 7,4 kW num quadro de 30 kW:
+  44,4 kW sem gestão, 5 kW por carro com gestão).
+
+## 7.1 Valor para cada lado
+
+| Para quem | O que ganha | Onde aparece |
+|---|---|---|
+| **Morador** | preço antes de começar, paga só o que usou (estorno automático), dica de economia fora da ponta, recibo conferível | prévia, carteira, recibo, assistente |
+| **Síndico / condomínio** | quadro que não desarma, rateio automático por morador, receita x custo de energia x margem, recusas e pico evitado | painel do gestor (`demanda` e `valor`) |
+| **Empresa (GoodWe)** | dados de curva de carga e de energia na ponta por condomínio: base para dimensionar armazenamento e inversor híbrido; hardware + software como serviço | painel: `economia_potencial_armazenamento_mes` |
+
+As tarifas da distribuidora (`custo_energia_kwh`, `custo_energia_ponta_kwh`)
+são **premissas configuráveis**, não leitura da fatura — o painel devolve os
+valores usados junto com o resultado.
 
 ---
 
@@ -379,8 +404,8 @@ Não precisam de banco, rede nem placa:
 
 ```bash
 cd backend
-python testes/test_unidades.py     # física, tarifa, alocador, camadas, token
-python testes/test_fluxo_esp32.py  # fluxo completo com Supabase falso em memória
+python testes/test_unidades.py     # 52 verificações: física, tarifa, alocador, camadas, token
+python testes/test_fluxo_esp32.py  # 62 verificações: fluxo completo com Supabase falso
 ```
 
 O segundo sobe o app real do FastAPI e percorre login → preparar → pedido no

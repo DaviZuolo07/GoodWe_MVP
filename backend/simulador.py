@@ -17,15 +17,28 @@ segundos - inclusive o GET /hardware/comandos que o ESP32 faz a cada 2 s.
 
 import asyncio
 import random
+import time
 
 import demanda
 import dispositivos
 import recarga
 from config import supabase
-from fisica import em_horario_de_ponta, potencia_no_soc, teto_kw, tempo_de_carga_min
+from fisica import EFICIENCIA_CARGA, em_horario_de_ponta, potencia_efetiva, teto_kw, tempo_de_carga_min
 
 INTERVALO_S = 10
-HORAS_POR_CICLO = INTERVALO_S / 3600
+# O ciclo não dura 10 s cravados: dorme 10 s DEPOIS de fazer as consultas.
+# A energia simulada usa o tempo real decorrido (com teto, para um servidor
+# que ficou parado não despejar horas de energia de uma vez).
+MAX_DT_S = 30
+_ultimo_ciclo = None
+
+
+def _horas_decorridas() -> float:
+    global _ultimo_ciclo
+    agora = time.monotonic()
+    dt = INTERVALO_S if _ultimo_ciclo is None else agora - _ultimo_ciclo
+    _ultimo_ciclo = agora
+    return max(0.0, min(float(MAX_DT_S), dt)) / 3600
 
 
 def _temperaturas(chargers: list[dict]) -> None:
@@ -44,6 +57,7 @@ def _temperaturas(chargers: list[dict]) -> None:
 
 
 def ciclo() -> None:
+    horas = _horas_decorridas()
     dispositivos.marcar_offline_sem_contato()
     recarga.expirar_esperas()
 
@@ -82,24 +96,22 @@ def ciclo() -> None:
             capacidade = float(v.get("capacidade_bateria_kwh") or 40)
             soc = float(s.get("percentual_bateria_atual") or 0)
             alvo = float(s.get("alvo_percentual") or 100)
-            limite = min(teto_kw(c, v), float(alocado.get(s["id"], teto_kw(c, v))))
+            teto = teto_kw(c, v)
+            liberado = alocado.get(s["id"])
 
-            potencia = potencia_no_soc(limite, soc)
-            energia_rede = potencia * HORAS_POR_CICLO
-            novo_soc = min(100.0, soc + energia_rede * 0.92 / capacidade * 100)
+            # O carro puxa o MENOR entre a curva da bateria e o que o alocador
+            # liberou - a curva é aplicada uma vez só.
+            potencia = potencia_efetiva(teto, soc, liberado)
+            energia_rede = potencia * horas
+            novo_soc = min(100.0, soc + energia_rede * EFICIENCIA_CARGA / capacidade * 100)
             nova_energia = float(s.get("energia_entregue_kwh") or 0) + energia_rede
-            tempo = tempo_de_carga_min(capacidade, novo_soc, alvo, limite)
+            tempo = tempo_de_carga_min(capacidade, novo_soc, alvo, teto, liberado)
 
             carga_total += potencia
             recarga.registrar_progresso(s, v, cond, nova_energia, potencia, novo_soc, tempo)
 
-        try:
-            supabase.rpc("registrar_consumo", {"p_cond": cond["id"], "p_kwh": 0,
-                                               "p_ponta": em_horario_de_ponta(cond),
-                                               "p_carga_kw": round(carga_total, 4)}).execute()
-        except Exception as e:
-            print(f"[CONSUMO] falhou: {e}")
-
+        demanda.registrar_consumo(cond["id"], 0, em_horario_de_ponta(cond), carga_total,
+                                  demanda_kw=estado.get("demanda_kw", carga_total))
 
 async def laco() -> None:
     while True:

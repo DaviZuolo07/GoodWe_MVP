@@ -33,8 +33,8 @@ import demanda
 import dispositivos
 from identidade import sessao_do_usuario, veiculo_do_usuario
 from config import (MAX_TENTATIVAS_CARTAO, MODO_DEMO, RESERVA_MINIMA, SEGUNDOS_ESPERA_CARTAO,
-                    agora, agora_iso, supabase, um)
-from fisica import (calcular_estimativa, custo_da_sessao, em_horario_de_ponta,
+                    agora, agora_iso, para_datetime, supabase, um)
+from fisica import (calcular_estimativa, custo_da_sessao, detalhar_custo, em_horario_de_ponta,
                     multiplicador_ponta, tarifa_base)
 
 LIMIAR_BAIXA_POTENCIA_KW = 0.0005      # 0,5 W: o celular parou de puxar
@@ -132,12 +132,48 @@ def previa(usuario: dict, charger_id: str, veiculo_id: str, soc: float, alvo: fl
     est.update({
         "saldo": usuario["saldo"],
         "saldo_suficiente": usuario["saldo"] >= est["custo_estimado"],
+        # O que sai do saldo ao aproximar o cartão (a diferença volta no fim).
+        "valor_reserva": valor_da_reserva(est["custo_estimado"], usuario["saldo"]),
         "admissao": admissao,
         "potencia_prevista_kw": alocada,
         "perfil_carregador": charger.get("perfil"),
         "leitor_fisico": charger.get("origem") == "hardware",
     })
     return est
+
+
+def valor_da_reserva(custo_estimado: float, saldo: float) -> float:
+    """
+    Reserva de piso (ver config.RESERVA_MINIMA), limitada ao que a pessoa
+    tem: nunca menos que a estimativa, nunca mais que o saldo acima do piso.
+    """
+    return round(max(float(custo_estimado), min(RESERVA_MINIMA, float(saldo or 0))), 2)
+
+
+class SessaoDuplicada(Exception):
+    pass
+
+
+def _inserir_sessao(dados: dict) -> dict:
+    try:
+        return um(supabase.table("sessoes_recarga").insert(dados).execute())
+    except Exception as e:
+        texto = str(e)
+        if "uq_sessao_viva" in texto or "23505" in texto or "duplicate key" in texto:
+            raise SessaoDuplicada() from e
+        raise
+
+
+def _sair_de_todas_as_filas(usuario_id: str) -> None:
+    """Começou a carregar: não faz sentido continuar na fila (de nenhum ponto)."""
+    try:
+        minhas = supabase.table("fila").select("carregador_id").eq("usuario_id", usuario_id).execute().data or []
+        for carregador_id in {f["carregador_id"] for f in minhas}:
+            supabase.table("fila").delete().eq("carregador_id", carregador_id) \
+                .eq("usuario_id", usuario_id).execute()
+            _renumerar_fila(carregador_id)
+    except Exception as e:
+        print(f"[FILA] limpeza falhou: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +204,12 @@ def preparar(usuario: dict, charger_id: str, veiculo_id: str, soc: float, alvo: 
     checar_concorrencia(veiculo_id)
 
     cond = condominio_de(charger)
-    alocada = demanda.verificar_admissao(charger["condominio_id"], charger, v, soc)
+    try:
+        alocada = demanda.verificar_admissao(charger["condominio_id"], charger, v, soc)
+    except HTTPException as e:
+        if e.status_code == 409:
+            demanda.registrar_recusa(charger["condominio_id"], usuario["id"], charger_id, "preparar")
+        raise
     est = calcular_estimativa(charger, v, soc, alvo, cond, potencia_alocada_kw=alocada)
 
     # Ponto físico: quem decide o saldo é o CARTÃO (fluxo pedido pela banca:
@@ -178,21 +219,27 @@ def preparar(usuario: dict, charger_id: str, veiculo_id: str, soc: float, alvo: 
     saldo_suficiente = usuario["saldo"] >= est["custo_estimado"]
 
     expira = agora() + timedelta(seconds=SEGUNDOS_ESPERA_CARTAO)
-    nova = um(supabase.table("sessoes_recarga").insert({
-        "carregador_id": charger_id,
-        "veiculo_id": veiculo_id,
-        "usuario_id": usuario["id"],
-        "status": "aguardando_rfid",
-        "percentual_bateria_inicial": soc,
-        "percentual_bateria_atual": soc,
-        "alvo_percentual": alvo,
-        "tempo_estimado_min": est["tempo_estimado_min"],
-        "custo_estimado": est["custo_estimado"],
-        "tarifa_kwh": tarifa_base(charger),
-        "multiplicador_ponta": multiplicador_ponta(cond),
-        "origem": "hardware" if fisico else "simulado",
-        "expira_em": expira.isoformat(),
-    }).execute())
+    try:
+        nova = _inserir_sessao({
+            "carregador_id": charger_id,
+            "veiculo_id": veiculo_id,
+            "usuario_id": usuario["id"],
+            "status": "aguardando_rfid",
+            "percentual_bateria_inicial": soc,
+            "percentual_bateria_atual": soc,
+            "alvo_percentual": alvo,
+            "tempo_estimado_min": est["tempo_estimado_min"],
+            "custo_estimado": est["custo_estimado"],
+            "tarifa_kwh": tarifa_base(charger),
+            "multiplicador_ponta": multiplicador_ponta(cond),
+            "origem": "hardware" if fisico else "simulado",
+            "expira_em": expira.isoformat(),
+        })
+    except SessaoDuplicada:
+        # Dois cliques (ou dois moradores) no mesmo segundo: o índice único
+        # da migration 14 deixa só um passar.
+        raise HTTPException(status_code=409, detail=(
+            "Este ponto ou este veículo acabou de receber outra recarga. Atualize a tela."))
 
     if fisico:
         dispositivos.enfileirar(charger_id, "solicitar_cartao", nova["id"],
@@ -302,13 +349,11 @@ def confirmar(s: dict, metodo: str) -> dict:
         alocada = demanda.verificar_admissao(charger["condominio_id"], charger, v, soc)
     except HTTPException as e:
         _encerrar_espera(s, "cancelada", "limite_de_potencia")
+        demanda.registrar_recusa(charger["condominio_id"], s["usuario_id"], charger["id"], "cartao")
         return {"autorizado": False, "motivo": "limite_de_potencia", "mensagem": e.detail}
 
     est = calcular_estimativa(charger, v, soc, alvo, cond, potencia_alocada_kw=alocada)
-    # Reserva de piso (ver config.RESERVA_MINIMA), limitada ao que a pessoa
-    # tem: nunca menos que a estimativa, nunca mais que o saldo.
-    saldo_atual = carteira.saldo_de(s["usuario_id"])
-    valor = round(max(est["custo_estimado"], min(RESERVA_MINIMA, saldo_atual)), 2)
+    valor = valor_da_reserva(est["custo_estimado"], carteira.saldo_de(s["usuario_id"]))
 
     try:
         saldo = carteira.debitar(s["usuario_id"], valor, "pre_autorizacao",
@@ -341,6 +386,7 @@ def confirmar(s: dict, metodo: str) -> dict:
     }).execute()
     supabase.table("veiculos").update({"percentual_bateria": soc}).eq("id", s["veiculo_id"]).execute()
     supabase.table("carregadores").update({"status": "em_uso"}).eq("id", charger["id"]).execute()
+    _sair_de_todas_as_filas(s["usuario_id"])
 
     # Ponto físico: AQUI a energia começa a correr de verdade.
     dispositivos.enfileirar(charger["id"], "liberar", s["id"])
@@ -448,11 +494,7 @@ def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: 
         update["potencia_media_kw"] = round(potencia_media_kw, 5)
 
     if delta > 0 and cond:
-        try:
-            supabase.rpc("registrar_consumo", {"p_cond": cond["id"], "p_kwh": round(delta, 6),
-                                               "p_ponta": ponta, "p_carga_kw": 0}).execute()
-        except Exception as e:
-            print(f"[CONSUMO] falhou: {e}")
+        demanda.registrar_consumo(cond["id"], delta, ponta, 0)
 
     supabase.table("sessoes_recarga").update(update).eq("id", s["id"]) \
         .eq("status", "carregando").execute()
@@ -572,8 +614,59 @@ def entrar_fila(usuario: dict, carregador_id: str) -> dict:
 def sair_fila(usuario: dict, carregador_id: str) -> dict:
     supabase.table("fila").delete().eq("carregador_id", carregador_id) \
         .eq("usuario_id", usuario["id"]).execute()
+    _renumerar_fila(carregador_id)
+    return {"success": True}
+
+
+def _renumerar_fila(carregador_id: str) -> None:
     restantes = supabase.table("fila").select("id").eq("carregador_id", carregador_id) \
         .order("posicao").execute()
     for i, f in enumerate(restantes.data or [], start=1):
         supabase.table("fila").update({"posicao": i}).eq("id", f["id"]).execute()
-    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Recibo - "como a cobrança funciona", com os números da recarga da pessoa
+# ---------------------------------------------------------------------------
+
+def recibo(usuario: dict, sessao_id: str) -> dict:
+    """
+    A conta linha a linha: energia fora e dentro da ponta, tarifa de cada
+    uma, subtotal, reservado, cobrado, devolvido - e as movimentações da
+    carteira que provam cada passo. É a resposta concreta para "como vocês
+    cobram?".
+    """
+    s = sessao_do_usuario(sessao_id, usuario["id"])
+    charger = carregador(s["carregador_id"])
+    linhas = detalhar_custo(s)
+    reservado = float(s.get("valor_pre_autorizado") or 0)
+    finalizada = s.get("status") == "finalizada"
+    cobrado = float(s.get("custo_final") or 0) if finalizada else min(linhas["total"], reservado or linhas["total"])
+    movimentos = supabase.table("movimentacoes_carteira").select(
+        "tipo, valor, saldo_apos, descricao, criado_em"
+    ).eq("sessao_id", sessao_id).eq("usuario_id", usuario["id"]).order("criado_em").execute().data or []
+
+    inicio, fim = para_datetime(s.get("iniciado_em")), para_datetime(s.get("finalizado_em"))
+    duracao = round((fim - inicio).total_seconds() / 60, 1) if inicio and fim else None
+    energia = linhas["energia_kwh"]
+    return {
+        "sessao_id": sessao_id,
+        "status": s.get("status"),
+        "carregador": charger.get("numero"),
+        "iniciado_em": s.get("iniciado_em"),
+        "finalizado_em": s.get("finalizado_em"),
+        "duracao_min": duracao,
+        "encerrado_por": s.get("encerrado_por"),
+        "motivo_legivel": MENSAGEM_MOTIVO.get(s.get("encerrado_por"), s.get("encerrado_por")),
+        "percentual_inicial": s.get("percentual_bateria_inicial"),
+        "percentual_final": s.get("percentual_bateria_atual"),
+        "linhas": linhas,
+        "custo_estimado": s.get("custo_estimado"),
+        "valor_reservado": round(reservado, 2),
+        "valor_cobrado": round(cobrado, 2),
+        "valor_estornado": round(float(s.get("valor_estornado") or 0), 2) if finalizada
+                           else round(max(0.0, reservado - cobrado), 2),
+        "limitado_pela_reserva": finalizada and reservado > 0 and linhas["total"] > reservado + 1e-9,
+        "preco_medio_kwh": round(cobrado / energia, 4) if energia > 0 else None,
+        "movimentacoes": movimentos,
+    }

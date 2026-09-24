@@ -328,36 +328,58 @@ def simular_recarga(usuario_id: str, condominio_id: str, numero=None,
 # Demanda e cobrança - o "por quê" dos números (Bloco 3 explicado ao morador)
 # ---------------------------------------------------------------------------
 
-def demanda(condominio: dict) -> dict:
-    """Limite, carga agora e horário de ponta do local. Números do banco."""
-    from fisica import em_horario_de_ponta
+def demanda(condominio: dict, usuario_id: str = None) -> dict:
+    """
+    Limite, carga agora, horário de ponta - e, se a pessoa está carregando,
+    quanto ELA recebe e por quê. Os números saem do MESMO alocador que
+    controla os carros (demanda.alocar, sem gravar): o chat não tem uma
+    segunda conta que possa discordar da operação.
+    """
+    import demanda as alocador
     cid = (condominio or {}).get("id")
     if not cid:
         return {"encontrado": False, "fonte": ["condominios"]}
-    chargers = sb().table("carregadores").select("id").eq("condominio_id", cid).execute().data or []
-    ids = [c["id"] for c in chargers]
-    ativas = []
-    if ids:
-        ativas = sb().table("sessoes_recarga").select("potencia_atual_kw, potencia_alocada_kw") \
-            .eq("status", "carregando").in_("carregador_id", ids).execute().data or []
-    limite = float(condominio.get("limite_potencia_kw") or 0)
-    ponta = em_horario_de_ponta(condominio)
-    disponivel = round(limite * float(condominio.get("ponta_fator_limite") or 1), 1) if ponta else limite
-    carga = round(sum(float(a.get("potencia_atual_kw") or 0) for a in ativas), 2)
-    return {
+    estado = alocador.alocar(cid, gravar=False) or {}
+    limite_nominal = float(condominio.get("limite_potencia_kw") or 0)
+    fatos = {
         "encontrado": True,
-        "limite_kw": limite,
-        "limite_agora_kw": disponivel,
-        "carga_agora_kw": carga,
-        "folga_kw": round(max(0.0, disponivel - carga), 2),
-        "recargas_ativas": len(ativas),
-        "em_ponta": ponta,
+        "limite_kw": limite_nominal,
+        "limite_agora_kw": estado.get("limite_kw", limite_nominal),
+        "carga_agora_kw": estado.get("alocado_kw", 0.0),
+        "demanda_agora_kw": estado.get("demanda_kw", 0.0),
+        "folga_kw": estado.get("folga_kw", limite_nominal),
+        "limitando": bool(estado.get("limitando")),
+        "recargas_ativas": len(estado.get("sessoes") or []),
+        "em_ponta": bool(estado.get("em_ponta")),
         "ponta_inicio": str(condominio.get("ponta_inicio") or "18:00")[:5],
         "ponta_fim": str(condominio.get("ponta_fim") or "21:00")[:5],
         "ponta_percentual_limite": round(float(condominio.get("ponta_fator_limite") or 1) * 100),
         "ponta_multiplicador": float(condominio.get("ponta_multiplicador_tarifa") or 1),
-        "fonte": ["condominios", "sessoes_recarga"],
+        "minha": None,
+        "fonte": ["condominios", "sessoes_recarga", "alocador_de_demanda"],
     }
+    if usuario_id:
+        minha = sb().table("sessoes_recarga").select(
+            "id, carregador_id, potencia_alocada_kw, potencia_atual_kw, percentual_bateria_atual") \
+            .eq("usuario_id", usuario_id).eq("status", "carregando").limit(1).execute().data
+        if minha:
+            m = minha[0]
+            c = _carregador_por_id(m.get("carregador_id")) or {}
+            maximo = float(c.get("potencia_maxima_kw") or 0)
+            alocado = next((x.get("alocado_kw") for x in estado.get("sessoes") or [] if x["id"] == m["id"]),
+                           m.get("potencia_alocada_kw"))
+            fatos["minha"] = {
+                "carregador_numero": c.get("numero"),
+                "potencia_maxima_kw": maximo,
+                "potencia_alocada_kw": round(float(alocado or 0), 3),
+                "potencia_atual_kw": round(float(m.get("potencia_atual_kw") or 0), 3),
+                "percentual_atual": m.get("percentual_bateria_atual"),
+                "fixa": c.get("origem") == "hardware",
+                "limitada": bool(c.get("origem") != "hardware" and alocado is not None and maximo > 0
+                                 and float(alocado) < maximo - 0.01),
+                "temperatura_c": c.get("temperatura_c"),
+            }
+    return fatos
 
 
 def cobranca(usuario_id: str, condominio: dict) -> dict:

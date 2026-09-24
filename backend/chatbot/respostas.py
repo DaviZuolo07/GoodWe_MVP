@@ -224,10 +224,27 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
                  if f.get("em_ponta") else
                  f"O horário de ponta é das {f['ponta_inicio']} às {f['ponta_fim']} em dias "
                  "úteis; nele o limite cai e a tarifa sobe.")
-        return (f"O condomínio{onde(ctx)} libera até {potencia(f['limite_agora_kw'])} para "
-                f"recarga e está usando {potencia(f['carga_agora_kw'])} em "
-                f"{f['recargas_ativas']} recarga(s). O sistema divide essa potência entre os "
-                f"carros para nunca passar do limite do quadro. {ponta}")
+        geral = (f"O condomínio{onde(ctx)} libera até {potencia(f['limite_agora_kw'])} para recarga e "
+                 f"tem {potencia(f['carga_agora_kw'])} reservados para {f['recargas_ativas']} recarga(s) em andamento. "
+                 "O sistema divide essa potência entre os carros para nunca passar do limite do quadro.")
+        m = f.get("minha")
+        if not m:
+            return f"{geral} {ponta}"
+        if m.get("limitada"):
+            sua = (f"Sua recarga no ponto {m['carregador_numero']} está recebendo "
+                   f"{potencia(m['potencia_alocada_kw'])} de {potencia(m['potencia_maxima_kw'])} possíveis, "
+                   f"porque os carros ligados pediriam {potencia(f['demanda_agora_kw'])}. Quando alguém "
+                   "terminar, a sua sobe sozinha.")
+        elif m.get("fixa"):
+            sua = (f"Sua recarga no ponto {m['carregador_numero']} não é limitada pelo condomínio: a "
+                   f"potência é a que o aparelho puxa, {potencia(m['potencia_atual_kw'])} agora, medida pelo sensor.")
+        elif float(m.get("percentual_atual") or 0) > 80:
+            sua = (f"Sua recarga no ponto {m['carregador_numero']} não é limitada pelo condomínio. Ela "
+                   f"desacelerou porque a bateria passou de 80% e aceita menos potência.")
+        else:
+            sua = (f"Sua recarga no ponto {m['carregador_numero']} não é limitada pelo condomínio: "
+                   f"está puxando {potencia(m['potencia_atual_kw'])}.")
+        return f"{sua} {geral} {ponta}"
 
     if intencao == R.COBRANCA:
         base = ("Funciona como pré-autorização: ao aproximar o cartão, reservamos o custo "

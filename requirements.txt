@@ -1,12 +1,15 @@
-fastapi
-uvicorn[standard]
-pydantic
-python-dotenv
-supabase
-httpx
-argon2-cffi
-PyJWT[crypto]>=2.8
-cryptography
+# Faixas testadas na auditoria de 23/09/2026 (fastapi 0.141, supabase 2.31,
+# pydantic 2.13, PyJWT 2.15). O teto na próxima versão maior evita que um
+# `pip install` na máquina de outra pessoa traga uma quebra de API na véspera.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+pydantic>=2.7,<3
+python-dotenv>=1.0
+supabase>=2.10,<3
+httpx>=0.27
+argon2-cffi>=23.1
+PyJWT[crypto]>=2.8,<3
+cryptography>=42
 # Base de fusos horários: o Windows não traz a do sistema, e sem ela o
 # horário de ponta (America/Sao_Paulo) não resolve.
 tzdata

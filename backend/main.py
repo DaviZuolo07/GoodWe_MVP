@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 
 import simulador
 from chatbot import configurar_chatbot, responder_chatbot
-from config import CONDOMINIO_PADRAO, FRONTEND_ORIGINS, MODO_DEMO, supabase
+from config import CONDOMINIO_PADRAO, FRONTEND_ORIGIN_REGEX, FRONTEND_ORIGINS, MODO_DEMO, supabase
 from fisica import calcular_estimativa, custo_da_sessao
 from hardware_api import router as hardware_router
 from identidade import usuario_logado
@@ -59,6 +59,7 @@ app = FastAPI(title="GoodWe ChargeOps AI Assistant - API", lifespan=ciclo_de_vid
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=FRONTEND_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],

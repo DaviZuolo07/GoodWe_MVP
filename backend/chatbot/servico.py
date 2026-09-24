@@ -124,7 +124,7 @@ def _buscar_fatos(intencao, ctx, usuario_id, charger_id, params):
                                  charger_id=None if params.get("numero_carregador") else charger_id,
                                  alvo=params.get("alvo", 100.0), condominio=ctx.get("condominio"))
     if intencao == R.DEMANDA:
-        return D.demanda(ctx.get("condominio"))
+        return D.demanda(ctx.get("condominio"), usuario_id)
     if intencao == R.COBRANCA:
         return D.cobranca(usuario_id, ctx.get("condominio"))
     return {"fonte": []}

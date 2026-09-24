@@ -47,6 +47,15 @@ FRONTEND_ORIGINS = [
     ).split(",") if o.strip()
 ]
 
+# Qualquer endereço de rede local na porta do Vite (celular, notebook do Gus,
+# IP que muda a cada WiFi) sem editar o .env. Só IPs privados (RFC 1918) e
+# localhost: nada da internet pública entra por aqui. Vazio desliga.
+FRONTEND_ORIGIN_REGEX = os.getenv(
+    "FRONTEND_ORIGIN_REGEX",
+    r"http://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):5173",
+) or None
+
 # --- Fuso ----------------------------------------------------------------
 # Horário de ponta é local. O `tzdata` do requirements garante que isto
 # funcione no Windows, que não traz a base de fusos do sistema.

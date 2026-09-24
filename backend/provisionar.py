@@ -163,6 +163,7 @@ TABELAS_OPERACIONAIS = (
     ("chat_mensagens", "id"),
     ("sessoes_recarga", "id"),
     ("consumo_horario", "hora"),
+    ("eventos_demanda", "id"),          # migration 14
 )
 
 
@@ -232,8 +233,11 @@ def cmd_limpar(args):
 
     print("\nApagando...")
     for tabela, coluna in TABELAS_OPERACIONAIS:
-        _apagar_tudo(sb, tabela, coluna)
-        print(f"  {tabela} limpo")
+        try:
+            _apagar_tudo(sb, tabela, coluna)
+            print(f"  {tabela} limpo")
+        except Exception as e:           # ex.: migration 14 ainda não rodou
+            print(f"  {tabela} ignorada ({type(e).__name__})")
 
     if args.contas and extras:
         for u in extras:
@@ -365,7 +369,10 @@ def cmd_verificar(_args):
         ("anon lê dispositivos", lambda: bloqueado(get("dispositivos?select=id&limit=1"))),
         ("anon lê a carteira", lambda: bloqueado(get("movimentacoes_carteira?select=id&limit=1"))),
         ("anon lê o consumo do condomínio", lambda: bloqueado(get("consumo_horario?select=hora&limit=1"))),
+        ("anon lê eventos de demanda", lambda: bloqueado(get("eventos_demanda?select=id&limit=1"))),
         (f"{a['nome']} lê usuarios", lambda: bloqueado(get("usuarios?select=id&limit=1", token_a))),
+        (f"{a['nome']} lê eventos de demanda",
+         lambda: bloqueado(get("eventos_demanda?select=id&limit=1", token_a))),
         (f"{a['nome']} lê notificações de {b['nome']}",
          lambda: bloqueado(get(f"notificacoes?select=id&usuario_id=eq.{b['id']}", token_a))),
         (f"{a['nome']} lê veículos de {b['nome']}",

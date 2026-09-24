@@ -47,6 +47,12 @@ def encerrar(sessao_id: str, usuario: dict = Depends(usuario_logado)):
     return recarga.encerrar_pelo_usuario(usuario, sessao_id)
 
 
+@router.get("/recargas/{sessao_id}/recibo")
+def recibo(sessao_id: str, usuario: dict = Depends(usuario_logado)):
+    """A conta linha a linha da MINHA recarga: energia, tarifa, reservado, cobrado, estorno."""
+    return recarga.recibo(usuario, sessao_id)
+
+
 @router.get("/recargas/{sessao_id}/leituras")
 def leituras(sessao_id: str, usuario: dict = Depends(usuario_logado)):
     """Série medida pelo ESP32 da MINHA recarga (base do gráfico ao vivo)."""

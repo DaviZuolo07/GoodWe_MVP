@@ -33,12 +33,32 @@ class CartaoCondominio(BaseModel):
     apelido: Optional[str] = Field(None, max_length=40)
 
 
+# HH:MM de verdade (00:00 a 23:59). O padrão antigo \d{2}:\d{2} aceitava
+# "25:99", que quebrava o horário de ponta - e com ele a prévia, a cobrança e
+# o laço do simulador de TODOS os condomínios.
+HORA_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+# Premissas de custo da energia para o condomínio (o que ELE paga à
+# distribuidora). Padrões ilustrativos: o síndico ajusta com a conta real.
+CUSTO_ENERGIA_PADRAO = 0.95
+CUSTO_ENERGIA_PONTA_PADRAO = 1.45
+
+
 class ConfigDemanda(BaseModel):
     limite_potencia_kw: Optional[float] = Field(None, gt=0, le=2000)
-    ponta_inicio: Optional[str] = Field(None, pattern=r"^\d{2}:\d{2}$")
-    ponta_fim: Optional[str] = Field(None, pattern=r"^\d{2}:\d{2}$")
+    ponta_inicio: Optional[str] = Field(None, pattern=HORA_HHMM)
+    ponta_fim: Optional[str] = Field(None, pattern=HORA_HHMM)
     ponta_fator_limite: Optional[float] = Field(None, gt=0, le=1)
     ponta_multiplicador_tarifa: Optional[float] = Field(None, ge=1, le=5)
+    custo_energia_kwh: Optional[float] = Field(None, gt=0, le=20)
+    custo_energia_ponta_kwh: Optional[float] = Field(None, gt=0, le=20)
+
+
+class CenarioDemanda(BaseModel):
+    carros: int = Field(6, ge=1, le=200)
+    potencia_carro_kw: float = Field(7.4, gt=0, le=350)
+    limite_kw: Optional[float] = Field(None, gt=0, le=2000)
+    em_ponta: bool = False
 
 
 def _inicio_local(dias_atras: int = 0, mes: bool = False) -> str:
@@ -51,6 +71,8 @@ def _resumo(sessoes: list[dict]) -> dict:
     finalizadas = [s for s in sessoes if s["status"] == "finalizada"]
     return {
         "recargas": len(finalizadas),
+        "energia_faturada_kwh": round(sum(float(s.get("energia_entregue_kwh") or 0) for s in finalizadas), 4),
+        "energia_faturada_ponta_kwh": round(sum(float(s.get("energia_ponta_kwh") or 0) for s in finalizadas), 4),
         "energia_kwh": round(sum(float(s.get("energia_entregue_kwh") or 0) for s in sessoes), 4),
         "energia_ponta_kwh": round(sum(float(s.get("energia_ponta_kwh") or 0) for s in sessoes), 4),
         "faturamento": round(sum(float(s.get("custo_final") or 0) for s in finalizadas), 2),
@@ -88,15 +110,24 @@ def painel(gestor: dict = Depends(gestor_logado)):
                         if (para_datetime(s["criado_em"]) or inicio_hoje) >= inicio_hoje]
 
     # Curva de carga: 24 barras do dia local, vindas de consumo_horario.
-    horas = supabase.table("consumo_horario").select("*").eq("condominio_id", cond_id) \
-        .gte("hora", _inicio_local()).order("hora").execute().data or []
-    por_hora = [{"hora": h, "energia_kwh": 0.0, "energia_ponta_kwh": 0.0, "pico_kw": 0.0} for h in range(24)]
-    for linha in horas:
-        h = datetime.fromisoformat(linha["hora"].replace("Z", "+00:00")).astimezone(FUSO).hour
-        por_hora[h].update({
+    # `pico_kw` é o que o prédio puxou (COM gestão); `demanda_kw` é o que teria
+    # puxado se ninguém fosse limitado (SEM gestão). Sem a migration 14 a
+    # segunda coluna não existe e vale igual à primeira.
+    horas_mes = supabase.table("consumo_horario").select("*").eq("condominio_id", cond_id) \
+        .gte("hora", _inicio_local(mes=True)).order("hora").execute().data or []
+    inicio_dia = datetime.fromisoformat(_inicio_local())
+    por_hora = [{"hora": h, "energia_kwh": 0.0, "energia_ponta_kwh": 0.0, "pico_kw": 0.0,
+                 "demanda_kw": 0.0} for h in range(24)]
+    for linha in horas_mes:
+        instante = datetime.fromisoformat(linha["hora"].replace("Z", "+00:00")).astimezone(FUSO)
+        if instante < inicio_dia:
+            continue
+        pico = float(linha.get("pico_kw") or 0)
+        por_hora[instante.hour].update({
             "energia_kwh": round(float(linha["energia_kwh"]), 4),
             "energia_ponta_kwh": round(float(linha["energia_ponta_kwh"]), 4),
-            "pico_kw": round(float(linha["pico_kw"]), 3),
+            "pico_kw": round(pico, 3),
+            "demanda_kw": round(max(pico, float(linha.get("demanda_kw") or pico)), 3),
         })
 
     moradores = {}
@@ -110,9 +141,11 @@ def painel(gestor: dict = Depends(gestor_logado)):
         m["energia_kwh"] = round(m["energia_kwh"] + float(s.get("energia_entregue_kwh") or 0), 4)
         m["valor"] = round(m["valor"] + float(s.get("custo_final") or 0), 2)
 
+    resumo_mes = _resumo(sessoes_mes)
     return {
         "condominio": {k: cond.get(k) for k in ("id", "nome", "endereco", "limite_potencia_kw", "ponta_inicio",
-                                                "ponta_fim", "ponta_fator_limite", "ponta_multiplicador_tarifa")},
+                                                "ponta_fim", "ponta_fator_limite", "ponta_multiplicador_tarifa",
+                                                "custo_energia_kwh", "custo_energia_ponta_kwh")},
         "agora": agora_estado,
         "carregadores": [{
             "id": c["id"], "numero": c["numero"], "status": c["status"], "origem": c.get("origem"),
@@ -122,10 +155,98 @@ def painel(gestor: dict = Depends(gestor_logado)):
             "potencia_alocada_kw": (ativas.get(c["id"]) or {}).get("potencia_alocada_kw"),
         } for c in chargers],
         "hoje": _resumo(sessoes_hoje),
-        "mes": _resumo(sessoes_mes),
+        "mes": resumo_mes,
         "por_hora": por_hora,
+        "demanda": _indicadores_demanda(cond, horas_mes, inicio_dia),
+        "valor": _valor_para_o_condominio(cond, resumo_mes),
         "por_morador": sorted(moradores.values(), key=lambda m: -m["energia_kwh"])[:20],
     }
+
+
+def _pico(linhas: list[dict]) -> tuple[float, float, int]:
+    com = max((float(l.get("pico_kw") or 0) for l in linhas), default=0.0)
+    sem = max((max(float(l.get("pico_kw") or 0), float(l.get("demanda_kw") or 0)) for l in linhas), default=0.0)
+    horas_limitadas = sum(1 for l in linhas if float(l.get("demanda_kw") or 0) > float(l.get("pico_kw") or 0) + 0.01)
+    return round(com, 3), round(sem, 3), horas_limitadas
+
+
+def _recusas(cond_id: str, desde: str) -> int | None:
+    try:
+        r = supabase.table("eventos_demanda").select("id").eq("condominio_id", cond_id) \
+            .eq("tipo", "recusa_limite").gte("criado_em", desde).execute()
+        return len(r.data or [])
+    except Exception:
+        return None          # migration 14 não rodou
+
+
+def _indicadores_demanda(cond: dict, horas_mes: list[dict], inicio_dia: datetime) -> dict:
+    """
+    A prova da gestão de demanda em quatro números: o limite do quadro, o pico
+    que o prédio TERIA puxado sem gestão, o pico que puxou de fato, e quantas
+    recargas foram seguradas para não estourar.
+    """
+    hoje = [l for l in horas_mes
+            if datetime.fromisoformat(l["hora"].replace("Z", "+00:00")) >= inicio_dia]
+    com_hoje, sem_hoje, lim_hoje = _pico(hoje)
+    com_mes, sem_mes, lim_mes = _pico(horas_mes)
+    limite = float(cond.get("limite_potencia_kw") or 0)
+    return {
+        "limite_kw": limite,
+        "limite_ponta_kw": round(limite * float(cond.get("ponta_fator_limite") or 1), 3),
+        "hoje": {"pico_com_gestao_kw": com_hoje, "pico_sem_gestao_kw": sem_hoje,
+                 "pico_evitado_kw": round(max(0.0, sem_hoje - com_hoje), 3),
+                 "horas_com_limitacao": lim_hoje, "recusas_por_limite": _recusas(cond["id"], _inicio_local())},
+        "mes": {"pico_com_gestao_kw": com_mes, "pico_sem_gestao_kw": sem_mes,
+                "pico_evitado_kw": round(max(0.0, sem_mes - com_mes), 3),
+                "horas_com_limitacao": lim_mes, "recusas_por_limite": _recusas(cond["id"], _inicio_local(mes=True)),
+                "estouraria_limite": sem_mes > limite + 1e-9},
+    }
+
+
+def _valor_para_o_condominio(cond: dict, mes: dict) -> dict:
+    """
+    Receita x custo da energia no mês, e quanto da conta cai na ponta. As
+    tarifas da distribuidora são PREMISSAS configuráveis - o painel mostra os
+    valores usados para ninguém confundir estimativa com fatura.
+    """
+    c = float(cond.get("custo_energia_kwh") or CUSTO_ENERGIA_PADRAO)
+    cp = float(cond.get("custo_energia_ponta_kwh") or CUSTO_ENERGIA_PONTA_PADRAO)
+    energia = float(mes.get("energia_faturada_kwh") or 0)
+    ponta = min(energia, float(mes.get("energia_faturada_ponta_kwh") or 0))
+    custo = round((energia - ponta) * c + ponta * cp, 2)
+    receita = float(mes.get("faturamento") or 0)
+    margem = round(receita - custo, 2)
+    return {
+        "receita_mes": round(receita, 2),
+        "custo_energia_mes": custo,
+        "margem_mes": margem,
+        "margem_percentual": round(margem / receita * 100, 1) if receita > 0 else None,
+        "energia_mes_kwh": round(energia, 4),
+        "energia_ponta_mes_kwh": round(ponta, 4),
+        "participacao_ponta_percentual": round(ponta / energia * 100, 1) if energia > 0 else None,
+        # Se a energia da ponta viesse de armazenamento carregado fora dela
+        # (bateria + inversor híbrido), o condomínio pagaria a tarifa normal.
+        "economia_potencial_armazenamento_mes": round(ponta * max(0.0, cp - c), 2),
+        "premissas": {"custo_energia_kwh": c, "custo_energia_ponta_kwh": cp,
+                      "configuravel_em": "PATCH /gestor/condominio",
+                      "observacao": "Tarifas da distribuidora são premissas do síndico, não leitura da fatura."},
+    }
+
+
+@router.post("/simular-demanda")
+def simular_demanda(payload: CenarioDemanda, gestor: dict = Depends(gestor_logado)):
+    """
+    "E se N carros ligarem juntos?" com o MESMO algoritmo da operação.
+    Não grava nada. Serve para o síndico dimensionar e para a banca ver o
+    alocador funcionando sem precisar de N carros de verdade.
+    """
+    cond = um(supabase.table("condominios").select("*").eq("id", gestor["condominio_id"]).execute()) or {}
+    limite = payload.limite_kw or float(cond.get("limite_potencia_kw") or 0)
+    if payload.em_ponta:
+        limite = limite * float(cond.get("ponta_fator_limite") or 1)
+    r = demanda.simular_cenario(limite, payload.carros, payload.potencia_carro_kw)
+    r["em_ponta"] = payload.em_ponta
+    return r
 
 
 @router.patch("/condominio")

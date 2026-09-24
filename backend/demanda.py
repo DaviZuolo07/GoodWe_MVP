@@ -189,11 +189,93 @@ def verificar_admissao(condominio_id: str, charger: dict, veiculo: dict, soc: fl
                 f"O condomínio está no limite de potência{motivo_ponta}. Entre na fila."))
         return recebe
 
-    menor = min(alocacao[i["id"]] for i in itens if i["controlavel"])
-    minimo = min(MINIMO_CONTROLAVEL_KW, nova["demanda_kw"])
-    if menor + 1e-9 < minimo:
+    # Cada carro controlável precisa receber o mínimo de 1,4 kW - OU o que ele
+    # pede, se pede menos (carro quase cheio na fase lenta da curva). Antes a
+    # regra comparava o MENOR valor alocado com 1,4 kW: um carro a 99% pedindo
+    # 0,9 kW fazia o prédio recusar recarga nova mesmo com 30 kW sobrando.
+    abaixo = [i for i in itens if i["controlavel"]
+              and alocacao[i["id"]] + 1e-9 < min(MINIMO_CONTROLAVEL_KW, i["demanda_kw"])]
+    if abaixo:
         raise HTTPException(status_code=409, detail=(
             f"O condomínio está no limite de potência{motivo_ponta}: liberar mais um carro "
             f"deixaria algum abaixo de {MINIMO_CONTROLAVEL_KW:.1f} kW. Entre na fila e você "
             "será avisado quando houver potência."))
     return recebe
+
+
+# ---------------------------------------------------------------------------
+# Registro (curva do gestor e recusas) - nunca derruba a recarga se falhar
+# ---------------------------------------------------------------------------
+
+def registrar_consumo(condominio_id: str, kwh: float, ponta: bool, carga_kw: float,
+                      demanda_kw: float = 0.0) -> None:
+    """
+    Soma energia na hora cheia e guarda dois picos: o que o prédio PUXOU
+    (com gestão) e o que teria puxado se todo mundo carregasse no máximo
+    (sem gestão). A diferença entre os dois é o gráfico que prova o valor
+    da gestão de demanda. Se a migration 14 não rodou, grava só o antigo.
+    """
+    base = {"p_cond": condominio_id, "p_kwh": round(max(0.0, kwh), 6), "p_ponta": bool(ponta),
+            "p_carga_kw": round(max(0.0, carga_kw), 4)}
+    try:
+        supabase.rpc("registrar_consumo", {**base, "p_demanda_kw": round(max(0.0, demanda_kw), 4)}).execute()
+    except Exception:
+        try:
+            supabase.rpc("registrar_consumo", base).execute()
+        except Exception as e:
+            print(f"[CONSUMO] falhou: {e}")
+
+
+def registrar_recusa(condominio_id: str, usuario_id: str | None, carregador_id: str | None,
+                     etapa: str) -> None:
+    """Recarga barrada pelo limite: vira número no painel do síndico."""
+    try:
+        cond = condominio(condominio_id) or {}
+        limite, ponta = limite_efetivo(cond) if cond else (0.0, False)
+        supabase.table("eventos_demanda").insert({
+            "condominio_id": condominio_id, "usuario_id": usuario_id,
+            "carregador_id": carregador_id, "tipo": "recusa_limite", "etapa": etapa,
+            "limite_kw": limite, "em_ponta": ponta,
+        }).execute()
+    except Exception as e:
+        print(f"[DEMANDA] recusa não registrada: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Simulação de cenário (painel do síndico e explicação na banca)
+# ---------------------------------------------------------------------------
+
+def simular_cenario(limite_kw: float, carros: int, potencia_carro_kw: float,
+                    carga_fixa_kw: float = 0.0) -> dict:
+    """
+    "E se N carros ligarem ao mesmo tempo?" - roda o MESMO `distribuir()` da
+    operação real, sem tocar no banco. Mostra o pico sem gestão, quantos
+    entram com pelo menos 1,4 kW e quantos iriam para a fila.
+    """
+    carros = max(0, int(carros))
+    p = max(0.0, float(potencia_carro_kw))
+    limite = max(0.0, float(limite_kw))
+    livre = max(0.0, limite - max(0.0, carga_fixa_kw))
+
+    # Quantos cabem sem ninguém ficar abaixo do mínimo.
+    minimo = min(MINIMO_CONTROLAVEL_KW, p) if p > 0 else MINIMO_CONTROLAVEL_KW
+    cabem = carros if p == 0 else min(carros, int(livre // minimo)) if minimo > 0 else carros
+
+    itens = [{"id": f"carro_{i + 1}", "demanda_kw": p, "controlavel": True} for i in range(cabem)]
+    alocacao = distribuir(livre, itens)
+    por_carro = round(alocacao["carro_1"], 3) if cabem else 0.0
+    sem_gestao = round(carros * p + max(0.0, carga_fixa_kw), 3)
+    return {
+        "limite_kw": round(limite, 3),
+        "carros": carros,
+        "potencia_carro_kw": round(p, 3),
+        "pico_sem_gestao_kw": sem_gestao,
+        "estouraria_limite": sem_gestao > limite + 1e-9,
+        "excesso_evitado_kw": round(max(0.0, sem_gestao - limite), 3),
+        "admitidos": cabem,
+        "na_fila": carros - cabem,
+        "kw_por_carro": por_carro,
+        "pico_com_gestao_kw": round(min(limite, sum(alocacao.values()) + max(0.0, carga_fixa_kw)), 2),
+        "fracao_da_potencia_nominal": round(por_carro / p, 3) if p > 0 else None,
+        "minimo_por_carro_kw": MINIMO_CONTROLAVEL_KW,
+    }

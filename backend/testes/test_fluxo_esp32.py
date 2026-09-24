@@ -215,6 +215,19 @@ def main_teste():
     checar([c for c in fake.t("carregadores") if c["id"] == PONTO][0]["status"] == "disponivel",
            "ponto volta a disponível")
 
+    print("\n7.1 Recibo linha a linha")
+    rec = CLIENTE.get(f"/recargas/{sessao_id}/recibo", headers=gus)
+    checar(rec.status_code == 200, "recibo abre para o dono", rec.text)
+    rec = rec.json()
+    checar(rec["valor_cobrado"] == s["custo_final"] and rec["valor_estornado"] == s["valor_estornado"],
+           f"recibo: cobrado R$ {rec['valor_cobrado']}, estornado R$ {rec['valor_estornado']}")
+    checar(rec["linhas"]["total"] == round(rec["linhas"]["subtotal_fora_ponta"] + rec["linhas"]["subtotal_ponta"], 2),
+           "linhas do recibo somam o total")
+    checar([m["tipo"] for m in rec["movimentacoes"]] == ["pre_autorizacao", "estorno"],
+           "recibo traz a reserva e o estorno da carteira")
+    checar(CLIENTE.get(f"/recargas/{sessao_id}/recibo", headers=outro).status_code == 404,
+           "outro morador não vê meu recibo")
+
     print("\n8. Travas em recarga de outro morador")
     CLIENTE.post("/recargas/preparar", json={"charger_id": PONTO, "veiculo_id": "v-celular",
                                              "percentual_bateria_atual": 50, "alvo_percentual": 60},
@@ -236,8 +249,20 @@ def main_teste():
     checar(r.status_code == 200, "gestor muda o limite de potência", r.text)
     checar(CLIENTE.patch("/gestor/condominio", json={"limite_potencia_kw": 30},
                          headers=gus).status_code == 403, "morador não muda o limite")
+    checar(CLIENTE.patch("/gestor/condominio", json={"ponta_inicio": "25:99"},
+                         headers=sindico).status_code == 422, "horário de ponta inválido é recusado")
+    checar("valor" in painel and "premissas" in painel["valor"] and "demanda" in painel,
+           "painel traz valor (receita x custo) e indicadores de demanda")
+    cen = CLIENTE.post("/gestor/simular-demanda", json={"carros": 6, "potencia_carro_kw": 7.4},
+                       headers=sindico)
+    checar(cen.status_code == 200 and cen.json()["pico_sem_gestao_kw"] == 44.4,
+           f"simulação: 6 carros = 44,4 kW sem gestão, {cen.json().get('kw_por_carro')} kW cada com gestão")
+    checar(CLIENTE.post("/gestor/simular-demanda", json={"carros": 6}, headers=gus).status_code == 403,
+           "morador não acessa a simulação do síndico")
 
     print("\n10. O MESMO cartão, outro morador, outra carteira")
+    CLIENTE.post(f"/fila/{PONTO}/entrar", headers=outro)
+    checar(any(f["usuario_id"] == "u-outro" for f in fake.t("fila")), "Outro entra na fila do ponto")
     fake.t("veiculos").append({"id": "v-celular2", "usuario_id": "u-outro",
                                "modelo": "Celular do Outro", "tipo": "celular",
                                "capacidade_bateria_kwh": 0.015, "potencia_carro_kw": 0.018})
@@ -257,6 +282,8 @@ def main_teste():
     checar(saldo_gus == saldo_gus_antes, "e não encostou no saldo do Gus")
     sessao_outro = [x for x in fake.t("sessoes_recarga") if x["status"] == "carregando"][0]
     checar(sessao_outro["usuario_id"] == "u-outro", "a sessão ativa é do Outro Morador")
+    checar(not any(f["usuario_id"] == "u-outro" for f in fake.t("fila")),
+           "começou a carregar: saiu da fila sozinho")
 
     print(f"\n{ok_total} verificações passaram, {falhas} falharam.\n")
     return 1 if falhas else 0
