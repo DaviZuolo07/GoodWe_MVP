@@ -120,7 +120,7 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
       {cards.map((card) => (
         <div
           key={card.label}
-          className="group rounded-panel border border-line bg-panel p-5 transition duration-200
+          className="kpi group rounded-panel border border-line bg-panel p-5 transition duration-200
                      hover:-translate-y-0.5 hover:border-line hover:bg-raise/50 hover:shadow-lift"
         >
           <div className="mb-4 flex items-center gap-3">

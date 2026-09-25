@@ -16,16 +16,16 @@
 
 @theme {
   /* Superfícies — do mais fundo para o mais próximo do usuário */
-  --color-void: #07080a;   /* fundo da página */
-  --color-panel: #0d0f13;  /* cards e painéis */
-  --color-raise: #131720;  /* item ativo, hover, campos */
-  --color-line: #212630;   /* borda visível */
-  --color-hair: #1a1e26;   /* divisória interna, mais discreta */
+  --color-void: #060607;   /* fundo da página (sob a fibra de carbono) */
+  --color-panel: #0f1012;  /* cards e painéis */
+  --color-raise: #17181b;  /* item ativo, hover, campos */
+  --color-line: #27292e;   /* borda visível */
+  --color-hair: #1c1d21;   /* divisória interna, mais discreta */
 
   /* Texto — três níveis, bem separados de propósito */
   --color-ink: #f3f5f8;    /* título e números */
-  --color-mute: #97a0ae;   /* apoio, legenda */
-  --color-dim: #5c6472;    /* rótulo, metadado */
+  --color-mute: #9ca0a8;   /* apoio, legenda */
+  --color-dim: #61656d;    /* rótulo, metadado */
 
   /* Acento GoodWe: "flux" = energia em movimento */
   --color-flux: #e5352b;
@@ -162,8 +162,9 @@
   animation: gw-shimmer 1.6s ease-in-out infinite;
 }
 
-/* Brilho ambiente do topo da aplicação — dá profundidade sem sujar o fundo */
-.ambient {
+/* Brilho ambiente antigo. No escuro e no claro, quem desenha o fundo agora é
+   o ::before da seção CARBONO, no fim deste arquivo. */
+.ambient-legado {
   background-image:
     radial-gradient(900px 460px at 10% -12%, rgb(229 53 43 / 0.10), transparent 62%),
     radial-gradient(720px 380px at 96% -6%, rgb(255 106 69 / 0.05), transparent 60%);
@@ -269,7 +270,7 @@
 
 /* No escuro o brilho ambiente é vermelho sobre preto; no claro isso vira
    sujeira. Aqui ele só aprofunda o prata. */
-[data-tema="claro"] .ambient {
+[data-tema="claro"] .ambient-legado {
   background-image:
     radial-gradient(900px 460px at 10% -12%, rgb(255 255 255 / 0.55), transparent 62%),
     radial-gradient(720px 380px at 96% -6%, rgb(169 169 169 / 0.35), transparent 60%);
@@ -287,4 +288,170 @@
 
 [data-tema="claro"] .bus {
   box-shadow: 0 0 10px 1px rgb(212 42 32 / 0.45);
+}
+
+/* ===========================================================================
+   CARBONO — identidade visual do tema escuro
+   ---------------------------------------------------------------------------
+   Três camadas, todas puramente decorativas (pointer-events: none):
+     1. trama de fibra de carbono em toda a página;
+     2. malha hexagonal prateada que só aparece no canto superior direito;
+     3. brilho vermelho GoodWe vindo do topo.
+   As texturas são SVGs próprios em src/assets/texturas (sem imagem de banco).
+   Nenhum componente precisa saber que isso existe: o fundo fica atrás de tudo
+   via ::before/::after com z-index negativo dentro de um contexto isolado.
+   =========================================================================== */
+
+.ambient,
+.carbono {
+  position: relative;
+  isolation: isolate;
+}
+
+.ambient::before,
+.carbono::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-color: var(--color-void);
+  background-image:
+    radial-gradient(1100px 560px at 12% -10%, rgb(229 53 43 / 0.13), transparent 60%),
+    radial-gradient(900px 480px at 100% 0%, rgb(255 255 255 / 0.035), transparent 62%),
+    radial-gradient(140% 90% at 50% 110%, rgb(0 0 0 / 0.75), transparent 60%),
+    url("./assets/texturas/carbono.svg");
+  background-size: auto, auto, auto, 12px 12px;
+}
+
+.ambient::after,
+.carbono::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: url("./assets/texturas/hex.svg");
+  background-size: 34px auto;
+  opacity: 0.1;
+  -webkit-mask-image: radial-gradient(900px 620px at 100% 0%, #000 0%, transparent 75%);
+          mask-image: radial-gradient(900px 620px at 100% 0%, #000 0%, transparent 75%);
+}
+
+:root {
+  --gw-fio: rgb(255 255 255 / 0.10);
+  --gw-brilho: rgb(255 255 255 / 0.025);
+}
+
+/* Painéis: um fio de luz no topo e um degradê leve de cima para baixo, como
+   uma chapa escovada. Só background-image: não mexe em cor, borda nem sombra,
+   então nenhum hover ou estado existente é sobrescrito. */
+.bg-panel {
+  background-image:
+    linear-gradient(90deg, transparent 6%, var(--gw-fio) 50%, transparent 94%),
+    linear-gradient(180deg, var(--gw-brilho), transparent 42%);
+  background-size: 100% 1px, 100% 100%;
+  background-repeat: no-repeat;
+}
+
+/* Barra superior: vidro sobre o carbono e um filete vermelho na base */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(229 53 43 / 0.55) 22%, rgb(229 53 43 / 0.08) 62%, transparent);
+}
+
+/* Trilho lateral: a borda da sidebar acende em vermelho no alto e apaga */
+.trilho::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgb(229 53 43 / 0.7), rgb(229 53 43 / 0.08) 38%, transparent 70%);
+}
+
+/* Item de navegação ativo: pílula vermelha translúcida, como no protótipo */
+.nav-ativo {
+  background-image: linear-gradient(90deg, rgb(229 53 43 / 0.2), rgb(229 53 43 / 0.04) 85%);
+  box-shadow: inset 0 0 0 1px rgb(229 53 43 / 0.22);
+}
+
+/* Botão de ação principal: brilho vermelho ao passar o mouse */
+.brilho-flux {
+  transition: box-shadow 0.25s ease, background-color 0.2s ease;
+}
+.brilho-flux:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px rgb(229 53 43 / 0.45), 0 10px 28px -10px rgb(229 53 43 / 0.75);
+}
+
+/* Cards de indicador: canto com a malha hexagonal */
+.kpi {
+  position: relative;
+  overflow: hidden;
+}
+.kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto auto;
+  width: 60%;
+  height: 100%;
+  pointer-events: none;
+  background-image: url("./assets/texturas/hex.svg");
+  background-size: 26px auto;
+  opacity: 0.08;
+  -webkit-mask-image: radial-gradient(circle at 100% 0%, #000, transparent 70%);
+          mask-image: radial-gradient(circle at 100% 0%, #000, transparent 70%);
+}
+.kpi > * {
+  position: relative;
+}
+
+/* Painel de marca do login: chevrons prateados sobre carbono */
+.chevrons {
+  background-image: url("./assets/texturas/chevrons.svg");
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: auto 100%;
+}
+
+/* ---------------------------------------------------------------------------
+   Tema claro: o carbono sai; fica o prata escovado com a malha bem de leve.
+   --------------------------------------------------------------------------- */
+[data-tema="claro"] {
+  --gw-fio: rgb(255 255 255 / 0.9);
+  --gw-brilho: rgb(255 255 255 / 0.35);
+}
+[data-tema="claro"] .ambient::before,
+[data-tema="claro"] .carbono::before {
+  background-color: transparent;
+  background-image:
+    radial-gradient(900px 460px at 10% -12%, rgb(255 255 255 / 0.55), transparent 62%),
+    radial-gradient(720px 380px at 96% -6%, rgb(169 169 169 / 0.35), transparent 60%);
+  background-size: auto;
+}
+[data-tema="claro"] .ambient::after,
+[data-tema="claro"] .carbono::after,
+[data-tema="claro"] .kpi::before {
+  filter: invert(1);
+  opacity: 0.06;
+}
+[data-tema="claro"] .nav-ativo {
+  background-image: linear-gradient(90deg, rgb(212 42 32 / 0.14), rgb(212 42 32 / 0.02) 85%);
+  box-shadow: inset 0 0 0 1px rgb(212 42 32 / 0.25);
+}
+
+/* Marca GOODWE: brilho vermelho só sobre o carbono; no prata ele borra. */
+.marca {
+  text-shadow: 0 0 28px rgb(229 53 43 / 0.4);
+}
+[data-tema="claro"] .marca {
+  text-shadow: none;
 }

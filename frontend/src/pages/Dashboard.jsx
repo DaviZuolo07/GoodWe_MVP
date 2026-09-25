@@ -446,7 +446,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* ---------------- Barra superior ---------------- */}
-        <header className="sticky top-0 z-30 border-b border-line bg-void/85 backdrop-blur-xl">
+        <header className="topbar sticky top-0 z-30 border-b border-line bg-void/70 backdrop-blur-xl">
           <div className="flex items-center justify-between gap-6 px-5 py-4 lg:px-9">
             <div className="min-w-0">
               <div className="flex items-center gap-2">

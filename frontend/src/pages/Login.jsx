@@ -75,12 +75,35 @@ function Login({ onLoginSuccess, aviso }) {
   }
 
   const inputClass =
-    'w-full bg-panel border border-line rounded-lg px-4 py-2 text-ink placeholder-dim focus:outline-none focus:border-flux'
+    'w-full bg-raise/70 border border-line rounded-lg px-4 py-2.5 text-ink placeholder-dim transition-colors focus:outline-none focus:border-flux'
   const labelClass = 'text-sm text-mute mb-1 block'
 
   return (
-    <div className="min-h-screen bg-void text-ink flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-panel/60 border border-line rounded-2xl p-8">
+    <div className="carbono grid min-h-screen bg-void font-display text-ink lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      {/* Painel de marca — só visual, não participa do formulário */}
+      <aside className="chevrons relative hidden overflow-hidden border-r border-line lg:flex lg:flex-col lg:justify-between lg:p-12"
+             aria-hidden="true">
+        {/* Véu escuro da esquerda para a direita: o texto fica sobre o carbono
+            liso e os chevrons aparecem só na metade que aponta para o formulário */}
+        <div className="pointer-events-none absolute inset-0 bg-linear-to-r from-void via-void/90 via-45% to-transparent" />
+        <div className="relative">
+          <p className="text-[2.25rem] marca font-bold leading-none tracking-[0.08em] text-flux">GOODWE</p>
+          <p className="mt-3 text-sm tracking-wide text-mute">ChargeOps AI Assistant</p>
+        </div>
+        <div className="relative max-w-sm">
+          <p className="text-3xl font-semibold leading-tight tracking-tight text-ink">
+            Recarga de veículos elétricos no condomínio, sem desarmar o quadro.
+          </p>
+          <p className="mt-4 text-sm leading-relaxed text-mute">
+            Gestão de demanda em tempo real, cobrança pelo kWh medido e um assistente que explica cada recarga.
+          </p>
+        </div>
+        <p className="eyebrow relative">Smart Energy Innovator</p>
+      </aside>
+
+      <div className="flex items-center justify-center p-4 sm:p-8">
+      <div className="w-full max-w-md rounded-2xl border border-line bg-panel/80 p-8 shadow-lift backdrop-blur-xl">
+        <p className="mb-6 text-[1.5rem] marca font-bold leading-none tracking-[0.08em] text-flux lg:hidden">GOODWE</p>
         <h1 className="text-2xl font-bold text-flux mb-1">GoodWe ChargeOps AI</h1>
         <p className="text-mute mb-6">
           {modo === 'login' ? 'Entrar na sua conta' : 'Criar seu cadastro'}
@@ -126,7 +149,7 @@ function Login({ onLoginSuccess, aviso }) {
             <button
               type="submit"
               disabled={carregando}
-              className="w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2 font-medium transition"
+              className="brilho-flux w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2.5 font-medium text-white transition"
             >
               {carregando ? 'Entrando...' : 'Entrar'}
             </button>
@@ -245,6 +268,7 @@ function Login({ onLoginSuccess, aviso }) {
             </button>
           </form>
         )}
+      </div>
       </div>
     </div>
   )

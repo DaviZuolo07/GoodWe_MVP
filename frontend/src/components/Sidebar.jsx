@@ -140,7 +140,7 @@ function NavItem({ item, ativo, onNavigate, onAcao, badge = 0 }) {
       aria-current={ativo ? 'page' : undefined}
       className={`group relative flex w-full items-center gap-3 rounded-chip px-3.5 py-2.5 text-left text-[0.9375rem] transition-all duration-200 ${
         ativo
-          ? 'bg-raise text-ink'
+          ? 'nav-ativo text-ink'
           : clicavel
             ? 'text-mute hover:bg-raise/60 hover:text-ink'
             : 'cursor-default text-dim/70'
@@ -226,20 +226,16 @@ function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLi
     .toUpperCase()
 
   return (
-    <aside className="sticky top-0 hidden h-screen w-[276px] shrink-0 flex-col border-r border-line bg-panel/60 lg:flex 2xl:w-[300px]">
+    <aside className="trilho sticky top-0 hidden h-screen w-[276px] shrink-0 flex-col border-r border-line bg-void/60 backdrop-blur-xl lg:flex 2xl:w-[300px]">
       {/* Marca */}
-      <div className="flex items-center gap-3 px-6 pb-7 pt-7">
-        <span className="flex h-9 w-9 items-center justify-center rounded-chip bg-flux/12 text-flux ring-1 ring-flux/25">
-          <Ico name="bolt" className="h-[18px] w-[18px]" />
-        </span>
-        <div className="min-w-0">
-          <p className="text-[1.0625rem] font-bold leading-none tracking-[0.14em] text-flux">
-            GOODWE
-          </p>
-          <p className="mt-1.5 truncate text-[0.6875rem] tracking-wide text-dim">
-            ChargeOps AI Assistant
-          </p>
-        </div>
+      <div className="px-6 pb-7 pt-8">
+        <p className="text-[1.75rem] marca font-bold leading-none tracking-[0.08em] text-flux">
+          GOODWE
+        </p>
+        <p className="mt-2 flex items-center gap-1.5 truncate text-[0.6875rem] tracking-wide text-dim">
+          <Ico name="bolt" className="h-3 w-3 shrink-0 text-flux" />
+          ChargeOps AI Assistant
+        </p>
       </div>
 
       {/* Navegação */}
