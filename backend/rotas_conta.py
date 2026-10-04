@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 import cartoes
 import carteira
-from config import CONDOMINIO_PADRAO, CREDITO_MAXIMO, supabase, um
+from config import BONUS_BOAS_VINDAS, CONDOMINIO_PADRAO, CREDITO_MAXIMO, supabase, um
 from identidade import CAMPOS_PUBLICOS, usuario_logado
 from seguranca import (SENHA_MAX, conferir_senha, emitir_token, gerar_hash_senha,
                        hash_ficticio, limitador_cadastro, limitador_por_ip,
@@ -120,43 +120,39 @@ def cadastro(payload: CadastroRequest, request: Request):
     validar_forca_senha(payload.senha, nome)
     _checar_capacidade(payload.veiculo_tipo, payload.capacidade_bateria_kwh, payload.potencia_carro_kw)
 
-    if supabase.table("usuarios").select("id").ilike("nome", nome).execute().data:
-        raise HTTPException(status_code=409, detail="Esse nome de usuário já está cadastrado.")
-
     condominio_id = payload.condominio_id or CONDOMINIO_PADRAO
-    if not um(supabase.table("condominios").select("id").eq("id", condominio_id).execute()):
-        raise HTTPException(status_code=400, detail="Condomínio inválido.")
 
-    usuario = um(supabase.table("usuarios").insert({
-        "nome": nome,
-        "tipo_usuario": payload.tipo_usuario,
-        "condominio_id": condominio_id,
-        "bloco_apto": payload.bloco_apto,
-    }).execute())
-
-    # Três inserts sem transação: se credencial ou veículo falharem, o usuário
-    # é apagado (o CASCADE leva o resto). Sem isso sobraria um usuário sem
-    # senha, impossível de logar, com o nome ocupado para sempre.
+    # Uma chamada, uma transação (db/15): usuário, senha, veículo, favorito e
+    # o bônus de boas-vindas no extrato. Falhou qualquer parte, não sobra
+    # nada - nem usuário sem senha, nem nome ocupado para sempre. O nome
+    # repetido é barrado por índice único (sem a corrida do "checa e insere").
     try:
-        supabase.table("credenciais_usuario").insert({
-            "usuario_id": usuario["id"], "senha_hash": gerar_hash_senha(payload.senha),
-        }).execute()
-        supabase.table("veiculos").insert({
-            "usuario_id": usuario["id"],
-            "modelo": payload.veiculo_modelo.strip(),
-            "placa": _placa(payload.veiculo_placa),
-            "tipo": payload.veiculo_tipo,
-            "capacidade_bateria_kwh": payload.capacidade_bateria_kwh,
-            "potencia_carro_kw": payload.potencia_carro_kw,
-        }).execute()
-        supabase.table("condominios_favoritos").insert({
-            "usuario_id": usuario["id"], "condominio_id": condominio_id,
+        r = supabase.rpc("cadastrar_usuario", {
+            "p_nome": nome,
+            "p_senha_hash": gerar_hash_senha(payload.senha),
+            "p_condominio": condominio_id,
+            "p_tipo": payload.tipo_usuario,
+            "p_bloco": payload.bloco_apto,
+            "p_veiculo": {
+                "modelo": payload.veiculo_modelo.strip(),
+                "placa": _placa(payload.veiculo_placa),
+                "tipo": payload.veiculo_tipo,
+                "capacidade_bateria_kwh": payload.capacidade_bateria_kwh,
+                "potencia_carro_kw": payload.potencia_carro_kw,
+            },
+            "p_bonus": BONUS_BOAS_VINDAS,
         }).execute()
     except Exception as e:
-        supabase.table("usuarios").delete().eq("id", usuario["id"]).execute()
-        print(f"[CADASTRO] desfeito para '{nome}': {e}")
+        texto = str(e)
+        if "nome_em_uso" in texto:
+            raise HTTPException(status_code=409, detail="Esse nome de usuário já está cadastrado.")
+        if "condominio_invalido" in texto:
+            raise HTTPException(status_code=400, detail="Condomínio inválido.")
+        print(f"[CADASTRO] falhou para '{nome}': {type(e).__name__}: {texto[:200]}")
         raise HTTPException(status_code=500, detail="Não foi possível concluir o cadastro.")
 
+    usuario_id = r.data[0] if isinstance(r.data, list) else r.data
+    usuario = um(supabase.table("usuarios").select(CAMPOS_PUBLICOS).eq("id", usuario_id).execute())
     return _resposta_autenticada(usuario)
 
 

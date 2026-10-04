@@ -14,17 +14,35 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
       Nunca sobrescreve quem já tem (use --forcar para isso).
 
   python provisionar.py token-esp --carregador <uuid-do-carregador>
-      Gera o token novo do ESP32, grava só o hash e mostra o token UMA vez.
+      Protocolo v1. Gera o token novo da placa que atende o carregador (pela
+      porta), grava só o hash e mostra o token UMA vez.
+
+  python provisionar.py chave-mestra
+      Protocolo v2. Gera a DEVICE_MASTER_KEY para o .env. Trocar a chave-mestra
+      invalida a chave de TODAS as placas v2 (cada uma é derivada dela).
+
+  python provisionar.py placa-v2 --carregadores <uuid1>,<uuid2>,... [--nome ...]
+      Protocolo v2. Cria UMA placa com N portas (a ordem da lista é a ordem das
+      portas: 1, 2, 3...), marca os pontos como físicos e mostra o id da placa
+      e a chave dela UMA vez. Com --dispositivo <id>, acrescenta portas a uma
+      placa que já existe (inclusive uma v1 que vai migrar).
+
+  python provisionar.py chave-v2 --dispositivo <uuid> [--rotacionar]
+      Mostra de novo a chave v2 da placa (ela é derivada, não fica gravada).
+      --rotacionar troca a versão: a chave antiga para de funcionar na hora.
 
   python provisionar.py limpar
       Mostra o que existe de operação no banco (recargas, fila, pagamentos,
       extrato, leituras). Repita com --sim para apagar, e --contas para
       remover também os cadastros de teste. Estrutura e cartões ficam.
+      O saldo de cada conta é mantido e ganha uma linha de abertura no
+      extrato (regra do db/15: saldo = soma do extrato). --saldo X leva todas
+      as contas a X lançando a diferença como ajuste.
 
   python provisionar.py ponto-fisico --carregador <uuid> [--perfil bancada]
-      Converte qualquer carregador em ponto físico: marca origem=hardware,
-      cria o dispositivo e devolve o token da placa. Não há carregador
-      "especial" - é isto que faz um ponto virar ESP32.
+      Protocolo v1. Converte qualquer carregador em ponto físico: marca
+      origem=hardware, cria a placa com a porta 1 apontando para ele e devolve
+      o token. Não há carregador "especial" - é isto que faz um ponto virar ESP32.
 
   python provisionar.py cartao-compartilhado --uid A1B2C3D4 --condominio <uuid>
       Cadastra o cartão da bancada como cartão DO CONDOMÍNIO: autoriza a
@@ -34,6 +52,7 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
   python provisionar.py verificar
       Teste de invasão contra o banco real. Precisa de SUPABASE_ANON_KEY no
       .env (a mesma chave pública que o frontend usa). Imprime PASSOU/FALHOU.
+      Inclui as RPCs do db/15 e a conferência saldo = extrato.
 
 Por que um script e não um endpoint: nada disto deve existir como rota HTTP.
 Uma rota "definir senha de todos" é uma porta que alguém um dia esquece aberta.
@@ -120,26 +139,116 @@ def cmd_senhas_demo(args):
     print(f"\n{feitos} usuário(s) atualizados. {len(usuarios) - feitos} mantidos.")
 
 
+def _placa_do_carregador(sb, carregador_id):
+    p = sb.table("portas_dispositivo").select("dispositivo_id, numero") \
+        .eq("carregador_id", carregador_id).execute().data
+    if not p:
+        return None, None
+    d = sb.table("dispositivos").select("id, nome, protocolo, chave_versao") \
+        .eq("id", p[0]["dispositivo_id"]).execute().data
+    return (d[0] if d else None), p[0]["numero"]
+
+
 def cmd_token_esp(args):
     from seguranca import gerar_token_dispositivo, hash_token_dispositivo
 
     sb = _supabase()
-    d = sb.table("dispositivos").select("id, nome").eq(
-        "carregador_id", args.carregador
-    ).execute()
-    if not d.data:
-        sys.exit("Nenhum dispositivo cadastrado nesse carregador.")
+    d, porta = _placa_do_carregador(sb, args.carregador)
+    if not d:
+        sys.exit("Nenhuma placa atende esse carregador (portas_dispositivo).")
+    if d.get("protocolo") == 2:
+        sys.exit(f"A placa '{d['nome']}' já fala o protocolo v2 e não aceita mais token v1.\n"
+                 f"Use: python provisionar.py chave-v2 --dispositivo {d['id']}")
 
     token = gerar_token_dispositivo()
     sb.table("dispositivos").update({
         "token_hash": hash_token_dispositivo(token),
-    }).eq("id", d.data[0]["id"]).execute()
+    }).eq("id", d["id"]).execute()
 
-    print(f"\nDispositivo: {d.data[0]['nome']}")
+    print(f"\nDispositivo: {d['nome']} (porta {porta})")
     print("\nToken NOVO (aparece só agora; o banco guardou apenas o hash):\n")
     print(f"  {token}\n")
     print("Cole em DEVICE_TOKEN no firmware/chargeops_esp32/segredos.h e grave na placa.")
     print("O token antigo deixou de funcionar.\n")
+
+
+def _imprimir_chave_v2(d):
+    from seguranca import chave_dispositivo
+    chave = chave_dispositivo(d["id"], d.get("chave_versao") or 1).hex()
+    print("\nCole no firmware (segredos.h). Aparece só agora; o banco NÃO guarda a chave:\n")
+    print(f'  #define DEVICE_ID      "{d["id"]}"')
+    print(f'  #define DEVICE_KEY_HEX "{chave}"\n')
+    print("A chave é derivada da DEVICE_MASTER_KEY do .env. Sem essa chave-mestra")
+    print("igual no backend que vai rodar, a placa não autentica.\n")
+
+
+def cmd_chave_mestra(_args):
+    from seguranca import gerar_chave_mestra
+    print("\nCole esta linha no backend/.env:\n")
+    print(f"  DEVICE_MASTER_KEY={gerar_chave_mestra()}\n")
+    print("ATENÇÃO: se já existe uma, trocar invalida TODAS as placas v2.")
+    print("Não commite, não mande no grupo.\n")
+
+
+def cmd_placa_v2(args):
+    sb = _supabase()
+    ids = [x.strip() for x in (args.carregadores or "").split(",") if x.strip()]
+    if not ids and not args.dispositivo:
+        sys.exit("Informe --carregadores (e/ou --dispositivo).")
+    if len(ids) != len(set(ids)):
+        sys.exit("Carregador repetido na lista.")
+
+    if args.dispositivo:
+        r = sb.table("dispositivos").select("*").eq("id", args.dispositivo).execute().data
+        if not r:
+            sys.exit("Dispositivo não encontrado.")
+        d = r[0]
+    else:
+        d = sb.table("dispositivos").insert({
+            "nome": args.nome or "ESP32 multiporta",
+            "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2,
+        }).execute().data[0]
+
+    usadas = {p["numero"] for p in (sb.table("portas_dispositivo").select("numero")
+                                    .eq("dispositivo_id", d["id"]).execute().data or [])}
+    proxima = 1
+    for cid in ids:
+        c = sb.table("carregadores").select("id, numero").eq("id", cid).execute().data
+        if not c:
+            sys.exit(f"Carregador {cid} não encontrado.")
+        dono, _ = _placa_do_carregador(sb, cid)
+        if dono and dono["id"] != d["id"]:
+            sys.exit(f"Ponto {c[0]['numero']} já é atendido pela placa '{dono['nome']}'.")
+        if dono:
+            continue
+        while proxima in usadas:
+            proxima += 1
+        if proxima > 8:
+            sys.exit("Placa com 8 portas: não cabe mais nenhuma.")
+        sb.table("portas_dispositivo").insert(
+            {"dispositivo_id": d["id"], "numero": proxima, "carregador_id": cid}).execute()
+        mudancas = {"origem": "hardware", "status": "offline"}
+        if args.perfil:
+            mudancas["perfil"] = args.perfil
+        sb.table("carregadores").update(mudancas).eq("id", cid).execute()
+        usadas.add(proxima)
+        print(f"  porta {proxima} -> ponto {c[0]['numero']}")
+
+    print(f"\nPlaca '{d['nome']}' pronta para o protocolo v2.")
+    _imprimir_chave_v2(d)
+
+
+def cmd_chave_v2(args):
+    sb = _supabase()
+    r = sb.table("dispositivos").select("id, nome, chave_versao").eq("id", args.dispositivo).execute().data
+    if not r:
+        sys.exit("Dispositivo não encontrado.")
+    d = r[0]
+    if args.rotacionar:
+        d["chave_versao"] = int(d.get("chave_versao") or 1) + 1
+        sb.table("dispositivos").update({"chave_versao": d["chave_versao"]}).eq("id", d["id"]).execute()
+        print(f"\nChave rotacionada (versão {d['chave_versao']}). A anterior parou de valer.")
+    _imprimir_chave_v2(d)
 
 
 # Contas que nascem das migrations. Tudo fora desta lista é cadastro de
@@ -258,13 +367,33 @@ def cmd_limpar(args):
     sb.table("dispositivos").update({"online": False}).neq(
         "id", "00000000-0000-0000-0000-000000000000").execute()
 
+    # O extrato foi apagado, o saldo não: sem isto a regra do db/15
+    # (saldo = soma do extrato) quebraria. Cada conta ganha uma linha de
+    # abertura com o saldo que tem agora.
+    abertos = 0
+    for u in (sb.table("usuarios").select("id, saldo").execute().data or []):
+        saldo = round(float(u.get("saldo") or 0), 2)
+        if saldo == 0:
+            continue
+        sb.table("movimentacoes_carteira").insert({
+            "usuario_id": u["id"], "tipo": "ajuste" if saldo > 0 else "ajuste_debito",
+            "valor": abs(saldo), "saldo_apos": saldo,
+            "descricao": "Saldo de abertura (limpeza do banco)",
+        }).execute()
+        abertos += 1
+    print(f"  extrato reaberto com o saldo atual de {abertos} conta(s)")
+
     if args.saldo is not None:
         for u in (sb.table("usuarios").select("id").execute().data or []):
-            sb.table("usuarios").update({"saldo": args.saldo}).eq("id", u["id"]).execute()
-        print(f"  saldo de todas as contas ajustado para R$ {args.saldo:.2f}")
+            sb.rpc("ajustar_saldo", {"p_usuario": u["id"], "p_saldo_alvo": round(args.saldo, 2),
+                                     "p_descricao": "Ajuste da limpeza do banco"}).execute()
+        print(f"  saldo de todas as contas ajustado para R$ {args.saldo:.2f} (via extrato)")
+
+    divergentes = sb.rpc("conferir_carteira", {}).execute().data or []
+    print(f"  carteira: {'íntegra' if not divergentes else f'{len(divergentes)} conta(s) divergentes!'}")
 
     print("\nBanco limpo. A estrutura (condomínios, carregadores, dispositivos,")
-    print("cartões) continua intacta - o token da placa segue valendo.\n")
+    print("cartões) continua intacta - token v1 e chave v2 das placas seguem valendo.\n")
 
 
 def cmd_ponto_fisico(args):
@@ -274,13 +403,12 @@ def cmd_ponto_fisico(args):
     Não existe carregador "especial": o b0000000-...-0001 é só o que veio
     marcado no seed. Um ponto vira físico quando três coisas são verdade:
       1. `carregadores.origem = 'hardware'` (o simulador para de mexer nele)
-      2. existe uma linha em `dispositivos` apontando para ele, com o hash
-         do token
+      2. existe uma placa em `dispositivos`, com o hash do token, e a
+         porta 1 dela aponta para ele (`portas_dispositivo`)
       3. uma placa foi gravada com esse token
 
-    Este comando faz 1 e 2 e imprime o token para você fazer o 3. Rode uma
-    vez por placa; cada placa atende UM carregador (a coluna carregador_id
-    em dispositivos é única).
+    Este comando faz 1 e 2 e imprime o token para você fazer o 3. No v1 a
+    placa atende UM carregador, na porta 1. Para várias portas, use placa-v2.
     """
     from seguranca import gerar_token_dispositivo, hash_token_dispositivo
 
@@ -299,16 +427,23 @@ def cmd_ponto_fisico(args):
     sb.table("carregadores").update(mudancas).eq("id", args.carregador).execute()
 
     token = gerar_token_dispositivo()
-    existente = sb.table("dispositivos").select("id").eq("carregador_id", args.carregador).execute()
+    existente, porta = _placa_do_carregador(sb, args.carregador)
+    if existente and existente.get("protocolo") == 2:
+        sys.exit(f"O ponto já é atendido pela placa v2 '{existente['nome']}'. "
+                 f"Use chave-v2 --dispositivo {existente['id']}")
     dados = {"nome": args.nome or f"ESP32 - ponto {carregador['numero']}",
              "token_hash": hash_token_dispositivo(token),
              "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2}
-    if existente.data:
-        sb.table("dispositivos").update(dados).eq("id", existente.data[0]["id"]).execute()
+    if existente and porta == 1:
+        sb.table("dispositivos").update(dados).eq("id", existente["id"]).execute()
         acao = "atualizado"
+    elif existente:
+        sys.exit(f"O ponto está na porta {porta} de uma placa multiporta; o v1 só fala com a porta 1.")
     else:
-        sb.table("dispositivos").insert({**dados, "carregador_id": args.carregador}).execute()
-        acao = "criado"
+        novo = sb.table("dispositivos").insert(dados).execute().data[0]
+        sb.table("portas_dispositivo").insert(
+            {"dispositivo_id": novo["id"], "numero": 1, "carregador_id": args.carregador}).execute()
+        acao = "criado, porta 1"
 
     print(f"\nPonto {carregador['numero']} agora é FÍSICO (dispositivo {acao}).")
     print(f"Perfil: {mudancas.get('perfil', carregador.get('perfil'))}")
@@ -348,7 +483,7 @@ def cmd_verificar(_args):
         sys.exit("Coloque SUPABASE_ANON_KEY no .env (a chave pública do frontend).")
 
     sb = _supabase()
-    usuarios = sb.table("usuarios").select("id, nome").limit(2).execute().data or []
+    usuarios = sb.table("usuarios").select("id, nome, condominio_id").limit(2).execute().data or []
     if len(usuarios) < 2:
         sys.exit("Preciso de pelo menos 2 usuários no banco para testar isolamento.")
     a, b = usuarios
@@ -360,6 +495,13 @@ def cmd_verificar(_args):
 
     def bloqueado(r):
         return r.status_code in (401, 403) or (r.status_code == 200 and r.json() == [])
+
+    def rpc_bloqueada(nome, corpo, token):
+        r = httpx.post(f"{url}/rest/v1/rpc/{nome}",
+                       headers={"apikey": anon, "Authorization": f"Bearer {token}",
+                                "Content-Type": "application/json"},
+                       json=corpo, timeout=15)
+        return r.status_code in (401, 403, 404)
 
     casos = [
         ("anon lê usuarios", lambda: bloqueado(get("usuarios?select=id&limit=1"))),
@@ -388,10 +530,28 @@ def cmd_verificar(_args):
                             json={"p_usuario": a["id"], "p_valor": 999, "p_tipo": "credito",
                                   "p_descricao": "teste de invasão"},
                             timeout=15).status_code in (401, 403, 404)),
+        (f"{a['nome']} se cadastra direto pelo RPC (sem o backend)",
+         lambda: rpc_bloqueada("cadastrar_usuario", {
+             "p_nome": "invasor", "p_senha_hash": "$argon2id$x", "p_condominio": a.get("condominio_id"),
+             "p_tipo": "morador", "p_bloco": None, "p_veiculo": {"modelo": "x"}}, token_a)),
+        (f"{a['nome']} mexe no anti-replay da placa pelo RPC",
+         lambda: rpc_bloqueada("consumir_seq", {
+             "p_dispositivo": a["id"], "p_boot": 1, "p_seq": 1, "p_ts": "2026-01-01T00:00:00Z"}, token_a)),
+        (f"{a['nome']} ajusta o próprio saldo pelo RPC",
+         lambda: rpc_bloqueada("ajustar_saldo", {
+             "p_usuario": a["id"], "p_saldo_alvo": 9999, "p_descricao": "x"}, token_a)),
+        ("anon lê as portas das placas", lambda: bloqueado(get("portas_dispositivo?select=id&limit=1"))),
+        (f"{a['nome']} lê as portas das placas",
+         lambda: bloqueado(get("portas_dispositivo?select=id&limit=1", token_a))),
+        (f"{a['nome']} lê a tabela fila direto (só pela view)",
+         lambda: bloqueado(get("fila?select=id&limit=1", token_a))),
+        ("anon lê a geração solar", lambda: bloqueado(get("geracao_solar?select=momento&limit=1"))),
         ("token forjado (assinatura errada)",
          lambda: get("carregadores?select=id&limit=1", token_a[:-4] + "AAAA").status_code in (401, 403)),
         # Controle positivo: se isto falhar, o token não está sendo aceito
         # e todos os "bloqueios" acima podem ser falsos positivos.
+        ("CONTROLE: carteira íntegra (saldo = soma do extrato)",
+         lambda: (sb.rpc("conferir_carteira", {}).execute().data or []) == []),
         ("CONTROLE: logado lê carregadores",
          lambda: (lambda r: r.status_code == 200 and len(r.json()) > 0)(
              get("carregadores?select=id&limit=1", token_a))),
@@ -426,6 +586,20 @@ def main():
     t = sub.add_parser("token-esp")
     t.add_argument("--carregador", required=True)
     t.set_defaults(fn=cmd_token_esp)
+
+    sub.add_parser("chave-mestra").set_defaults(fn=cmd_chave_mestra)
+
+    v2 = sub.add_parser("placa-v2")
+    v2.add_argument("--carregadores", help="UUIDs separados por vírgula, na ordem das portas")
+    v2.add_argument("--dispositivo", help="acrescenta portas a uma placa existente")
+    v2.add_argument("--nome", help="nome da placa nova (ex.: 'ESP32 do estande')")
+    v2.add_argument("--perfil", choices=["veicular", "bancada"])
+    v2.set_defaults(fn=cmd_placa_v2)
+
+    k = sub.add_parser("chave-v2")
+    k.add_argument("--dispositivo", required=True)
+    k.add_argument("--rotacionar", action="store_true", help="invalida a chave atual")
+    k.set_defaults(fn=cmd_chave_v2)
 
     l = sub.add_parser("limpar")
     l.add_argument("--sim", action="store_true", help="executa de verdade (sem isto, só mostra)")

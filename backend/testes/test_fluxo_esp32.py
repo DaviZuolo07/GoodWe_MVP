@@ -14,7 +14,7 @@ Roda contra o app real do FastAPI, com um Supabase falso em memória
 E as travas de segurança do Bloco 2: ninguém encerra, cancela nem cobra a
 recarga de outro.
 
-Rodar:  python testes/test_fluxo_esp32.py
+Rodar:  python -m pytest testes        (ou: python testes/test_fluxo_esp32.py)
 """
 
 import ambiente                                    # precisa vir primeiro
@@ -45,6 +45,7 @@ def checar(condicao, descricao, extra=""):
 
 
 def semear():
+    fake.limpar()
     fake.t("condominios").append({
         "id": COND, "nome": "Portal dos Bandeirantes", "endereco": "Av. Teste, 1",
         "limite_potencia_kw": 60, "ponta_inicio": "18:00", "ponta_fim": "21:00",
@@ -54,10 +55,13 @@ def semear():
         "tipo": "DC", "potencia_maxima_kw": 0.025, "conector": "USB", "tensao_v": 5,
         "corrente_maxima_a": 3, "tarifa_kwh": 1.95, "status": "disponivel",
         "origem": "hardware", "perfil": "bancada", "temperatura_c": 26})
+    # Placa v1 depois do db/15: a ligação com o ponto é a PORTA 1 (backfill).
     fake.t("dispositivos").append({
-        "id": "d1", "carregador_id": PONTO, "nome": "ESP32 bancada",
-        "token_hash": hash_token_dispositivo(TOKEN_ESP), "online": False,
-        "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2})
+        "id": "d1", "carregador_id": None, "nome": "ESP32 bancada",
+        "token_hash": hash_token_dispositivo(TOKEN_ESP), "online": False, "protocolo": 1,
+        "chave_versao": 1, "seq_atual": 0, "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2})
+    fake.t("portas_dispositivo").append({"id": "p1", "dispositivo_id": "d1", "numero": 1,
+                                         "carregador_id": PONTO})
 
     for uid, nome, saldo in [("u-gus", "Gus Bancada", 0.0), ("u-outro", "Outro Morador", 50.0)]:
         fake.t("usuarios").append({"id": uid, "nome": nome, "tipo_usuario": "morador",
@@ -206,8 +210,12 @@ def main_teste():
     saldo_final = CLIENTE.get("/me", headers=gus).json()["usuario"]["saldo"]
     checar(saldo_final == round(5 - s["custo_final"], 2),
            f"saldo final R$ {saldo_final} = 5 - custo real")
-    tipos = [m["tipo"] for m in fake.t("movimentacoes_carteira")]
+    tipos = [m["tipo"] for m in fake.t("movimentacoes_carteira") if m["usuario_id"] == "u-gus"]
     checar(tipos == ["credito", "pre_autorizacao", "estorno"], f"extrato completo: {tipos}")
+    checar(all(c.get("porta") == 1 for c in fake.t("comandos_dispositivo")),
+           "placa v1: todo comando foi para a porta 1")
+    checar(all(l.get("porta") == 1 for l in fake.t("leituras_hardware")),
+           "placa v1: toda leitura foi gravada na porta 1")
     checar(any("finalizada" in n["mensagem"] for n in fake.t("notificacoes")), "recibo chega como notificação")
 
     cmds = esp("GET", "/hardware/comandos").json()["comandos"]
@@ -287,6 +295,11 @@ def main_teste():
 
     print(f"\n{ok_total} verificações passaram, {falhas} falharam.\n")
     return 1 if falhas else 0
+
+
+def test_fluxo_completo_v1():
+    """Entrada do pytest: o roteiro inteiro precisa passar sem nenhuma falha."""
+    assert main_teste() == 0
 
 
 if __name__ == "__main__":

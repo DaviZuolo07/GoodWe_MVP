@@ -14,8 +14,17 @@ COMO A COBRANÇA FUNCIONA (o que a banca pediu para explicar)
 4. ESTORNO          Ao terminar, o custo real é calculado e a diferença entre
                     o reservado e o real volta para a carteira na hora.
 
-Tudo vira linha no extrato (`movimentacoes_carteira`): crédito, reserva e
-estorno. É o que o morador vê na Carteira e o que o gestor soma no painel.
+Tudo vira linha no extrato (`movimentacoes_carteira`): bônus de boas-vindas
+(simulado), crédito, reserva, estorno e ajuste. É o que o morador vê na
+Carteira e o que o gestor soma no painel.
+
+A REGRA (db/15): saldo = soma do extrato
+----------------------------------------
+Cada tipo tem um sinal (`sinal_movimento` no banco):
+    +  credito, bonus, estorno, ajuste
+    -  pre_autorizacao, ajuste_debito
+O saldo só muda dentro das RPCs; um UPDATE direto em `usuarios.saldo` é
+recusado pelo banco (saldo_so_por_rpc). `conferir()` lista quem diverge.
 
 POR QUE RPC E NÃO UPDATE
 ------------------------
@@ -72,3 +81,16 @@ def saldo_de(usuario_id: str) -> float:
     if not r.data:
         raise HTTPException(status_code=404, detail="Usuário não encontrado.")
     return round(float(r.data[0]["saldo"] or 0), 2)
+
+
+def ajustar(usuario_id: str, saldo_alvo: float, descricao: str) -> float:
+    """Leva o saldo ao alvo lançando a diferença no extrato (ajuste ou ajuste_debito)."""
+    r = supabase.rpc("ajustar_saldo", {
+        "p_usuario": usuario_id, "p_saldo_alvo": round(float(saldo_alvo), 2), "p_descricao": descricao,
+    }).execute()
+    return _valor_rpc(r)
+
+
+def conferir() -> list[dict]:
+    """Contas em que saldo != soma do extrato. Lista vazia = carteira íntegra."""
+    return supabase.rpc("conferir_carteira", {}).execute().data or []

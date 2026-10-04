@@ -28,11 +28,21 @@ if not os.getenv("JWT_PRIVATE_JWK"):
 os.environ.setdefault("SUPABASE_URL", "http://127.0.0.1:9")
 os.environ.setdefault("SUPABASE_KEY", "sb_secret_teste_local")
 os.environ.setdefault("CHAT_MODO", "regras")
+# Chave-mestra descartável do protocolo v2 (a de verdade mora no backend/.env).
+os.environ.setdefault("DEVICE_MASTER_KEY", "ab" * 32)
 
 
 def usar_supabase_falso():
-    """Troca o cliente ANTES de importar os módulos que fazem `from config import supabase`."""
+    """
+    Troca o cliente ANTES de importar os módulos que fazem `from config import supabase`.
+
+    No pytest, todos os arquivos de teste rodam no MESMO processo: o primeiro
+    instala o falso e os módulos do backend guardam a referência a ele. Os
+    seguintes reaproveitam a mesma instância - cada teste chama `limpar()`
+    antes de semear, para não herdar dados do anterior.
+    """
     import config
     from supabase_falso import FakeSupabase
-    config.supabase = FakeSupabase()
+    if not isinstance(config.supabase, FakeSupabase):
+        config.supabase = FakeSupabase()
     return config.supabase

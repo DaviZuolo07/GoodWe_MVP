@@ -1,7 +1,7 @@
 """
 test_unidades.py - Funções puras: física, tarifa, alocador e camadas do chat.
 
-Nenhuma toca banco nem rede. Rodar: python testes/test_unidades.py
+Nenhuma toca banco nem rede. Rodar: python -m pytest testes   (ou o arquivo direto)
 """
 
 import ambiente                                    # noqa: F401  (ajusta o sys.path e o .env)
@@ -126,6 +126,9 @@ import demanda as _dem                                  # noqa: E402
 from fisica import calcular_estimativa, detalhar_custo, potencia_efetiva  # noqa: E402
 
 # 9.1 Admissão: carro quase cheio pedindo pouco NÃO bloqueia o prédio
+# Os dublês abaixo são DESFEITOS no fim do 9.2: no pytest os arquivos rodam no
+# mesmo processo, e um demanda.py remendado quebraria o teste de fluxo.
+_originais_demanda = (_dem.condominio, _dem._sessoes_ativas)
 _dem.condominio = lambda _cid: {"id": "c1", "limite_potencia_kw": 30, "ponta_inicio": "00:00",
                                  "ponta_fim": "00:00", "ponta_fator_limite": 1}
 _dem._sessoes_ativas = lambda _cid: [{"id": "quase_cheio", "demanda_kw": 0.9, "controlavel": True}]
@@ -142,6 +145,7 @@ try:
     checar(False, "22º carro em 30 kW (1,36 kW cada) é recusado")
 except Exception as e:
     checar(getattr(e, "status_code", None) == 409, "22º carro em 30 kW (1,36 kW cada) é recusado", e)
+_dem.condominio, _dem._sessoes_ativas = _originais_demanda
 
 # 9.3 Curva aplicada UMA vez: a 90% com folga, o carro puxa o que a curva manda
 dem90 = potencia_no_soc(7.4, 90)
@@ -187,4 +191,12 @@ cheio = _dem.simular_cenario(30, 30, 7.4)
 checar(cheio["admitidos"] == 21 and cheio["na_fila"] == 9, "30 carros: 21 entram, 9 vão para a fila")
 
 print(f"\n{ok} verificações passaram, {falhas} falharam.\n")
-raise SystemExit(1 if falhas else 0)
+
+
+def test_unidades():
+    """Entrada do pytest: as verificações rodam ao importar; aqui só se cobra o placar."""
+    assert falhas == 0, f"{falhas} verificação(ões) falharam - rode o arquivo direto para ver quais"
+
+
+if __name__ == "__main__":
+    raise SystemExit(1 if falhas else 0)

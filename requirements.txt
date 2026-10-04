@@ -13,3 +13,5 @@ cryptography>=42
 # Base de fusos horários: o Windows não traz a do sistema, e sem ela o
 # horário de ponta (America/Sao_Paulo) não resolve.
 tzdata
+# Testes (de dentro de backend/):  python -m pytest testes -q
+pytest>=8

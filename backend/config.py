@@ -171,6 +171,16 @@ CREDITO_MAXIMO = 500.0
 RESERVA_MINIMA = 1.00
 
 
+# Carteira: crédito de boas-vindas (SIMULADO), lançado pela RPC de cadastro.
+BONUS_BOAS_VINDAS = 100.0
+
+# Protocolo v2 do ESP32 (ADR-015). A janela é conferida no banco, com o
+# relógio do Postgres; o valor vai como parâmetro das RPCs.
+JANELA_REPLAY_S = int(os.getenv("JANELA_REPLAY_S", "120"))
+MAX_LEITURAS_LOTE = 30          # o mesmo teto da RPC registrar_lote_telemetria
+CORPO_MAX_V2 = 8 * 1024         # bytes; recusado antes de calcular o HMAC
+
+
 def agora() -> datetime:
     """Sempre com fuso. `datetime.utcnow()` é ingênuo e está deprecado."""
     return datetime.now(timezone.utc)

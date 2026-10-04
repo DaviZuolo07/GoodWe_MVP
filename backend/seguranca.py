@@ -2,11 +2,12 @@
 seguranca.py - Identidade e segredos do ChargeOps, num lugar só.
 =================================================================
 
-Quatro responsabilidades, cada uma com UMA implementação:
+Cinco responsabilidades, cada uma com UMA implementação:
 
   1. Senha de morador   -> Argon2id (hash lento, com salt, resistente a GPU)
   2. Token de sessão    -> JWT ES256 assinado com a NOSSA chave privada
-  3. Token do ESP32     -> SHA-256 (o token é longo e aleatório, ver abaixo)
+  3. Token do ESP32 v1  -> SHA-256 (o token é longo e aleatório, ver abaixo)
+  3b. Assinatura v2     -> HMAC-SHA256 com chave DERIVADA, nunca gravada
   4. Força bruta        -> limitador de tentativas no /login
 
 POR QUE DOIS HASHES DIFERENTES (Argon2 para senha, SHA-256 para o ESP32)
@@ -28,6 +29,7 @@ políticas de RLS em nome do morador. A chave privada NUNCA sai do backend.
 """
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -192,6 +194,78 @@ def hash_token_dispositivo(token: str) -> str:
     revela nada sobre o token enviado.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ===========================================================================
+# 3b. PROTOCOLO v2 DO ESP32 - HMAC com chave derivada (ADR-015, D2)
+# ===========================================================================
+# HMAC exige que o servidor conheça o segredo. Se o banco guardasse só o hash
+# do token e esse hash fosse a chave, o hash VIRARIA a chave: vazou o banco,
+# forja-se qualquer placa. Por isso a chave de cada placa é DERIVADA:
+#
+#     K = HMAC-SHA256(DEVICE_MASTER_KEY, "chargeops-v2|<dispositivo_id>|<versao>")
+#
+# A chave-mestra mora só no .env. O banco guarda o id e a versão - nada
+# secreto. Vazou só o banco: não forja. Vazou o .env: forja (mesmo nível da
+# JWT_PRIVATE_JWK, que já mora lá). Rotação: `chave_versao + 1`.
+#
+# O que é assinado (uma linha por campo, nesta ordem):
+#     MÉTODO \n caminho \n boot \n seq \n ts \n sha256_hex(corpo)
+# Caminho sem query string (ex.: /hardware/v2/telemetria). Corpo vazio = b"".
+
+PREFIXO_DERIVACAO = "chargeops-v2"
+
+
+@lru_cache(maxsize=1)
+def _chave_mestra() -> bytes:
+    bruto = (os.getenv("DEVICE_MASTER_KEY") or "").strip()
+    if not bruto:
+        raise RuntimeError("DEVICE_MASTER_KEY não definida no .env. Gere com: "
+                           "python provisionar.py chave-mestra")
+    try:
+        chave = bytes.fromhex(bruto)
+    except ValueError:
+        raise RuntimeError("DEVICE_MASTER_KEY precisa ser hexadecimal (64 caracteres).")
+    if len(chave) < 32:
+        raise RuntimeError("DEVICE_MASTER_KEY precisa ter pelo menos 32 bytes (64 hex).")
+    return chave
+
+
+def protocolo_v2_configurado() -> bool:
+    try:
+        _chave_mestra()
+        return True
+    except RuntimeError:
+        return False
+
+
+def gerar_chave_mestra() -> str:
+    return secrets.token_hex(32)
+
+
+def chave_dispositivo(dispositivo_id: str, versao: int) -> bytes:
+    """A chave que a placa usa. Calculada a cada requisição, nunca gravada."""
+    rotulo = f"{PREFIXO_DERIVACAO}|{dispositivo_id}|{int(versao)}".encode("utf-8")
+    return hmac.new(_chave_mestra(), rotulo, hashlib.sha256).digest()
+
+
+def mensagem_v2(metodo: str, caminho: str, boot: int, seq: int, ts: int, corpo: bytes) -> bytes:
+    return "\n".join([metodo.upper(), caminho, str(int(boot)), str(int(seq)), str(int(ts)),
+                      hashlib.sha256(corpo or b"").hexdigest()]).encode("utf-8")
+
+
+def assinar_v2(chave: bytes, metodo: str, caminho: str, boot: int, seq: int, ts: int,
+               corpo: bytes) -> str:
+    """Mesma conta que o firmware faz. Usado pelos testes e pelo simulador."""
+    return hmac.new(chave, mensagem_v2(metodo, caminho, boot, seq, ts, corpo),
+                    hashlib.sha256).hexdigest()
+
+
+def assinatura_v2_confere(chave: bytes, assinatura_hex: str, metodo: str, caminho: str,
+                          boot: int, seq: int, ts: int, corpo: bytes) -> bool:
+    esperada = assinar_v2(chave, metodo, caminho, boot, seq, ts, corpo)
+    # Tempo constante: comparar com == vazaria quantos caracteres batem.
+    return hmac.compare_digest(esperada, (assinatura_hex or "").strip().lower())
 
 
 # ===========================================================================
