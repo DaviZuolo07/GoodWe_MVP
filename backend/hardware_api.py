@@ -38,6 +38,22 @@ ROTAS
   POST /hardware/telemetria               POST /hardware/v2/rfid          {porta, uid}
                                           POST /hardware/v2/telemetria    {t_envio_ms, leituras[]}
 
+TOTEM v2.1 (ADR-017 / ADR-018) - mudanças só ADITIVAS
+-----------------------------------------------------
+- ESCALA: a placa manda W/Wh brutos; `dispositivos.fator_escala` (1000 na
+  maquete) converte NA ENTRADA. Dali em diante tudo é kW/kWh de produto.
+  Tudo que volta para a placa (energia_wh, potencia_media_w, alocado_kw)
+  volta no BRUTO: ela retoma o contador pelo energia_wh do handshake.
+  Detecção física (0,5 W, 0,2 Wh) também é no bruto.
+- /v2/rfid: tag-primeiro (recarga.processar_tag). Resposta ganha acao,
+  tela, motivo, sessao_id e fila_posicao; os campos antigos continuam.
+- /v2/telemetria: `leituras` pode vir vazia com `fontes` preenchida
+  (painel/bateria da vaga solar). Resposta ganha `fontes_gravadas` e, por
+  porta, `estado` (livre | aguardando_energia | carregando | pausada) e,
+  na porta solar, `fonte` (solar | rede).
+- Eventos de segurança: assinatura inválida e replay (aqui), tag alheia
+  (recarga.processar_tag).
+
 Erros do v2 vêm com um CÓDIGO em `detail`, para o firmware decidir sem ler texto:
   401 assinatura_invalida | fora_da_janela      (confira chave e relógio)
   409 replay | boot_desconhecido                (boot_desconhecido: refaça o handshake)
@@ -47,18 +63,21 @@ Erros do v2 vêm com um CÓDIGO em `detail`, para o firmware decidir sem ler tex
 import time
 import uuid as uuidlib
 from datetime import datetime, timezone
-from typing import Optional
+from datetime import timedelta
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 import demanda
 import dispositivos
 import recarga
+import simulador
 from config import CORPO_MAX_V2, JANELA_REPLAY_S, MAX_LEITURAS_LOTE, agora, agora_iso, \
     para_datetime, supabase, um
-from fisica import custo_da_sessao, minutos_pela_potencia_medida, soc_pela_energia
+from fisica import (custo_da_sessao, energia_bruta_wh, energia_escalada_kwh, minutos_pela_potencia_medida,
+                    potencia_escalada_kw, soc_pela_energia, soc_pela_tensao_18650)
 from identidade import gestor_logado
 from seguranca import assinatura_v2_confere, chave_dispositivo, hash_token_dispositivo, \
     protocolo_v2_configurado
@@ -68,6 +87,12 @@ router = APIRouter(prefix="/hardware", tags=["hardware"])
 # Média móvel exponencial da potência medida: 30% da leitura nova, 70% do
 # histórico. Suaviza o ruído do sensor sem demorar a reagir.
 ALFA_MEDIA = 0.3
+
+MAX_FONTES_LOTE = 20            # o mesmo teto da RPC (db/17) e do totem
+VAGA_PUXANDO_W = 0.05           # W BRUTOS: abaixo disto a vaga solar não está puxando
+FONTE_RECENTE_S = 30            # leitura de fonte que ainda vale para a vaga solar
+DT_AMOSTRA_PADRAO_S = 2.0       # intervalo de amostra quando o lote tem uma só
+DT_AMOSTRA_MAX_S = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +132,27 @@ class LeituraV2(TelemetriaPayload):
     t_ms: int = Field(..., ge=0)
 
 
+class FonteV2(BaseModel):
+    """Painel ou bateria da vaga solar. Potência e corrente = o que a fonte FORNECE.
+    Sem `ge=0`: bateria com sinal (negativa = carregando) também é aceita."""
+    fonte: Literal["painel", "bateria"]
+    t_ms: int = Field(..., ge=0)
+    potencia_w: Optional[float] = Field(None, ge=-1000, le=100000)
+    tensao_v: Optional[float] = Field(None, ge=0, le=1000)
+    corrente_a: Optional[float] = Field(None, ge=-100, le=1000)
+
+
 class TelemetriaV2Payload(BaseModel):
     t_envio_ms: int = Field(..., ge=0)
-    leituras: list[LeituraV2] = Field(..., min_length=1, max_length=MAX_LEITURAS_LOTE)
+    # Pode vir vazia se `fontes` vier preenchida (Totem v2.1).
+    leituras: list[LeituraV2] = Field(default_factory=list, max_length=MAX_LEITURAS_LOTE)
+    fontes: Optional[list[FonteV2]] = Field(None, max_length=MAX_FONTES_LOTE)
+
+    @model_validator(mode="after")
+    def _nao_vazio(self):
+        if not self.leituras and not self.fontes:
+            raise ValueError("lote_invalido: leituras e fontes vazias")
+        return self
 
 
 class RfidV2Payload(RfidPayload):
@@ -120,24 +163,33 @@ class RfidV2Payload(RfidPayload):
 # Peças comuns aos dois protocolos
 # ---------------------------------------------------------------------------
 
-def _resumo_sessao(s: dict | None) -> dict | None:
+def _resumo_sessao(s: dict | None, fator: float = 1.0) -> dict | None:
     if not s:
         return None
     return {
         "sessao_id": s["id"],
-        "energia_wh": round(float(s.get("energia_entregue_kwh") or 0) * 1000, 3),
+        # BRUTO: é com este número que a placa retoma o contador depois do reboot.
+        "energia_wh": round(energia_bruta_wh(s.get("energia_entregue_kwh"), fator), 3),
         "alvo": float(s.get("alvo_percentual") or 100),
         "percentual": float(s.get("percentual_bateria_atual") or 0),
     }
 
 
-def _estado_da_porta(carregador_id: str) -> dict:
+def _estado_vaga(carregador_id: str, ativa: dict | None) -> str:
+    """Estado da vaga na lista fechada do contrato (os completa_* chegam no D2)."""
+    if ativa:
+        return "pausada" if ativa.get("modo_vaga_solar") == "pausada" else "carregando"
+    return "aguardando_energia" if recarga.sessao_aguardando_energia(carregador_id) else "livre"
+
+
+def _estado_da_porta(carregador_id: str, fator: float = 1.0) -> dict:
     """O que a placa precisa saber de UMA porta ao ligar."""
     c = recarga.carregador(carregador_id)
     ativa = recarga.sessao_ativa_do_carregador(carregador_id)
     aguardando = recarga.sessao_aguardando(carregador_id)
-    supabase.table("carregadores").update({"status": "em_uso" if ativa else "disponivel"}) \
-        .eq("id", carregador_id).execute()
+    estado = _estado_vaga(carregador_id, ativa)
+    supabase.table("carregadores").update(
+        {"status": "em_uso" if estado != "livre" else "disponivel"}).eq("id", carregador_id).execute()
     return {
         "carregador": {
             "id": c["id"], "numero": c["numero"], "perfil": c.get("perfil"),
@@ -147,9 +199,10 @@ def _estado_da_porta(carregador_id: str) -> dict:
         "condominio": (recarga.condominio_de(c) or {}).get("nome"),
         # Reiniciou no meio de uma recarga: o relé volta a fechar e o contador
         # de energia continua de onde parou, em vez de recomeçar do zero.
-        "rele_esperado": bool(ativa),
-        "sessao_ativa": _resumo_sessao(ativa),
+        "rele_esperado": estado == "carregando",
+        "sessao_ativa": _resumo_sessao(ativa, fator),
         "pedido": dispositivos.payload_pedido(aguardando) if aguardando else None,
+        "estado": estado,
     }
 
 
@@ -227,14 +280,17 @@ def _fracao_solar(s: dict, cond: dict | None, potencia_kw: float) -> tuple[float
 
 
 def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
-                       com_alocacao: bool = False) -> dict:
+                       com_alocacao: bool = False, fator: float = 1.0,
+                       solar: dict | None = None) -> dict:
     """
     A partir daqui a energia da sessão deixa de ser calculada e passa a ser
     MEDIDA. O modelo físico só entra para derivar o SoC; o tempo restante sai
     da potência que o sensor está vendo. A leitura JÁ foi gravada por quem chamou.
 
-    `com_alocacao` (v2): a resposta traz `alocado_kw`, a potência que o
-    alocador liberou para a porta. Informativo - o relé do ESP32 não modula.
+    `fator` (ADR-017): converte o bruto em kW/kWh de produto AQUI, e só aqui.
+    `solar` (porta solar): {painel_w, bateria_w, origem} da medição das fontes;
+    a fração solar desta porta passa a ser MEDIDA, não atribuída.
+    `com_alocacao` (v2): a resposta traz `alocado_kw` (no domínio da placa).
     """
     if leitura.temperatura_c is not None:
         supabase.table("carregadores").update({"temperatura_c": round(leitura.temperatura_c, 1)}) \
@@ -243,10 +299,10 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
     s = recarga.sessao_ativa_do_carregador(carregador_id)
     if not s:
         # Sem sessão o relé tem que estar aberto: trava contra energia correndo
-        # sem ninguém pagando.
+        # sem ninguém pagando. Esperando energia também: relé aberto.
         aguardando = recarga.sessao_aguardando(carregador_id)
         resposta = {"ok": True, "sessao_ativa": False, "deve_liberar": False,
-                    "aguardando_cartao": bool(aguardando)}
+                    "aguardando_cartao": bool(aguardando), "estado": _estado_vaga(carregador_id, None)}
         if com_alocacao:
             resposta["alocado_kw"] = 0.0
         return resposta
@@ -254,9 +310,9 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
     v = recarga.veiculo(s["veiculo_id"]) or {}
     cond = recarga.condominio_de(recarga.carregador(carregador_id))
 
-    potencia_kw = float(leitura.potencia_w or 0) / 1000.0
+    potencia_kw = potencia_escalada_kw(leitura.potencia_w, fator)
     energia_kwh = max(float(s.get("energia_entregue_kwh") or 0),
-                      float(leitura.energia_wh or 0) / 1000.0)
+                      energia_escalada_kwh(leitura.energia_wh, fator))
 
     media = s.get("potencia_media_kw")
     if leitura.rele_ligado and potencia_kw > 0:
@@ -266,9 +322,11 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
     tempo = minutos_pela_potencia_medida(s, v, soc or 0, media) if soc is not None else None
 
     # Celular cheio para de puxar corrente. 30 s abaixo de 0,5 W com o relé
-    # fechado e alguma energia já entregue = carga completa.
+    # fechado e alguma energia já entregue = carga completa. Física = BRUTO.
+    bruto_kw = float(leitura.potencia_w or 0) / 1000.0
+    bruto_kwh = energia_kwh / fator
     fim_por_dispositivo = False
-    if leitura.rele_ligado and energia_kwh > 0.0002 and potencia_kw < recarga.LIMIAR_BAIXA_POTENCIA_KW:
+    if leitura.rele_ligado and bruto_kwh > 0.0002 and bruto_kw < recarga.LIMIAR_BAIXA_POTENCIA_KW:
         desde = para_datetime(s.get("baixa_potencia_desde"))
         if not desde:
             supabase.table("sessoes_recarga").update({"baixa_potencia_desde": agora_iso()}) \
@@ -278,7 +336,12 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
     elif s.get("baixa_potencia_desde"):
         supabase.table("sessoes_recarga").update({"baixa_potencia_desde": None}).eq("id", s["id"]).execute()
 
-    fracao, origem_solar = _fracao_solar(s, cond, potencia_kw)
+    puxando_w = float(leitura.potencia_w or 0)
+    if solar is not None and puxando_w > VAGA_PUXANDO_W:
+        fornecido = float(solar.get("painel_w") or 0) + float(solar.get("bateria_w") or 0)
+        fracao, origem_solar = min(1.0, max(0.0, fornecido / puxando_w)), solar.get("origem")
+    else:
+        fracao, origem_solar = _fracao_solar(s, cond, potencia_kw)
     motivo = recarga.registrar_progresso(s, v, cond, energia_kwh, potencia_kw, soc, tempo, media,
                                          fracao_solar=fracao, origem_solar=origem_solar)
     if not motivo and fim_por_dispositivo:
@@ -286,21 +349,148 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
         recarga.encerrar(recarga.sessao(s["id"]) or s, motivo)
 
     atual = recarga.sessao(s["id"]) or s
-    extra = {"alocado_kw": round(float(atual.get("potencia_alocada_kw") or 0), 4) if motivo is None else 0.0} \
-        if com_alocacao else {}
+    pausada = motivo is None and atual.get("modo_vaga_solar") == "pausada"
+    extra = {}
+    if com_alocacao:
+        alocado = float(atual.get("potencia_alocada_kw") or 0) if motivo is None else 0.0
+        extra["alocado_kw"] = round(alocado / fator, 6)          # domínio da placa
+    if solar is not None:
+        extra["fonte"] = "rede" if atual.get("modo_vaga_solar") == "rede" else "solar"
     return {
         **extra,
         "ok": True,
         "sessao_ativa": motivo is None,
-        "deve_liberar": motivo is None,
+        "deve_liberar": motivo is None and not pausada,
+        "estado": "livre" if motivo else ("pausada" if pausada else "carregando"),
         "motivo": motivo,
         "percentual": round(soc, 1) if soc is not None else None,
+        "percentual_origem": s.get("percentual_origem") or "informado",
         "tempo_restante_min": tempo,
-        "energia_wh": round(energia_kwh * 1000, 3),
+        "energia_wh": round(energia_bruta_wh(energia_kwh, fator), 3),
         "custo_ate_agora": custo_da_sessao(atual),
         "valor_reservado": float(atual.get("valor_pre_autorizado") or 0),
-        "potencia_media_w": round((media or 0) * 1000, 2),
+        "potencia_media_w": round((media or 0) * 1000 / fator, 3),
     }
+
+
+# ---------------------------------------------------------------------------
+# Fontes da vaga solar (painel + bateria 18650)
+# ---------------------------------------------------------------------------
+
+def _fonte_para_banco(f: FonteV2) -> dict:
+    """A RPC grava o que vier aqui. A bateria ganha o SOC ESTIMADO pela tensão."""
+    dados = f.model_dump()
+    dados["soc_estimado"] = soc_pela_tensao_18650(f.tensao_v) if f.fonte == "bateria" else None
+    return dados
+
+
+def _carregador_da_fonte(d: dict) -> str | None:
+    """O painel pertence à porta solar; sem ela, ao condomínio da porta 1."""
+    ps = dispositivos.porta_solar(d)
+    if ps:
+        cid = dispositivos.carregador_da_porta(d["id"], ps)
+        if cid:
+            return cid
+    portas = dispositivos.portas_do_dispositivo(d["id"])
+    return portas[0]["carregador_id"] if portas else None
+
+
+def _gravar_geracao(d: dict, painel: list[FonteV2], fator: float, origem: str) -> None:
+    """
+    Painel -> `geracao_solar` do condomínio, balde de 5 min (o mesmo do
+    simulador). Energia = soma de P x dt das amostras (dt pelo t_ms da placa).
+    A linha leva o dispositivo: o simulador vê e para de gravar (fallback).
+    """
+    cid = _carregador_da_fonte(d)
+    if not cid or not painel:
+        return
+    try:
+        cond_id = recarga.carregador(cid)["condominio_id"]
+        dts = [max(0.0, min(DT_AMOSTRA_MAX_S, (b.t_ms - a.t_ms) / 1000.0)) for a, b in zip(painel, painel[1:])]
+        dts = [dts[0] if dts else DT_AMOSTRA_PADRAO_S] + dts
+        energia = sum(max(0.0, potencia_escalada_kw(f.potencia_w, fator)) * dt / 3600.0
+                      for f, dt in zip(painel, dts))
+        momento = simulador.inicio_do_balde(agora()).isoformat()
+        linha = um(supabase.table("geracao_solar").select("energia_kwh, dispositivo_id")
+                   .eq("condominio_id", cond_id).eq("momento", momento).execute())
+        if linha and linha.get("dispositivo_id") == d["id"]:
+            energia += float(linha.get("energia_kwh") or 0)
+        supabase.table("geracao_solar").upsert({
+            "condominio_id": cond_id, "momento": momento,
+            "potencia_kw": round(max(0.0, potencia_escalada_kw(painel[-1].potencia_w, fator)), 4),
+            "energia_kwh": round(energia, 6), "origem": origem, "dispositivo_id": d["id"],
+        }, on_conflict="condominio_id,momento").execute()
+    except Exception as e:
+        print(f"[SOLAR] geração da placa não gravada: {e}")
+
+
+def _fontes_recentes(d: dict) -> dict:
+    """Última leitura de cada fonte nos últimos FONTE_RECENTE_S (lote sem fontes)."""
+    desde = (agora() - timedelta(seconds=FONTE_RECENTE_S)).isoformat()
+    linhas = supabase.table("leituras_fonte").select("fonte, potencia_w, tensao_v, medido_em") \
+        .eq("dispositivo_id", d["id"]).gte("medido_em", desde) \
+        .order("medido_em", desc=True).limit(10).execute().data or []
+    out = {}
+    for x in linhas:
+        out.setdefault(x["fonte"], x)
+    return out
+
+
+def _contexto_fontes(d: dict, fontes: list[FonteV2], buscar: bool) -> dict | None:
+    """{painel_w, bateria_w, bateria_soc, origem} em W BRUTOS, ou None sem dado."""
+    origem = "simulado" if d.get("virtual") else "medido"
+    if fontes:
+        ult = {}
+        for f in sorted(fontes, key=lambda x: x.t_ms):
+            ult[f.fonte] = {"potencia_w": f.potencia_w, "tensao_v": f.tensao_v}
+    elif buscar:
+        ult = _fontes_recentes(d)
+    else:
+        return None
+    if not ult:
+        return None
+    p, b = ult.get("painel") or {}, ult.get("bateria") or {}
+    return {"painel_w": max(0.0, float(p.get("potencia_w") or 0)),
+            "bateria_w": float(b.get("potencia_w") or 0),
+            "bateria_soc": soc_pela_tensao_18650(b.get("tensao_v")) if b else None,
+            "origem": origem}
+
+
+def _aplicar_vaga_solar(d: dict, porta: int, ctx: dict) -> str | None:
+    """
+    Modbus 10030 / 10024 na porta solar. Pausar = `bloquear` + deve_liberar
+    false; retomar = `liberar`. "rede" não mexe no relé: a placa recebe
+    `fonte: "rede"` e troca a fonte (pedido ao totem).
+    """
+    cid = dispositivos.carregador_da_porta(d["id"], porta)
+    s = recarga.sessao_ativa_do_carregador(cid) if cid else None
+    if not s:
+        return None
+    charger = recarga.carregador(cid)
+    atual = s.get("modo_vaga_solar") or "solar"
+    minimo = charger.get("bateria_soc_minimo")
+    novo = demanda.decidir_vaga_solar(atual, ctx.get("bateria_soc"), ctx.get("bateria_w"),
+                                      20 if minimo is None else float(minimo),
+                                      bool(charger.get("garantir_minimo")))
+    if novo == atual:
+        return novo
+    r = supabase.table("sessoes_recarga").update({"modo_vaga_solar": novo}) \
+        .eq("id", s["id"]).eq("status", "carregando").execute()
+    if not r.data:
+        return atual
+    soc = ctx.get("bateria_soc")
+    if novo == "pausada":
+        dispositivos.enfileirar(cid, "bloquear", s["id"])
+        recarga.notificar(s["usuario_id"], f"Recarga no ponto {charger['numero']} pausada: bateria solar "
+                                           f"em ~{soc:.0f}% (estimado), abaixo do mínimo. Retoma sozinha.")
+    elif atual == "pausada":
+        dispositivos.enfileirar(cid, "liberar", s["id"])
+        recarga.notificar(s["usuario_id"], f"Recarga no ponto {charger['numero']} retomada pela energia solar.")
+    elif novo == "rede":
+        recarga.notificar(s["usuario_id"], f"Ponto {charger['numero']}: bateria solar baixa, a recarga "
+                                           f"continua pela rede (garantia de potência mínima).")
+    print(f"[SOLAR] vaga {porta}: {atual} -> {novo} (SOC ~{soc}%, estimado)")
+    return novo
 
 
 # ===========================================================================
@@ -339,7 +529,7 @@ def handshake(payload: HandshakePayload, x_device_token: str = Header(None)):
     # A placa acabou de ligar: o que estava na fila foi pensado para a vida
     # anterior dela. O estado real vai nesta resposta.
     descartados = dispositivos.descartar_pendentes(d["id"])
-    porta = _estado_da_porta(d["carregador_id"])
+    porta = _estado_da_porta(d["carregador_id"], dispositivos.fator_escala(d))
 
     return {
         "ok": True,
@@ -375,6 +565,7 @@ def leitura_rfid(payload: RfidPayload, x_device_token: str = Header(None)):
 def receber_telemetria(payload: TelemetriaPayload, x_device_token: str = Header(None)):
     d = autenticar(x_device_token)
     s = recarga.sessao_ativa_do_carregador(d["carregador_id"])
+    fator = dispositivos.fator_escala(d)
     supabase.table("leituras_hardware").insert({
         "dispositivo_id": d["id"],
         "porta": 1,
@@ -385,8 +576,12 @@ def receber_telemetria(payload: TelemetriaPayload, x_device_token: str = Header(
         "corrente_a": payload.corrente_a,
         "temperatura_c": payload.temperatura_c,
         "rele_ligado": payload.rele_ligado,
+        "fator_escala": fator,
+        "potencia_escalada_kw": potencia_escalada_kw(payload.potencia_w, fator),
+        "energia_escalada_kwh": energia_escalada_kwh(payload.energia_wh, fator),
+        "origem": "simulado" if d.get("virtual") else "medido",
     }).execute()
-    return _processar_leitura(d["carregador_id"], payload)
+    return _processar_leitura(d["carregador_id"], payload, fator=fator)
 
 
 # ===========================================================================
@@ -447,8 +642,23 @@ def _conferir_assinatura(request_info: dict) -> dict:
                                request_info["caminho"], request_info["boot"],
                                request_info["seq"], request_info["ts"], request_info["corpo"])
     if not (d and ok):
+        dispositivos.registrar_evento_seguranca(
+            "assinatura_invalida", dispositivo_id=d["id"] if d else None, ip=request_info.get("ip"),
+            detalhe=f"{request_info['metodo']} {request_info['caminho']}"[:200])
         raise HTTPException(status_code=401, detail="assinatura_invalida")
     return d
+
+
+def _rpc_v2(d: dict, nome: str, params: dict):
+    """_rpc que registra o replay como evento de segurança antes de recusar."""
+    try:
+        return _rpc(nome, params)
+    except HTTPException as e:
+        if e.detail == "replay":
+            dispositivos.registrar_evento_seguranca(
+                "replay", dispositivo_id=d["id"], ip=d.get("_ip"),
+                detalhe=f"boot={d.get('_boot')} seq={d.get('_seq')} ({nome})")
+        raise
 
 
 def _assinada(consumir: bool, handshake: bool = False):
@@ -470,16 +680,17 @@ def _assinada(consumir: bool, handshake: bool = False):
         info = {"id": x_device_id, "sig": x_sig, "metodo": request.method,
                 "caminho": request.url.path, "boot": _cabecalho_int(x_boot),
                 "seq": _cabecalho_int(x_seq), "ts": _cabecalho_int(x_ts),
-                "corpo": corpo}
+                "corpo": corpo, "ip": request.client.host if request.client else None}
 
         def sincrono() -> dict:
-            d = _conferir_assinatura(info)
+            d = {**_conferir_assinatura(info), "_ip": info["ip"], "_boot": info["boot"],
+                 "_seq": info["seq"]}
             if consumir:
-                _rpc("consumir_seq", {"p_dispositivo": d["id"], "p_boot": info["boot"],
+                _rpc_v2(d, "consumir_seq", {"p_dispositivo": d["id"], "p_boot": info["boot"],
                                       "p_seq": info["seq"], "p_ts": _iso(info["ts"]),
                                       "p_handshake": handshake, "p_janela_s": JANELA_REPLAY_S})
                 dispositivos.marcar_presenca(d)
-            return {**d, "_boot": info["boot"], "_seq": info["seq"], "_ts": info["ts"]}
+            return {**d, "_ts": info["ts"]}
 
         return await run_in_threadpool(sincrono)
     return dependencia
@@ -497,7 +708,8 @@ def handshake_v2(payload: HandshakePayload, d: dict = Depends(_assinada(consumir
         {"mac": payload.mac, "ip": payload.ip, "firmware": payload.firmware}
     ).eq("id", d["id"]).execute()
     descartados = dispositivos.descartar_pendentes(d["id"])
-    portas = [{"porta": p["numero"], **_estado_da_porta(p["carregador_id"])}
+    fator = dispositivos.fator_escala(d)
+    portas = [{"porta": p["numero"], **_estado_da_porta(p["carregador_id"], fator)}
               for p in dispositivos.portas_do_dispositivo(d["id"])]
     return {
         "ok": True,
@@ -509,6 +721,9 @@ def handshake_v2(payload: HandshakePayload, d: dict = Depends(_assinada(consumir
         "max_leituras_lote": MAX_LEITURAS_LOTE,
         "janela_s": JANELA_REPLAY_S,
         "servidor_ts": int(time.time()),
+        "fator_escala": fator,
+        "porta_solar": dispositivos.porta_solar(d),
+        "max_fontes_lote": MAX_FONTES_LOTE,
     }
 
 
@@ -528,21 +743,26 @@ def leitura_rfid_v2(payload: RfidV2Payload, d: dict = Depends(_assinada(consumir
     carregador_id = dispositivos.carregador_da_porta(d["id"], payload.porta)
     if not carregador_id:
         raise HTTPException(status_code=422, detail="porta_inexistente")
-    return {"porta": payload.porta, **_cartao(carregador_id, payload.uid)}
+    return {"porta": payload.porta,
+            **recarga.processar_tag(carregador_id, payload.uid, payload.porta,
+                                    dispositivo_id=d["id"], ip=d.get("_ip"))}
 
 
 @router.post("/v2/telemetria")
 def receber_telemetria_v2(payload: TelemetriaV2Payload, d: dict = Depends(_assinada(consumir=False))):
     """
-    Uma RPC consome o seq E grava o lote na mesma transação: leitura repetida
-    não entra, e leitura recusada não gasta o seq. Depois, a regra de negócio
-    roda UMA vez por porta, com a leitura mais recente dela (energia é
-    acumulada, então a última basta).
+    Uma RPC consome o seq E grava o lote (leituras E fontes) na mesma
+    transação: leitura repetida não entra, e leitura recusada não gasta o seq.
+    Depois, a regra de negócio roda UMA vez por porta, com a leitura mais
+    recente dela (energia é acumulada, então a última basta).
     """
+    fator = dispositivos.fator_escala(d)
     leituras = [x.model_dump() for x in payload.leituras]
-    _rpc("registrar_lote_telemetria", {
+    fontes = payload.fontes or []
+    _rpc_v2(d, "registrar_lote_telemetria", {
         "p_dispositivo": d["id"], "p_boot": d["_boot"], "p_seq": d["_seq"], "p_ts": _iso(d["_ts"]),
         "p_t_envio_ms": payload.t_envio_ms, "p_leituras": leituras, "p_janela_s": JANELA_REPLAY_S,
+        "p_fontes": [_fonte_para_banco(f) for f in fontes],
     })
     dispositivos.marcar_presenca(d)
 
@@ -551,11 +771,22 @@ def receber_telemetria_v2(payload: TelemetriaV2Payload, d: dict = Depends(_assin
         if x.porta not in ultima or x.t_ms >= ultima[x.porta].t_ms:
             ultima[x.porta] = x
 
+    painel = sorted((f for f in fontes if f.fonte == "painel"), key=lambda f: f.t_ms)
+    if painel:
+        _gravar_geracao(d, painel, fator, "simulado" if d.get("virtual") else "medido")
+
+    ps = dispositivos.porta_solar(d)
+    ctx = _contexto_fontes(d, fontes, buscar=bool(ps and ps in ultima)) if ps else None
+    if ps and ctx:
+        _aplicar_vaga_solar(d, ps, ctx)
+
     respostas = []
     for porta in sorted(ultima):
         carregador_id = dispositivos.carregador_da_porta(d["id"], porta)
-        respostas.append({"porta": porta, **_processar_leitura(carregador_id, ultima[porta], com_alocacao=True)})
-    return {"ok": True, "gravadas": len(leituras), "portas": respostas}
+        solar = ctx if (porta == ps and ctx) else None
+        respostas.append({"porta": porta, **_processar_leitura(carregador_id, ultima[porta], com_alocacao=True,
+                                                               fator=fator, solar=solar)})
+    return {"ok": True, "gravadas": len(leituras), "fontes_gravadas": len(fontes), "portas": respostas}
 
 
 # ---------------------------------------------------------------------------

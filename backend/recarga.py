@@ -18,11 +18,24 @@ recarga.py - Ciclo de vida de uma recarga, do "preparar" ao recibo.
   encerrar()            custo real, ESTORNO da diferença, `bloquear`,
                         recibo em notificação, fila avisada, potência realocada
 
+TOTEM v2.1 - TAG PRIMEIRO (ADR-018)
+-----------------------------------
+  processar_tag()       tag + botão da vaga no totem. Vaga livre e cartão
+        |               pessoal: a recarga nasce da tag, sem o app (% inicial
+        |               = último conhecido do veículo, rotulado ESTIMADO).
+        |               A mesma tag na vaga dela encerra. Tag alheia em vaga
+        |               ocupada: recusa + evento de segurança.
+  aguardando_energia    sem orçamento no alocador: saldo reservado, relé
+        |               DESLIGADO, fila por ordem de chegada no condomínio
+  promover_...()        quando sobra potência (fim de recarga ou laço de
+                        10 s), o primeiro da fila liga por `liberar`
+
 Todas as transições são CONDICIONAIS (`... where status = 'x'`). Se o ESP32 e
 o morador encerrarem no mesmo segundo, só um UPDATE acerta a linha - e só ele
 calcula o estorno. Sem isso, o estorno sairia em dobro.
 """
 
+import unicodedata
 from datetime import timedelta
 
 from fastapi import HTTPException
@@ -37,8 +50,13 @@ from config import (MAX_TENTATIVAS_CARTAO, MODO_DEMO, RESERVA_MINIMA, SEGUNDOS_E
 from fisica import (calcular_estimativa, custo_da_sessao, detalhar_custo, economia_vs_so_rede,
                     em_horario_de_ponta, multiplicador_ponta, tarifa_base)
 
-LIMIAR_BAIXA_POTENCIA_KW = 0.0005      # 0,5 W: o celular parou de puxar
+LIMIAR_BAIXA_POTENCIA_KW = 0.0005      # 0,5 W BRUTOS (domínio do sensor): o celular parou de puxar
 SEGUNDOS_BAIXA_POTENCIA = 30
+
+# Sessões vivas: ocupam a vaga e o veículo (índices únicos do db/17).
+STATUS_VIVOS = ("aguardando_rfid", "carregando", "aguardando_energia")
+# Tag-primeiro sem % conhecido do veículo: ponto de partida conservador, ESTIMADO.
+SOC_PADRAO_TAG = 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +115,7 @@ def checar_compatibilidade(charger: dict, v: dict) -> None:
 
 def checar_concorrencia(veiculo_id: str) -> None:
     ativa = supabase.table("sessoes_recarga").select("id").eq("veiculo_id", veiculo_id) \
-        .in_("status", ["carregando", "aguardando_rfid"]).execute()
+        .in_("status", list(STATUS_VIVOS)).execute()
     if ativa.data:
         raise HTTPException(status_code=409, detail=(
             "Esse veículo já tem uma recarga em andamento ou aguardando cartão."))
@@ -282,7 +300,7 @@ def sessao_ativa_do_carregador(carregador_id: str) -> dict | None:
               .eq("status", "carregando").order("iniciado_em", desc=True).limit(1).execute())
 
 
-def processar_cartao(carregador_id: str, uid: str) -> dict:
+def processar_cartao(carregador_id: str, uid: str, esperar_energia: bool = False) -> dict:
     """
     Decisão do cartão (a rota já autenticou o dispositivo).
 
@@ -331,10 +349,11 @@ def processar_cartao(carregador_id: str, uid: str) -> dict:
     cartoes.marcar_uso(uid)
     supabase.table("sessoes_recarga").update({"ultimo_uid_lido": uid}) \
         .eq("id", s["id"]).eq("status", "aguardando_rfid").execute()
-    return confirmar({**s, "ultimo_uid_lido": uid}, metodo=f"rfid_{cartao['escopo']}")
+    return confirmar({**s, "ultimo_uid_lido": uid}, metodo=f"rfid_{cartao['escopo']}",
+                     esperar_energia=esperar_energia)
 
 
-def confirmar(s: dict, metodo: str) -> dict:
+def confirmar(s: dict, metodo: str, esperar_energia: bool = False) -> dict:
     """
     Pré-autoriza o saldo e promove a sessão para `carregando`, no lugar.
 
@@ -343,6 +362,10 @@ def confirmar(s: dict, metodo: str) -> dict:
     espera expirou ou outro cartão confirmou no mesmo instante), o valor
     volta na hora. O contrário - promover e depois debitar - faria o navegador
     ver "carregando" pelo Realtime antes de sabermos se havia saldo.
+
+    `esperar_energia` (Totem v2.1): sem orçamento no alocador, a sessão vai
+    para `aguardando_energia` com o saldo reservado e o relé desligado, em vez
+    de ser cancelada. O laço e o fim das outras recargas ligam depois.
     """
     charger = carregador(s["carregador_id"])
     v = veiculo(s["veiculo_id"]) or {}
@@ -351,12 +374,18 @@ def confirmar(s: dict, metodo: str) -> dict:
     alvo = float(s.get("alvo_percentual") or 100)
 
     # A demanda pode ter mudado enquanto o morador caminhava até o ponto.
+    admitida = True
     try:
         alocada = demanda.verificar_admissao(charger["condominio_id"], charger, v, soc)
     except HTTPException as e:
-        _encerrar_espera(s, "cancelada", "limite_de_potencia")
         demanda.registrar_recusa(charger["condominio_id"], s["usuario_id"], charger["id"], "cartao")
-        return {"autorizado": False, "motivo": "limite_de_potencia", "mensagem": e.detail}
+        if not esperar_energia:
+            _encerrar_espera(s, "cancelada", "limite_de_potencia")
+            return {"autorizado": False, "motivo": "limite_de_potencia", "mensagem": e.detail}
+        admitida, alocada = False, None
+    # Quem já está na fila de energia passa na frente (ordem de chegada).
+    if admitida and esperar_energia and ha_fila_de_energia(charger["condominio_id"]):
+        admitida, alocada = False, None
 
     est = calcular_estimativa(charger, v, soc, alvo, cond, potencia_alocada_kw=alocada)
     valor = valor_da_reserva(est["custo_estimado"], carteira.saldo_de(s["usuario_id"]))
@@ -367,20 +396,25 @@ def confirmar(s: dict, metodo: str) -> dict:
     except carteira.SaldoInsuficiente:
         return _recusar_por_saldo(s, est["custo_estimado"], metodo)
 
-    promovida = supabase.table("sessoes_recarga").update({
-        "status": "carregando",
-        "iniciado_em": agora_iso(),
+    fisico = charger.get("origem") == "hardware"
+    dados = {
+        "status": "carregando" if admitida else "aguardando_energia",
         "expira_em": None,
         "motivo_recusa": None,
         "ultimo_uid_lido": None,
+        "uid_inicio": s.get("ultimo_uid_lido"),
         "custo_estimado": est["custo_estimado"],
         "valor_pre_autorizado": valor,
         "tempo_estimado_min": est["tempo_estimado_min"],
         "potencia_alocada_kw": alocada,
-        "potencia_atual_kw": 0 if charger.get("origem") == "hardware" else est["potencia_agora_kw"],
+        "potencia_atual_kw": 0 if (fisico or not admitida) else est["potencia_agora_kw"],
         "energia_entregue_kwh": 0,
         "energia_ponta_kwh": 0,
-    }).eq("id", s["id"]).eq("status", "aguardando_rfid").execute()
+    }
+    if admitida:
+        dados["iniciado_em"] = agora_iso()
+    promovida = supabase.table("sessoes_recarga").update(dados) \
+        .eq("id", s["id"]).eq("status", "aguardando_rfid").execute()
 
     if not promovida.data:
         carteira.creditar(s["usuario_id"], valor, "estorno", "Espera encerrada antes do cartão", s["id"])
@@ -394,19 +428,30 @@ def confirmar(s: dict, metodo: str) -> dict:
     supabase.table("carregadores").update({"status": "em_uso"}).eq("id", charger["id"]).execute()
     _sair_de_todas_as_filas(s["usuario_id"])
 
-    # Ponto físico: AQUI a energia começa a correr de verdade.
-    dispositivos.enfileirar(charger["id"], "liberar", s["id"])
-    demanda.alocar(charger["condominio_id"])
-
     nome = (um(supabase.table("usuarios").select("nome").eq("id", s["usuario_id"]).execute()) or {}).get("nome", "")
-    return {
+    primeiro = nome.split()[0] if nome else "morador"
+    resposta = {
         "autorizado": True,
-        "mensagem": f"Bem-vindo, {nome.split()[0] if nome else 'morador'}! Recarga liberada.",
+        "mensagem": f"Bem-vindo, {primeiro}! Recarga liberada.",
         "sessao_id": s["id"],
         "sessao": um(promovida),
         "saldo_atual": saldo,
         "valor_reservado": valor,
     }
+    if admitida:
+        # Ponto físico: AQUI a energia começa a correr de verdade.
+        dispositivos.enfileirar(charger["id"], "liberar", s["id"])
+        demanda.alocar(charger["condominio_id"])
+        return resposta
+
+    posicao = posicao_na_fila_de_energia(s["id"], charger["condominio_id"])
+    resposta.update({
+        "motivo": "aguardando_energia", "fila_posicao": posicao,
+        "mensagem": (f"{primeiro}, o condomínio está no limite de potência agora. Sua recarga está "
+                     f"reservada (posição {posicao} na fila) e liga sozinha quando houver energia."),
+    })
+    notificar(s["usuario_id"], resposta["mensagem"])
+    return resposta
 
 
 def _recusar_por_saldo(s: dict, valor: float, metodo: str) -> dict:
@@ -527,7 +572,10 @@ def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: 
     reservado = float(s.get("valor_pre_autorizado") or 0)
 
     motivo = None
-    if soc is not None and soc >= alvo - 0.05:
+    # % ESTIMADO (tag-primeiro) não encerra recarga: quem diz que acabou é a
+    # medição (D2), a tag ou o teto do valor reservado.
+    estimado = s.get("percentual_origem") == "estimado"
+    if soc is not None and not estimado and soc >= alvo - 0.05:
         motivo = "alvo_atingido" if alvo < 100 else "bateria_cheia"
     elif reservado > 0 and custo_da_sessao(merged) >= reservado:
         motivo = "limite_pre_autorizado"
@@ -560,6 +608,7 @@ MENSAGEM_MOTIVO = {
     "dispositivo_carregado": "o dispositivo parou de puxar energia (carga completa)",
     "limite_pre_autorizado": "valor reservado atingido",
     "dispositivo_offline": "o ponto perdeu a conexão",
+    "tag": "encerrada pela sua tag no totem",
     "sistema": "encerrada pelo sistema",
 }
 
@@ -611,12 +660,15 @@ def encerrar(s: dict, motivo: str) -> dict:
 
     avisar_proximo_da_fila(charger["id"])
     demanda.alocar(charger["condominio_id"])
+    _promover_sem_derrubar(charger["condominio_id"])
     print(f"[RECARGA] {atual['id']} encerrada ({motivo}) custo={custo} estorno={estorno}")
     return {"success": True, "custo_final": custo, "estorno": estorno, "motivo": motivo}
 
 
 def encerrar_pelo_usuario(usuario: dict, sessao_id: str) -> dict:
     s = sessao_do_usuario(sessao_id, usuario["id"])
+    if s.get("status") == "aguardando_energia":
+        return cancelar_aguardando_energia(s, "cancelado_pelo_usuario")
     return encerrar(s, "usuario")
 
 
@@ -711,3 +763,358 @@ def recibo(usuario: dict, sessao_id: str) -> dict:
                                               "congelada nesta recarga."},
         "movimentacoes": movimentos,
     }
+
+
+# ===========================================================================
+# TOTEM v2.1 - tag primeiro, fila de energia (ADR-018)
+# ===========================================================================
+
+def sessao_viva_na_vaga(carregador_id: str) -> dict | None:
+    """Quem ocupa a vaga: carregando ou esperando energia (o celular está plugado)."""
+    return um(supabase.table("sessoes_recarga").select("*").eq("carregador_id", carregador_id)
+              .in_("status", ["carregando", "aguardando_energia"])
+              .order("criado_em", desc=True).limit(1).execute())
+
+
+def sessao_viva_do_usuario(usuario_id: str) -> dict | None:
+    return um(supabase.table("sessoes_recarga").select("id, carregador_id, status")
+              .eq("usuario_id", usuario_id).in_("status", list(STATUS_VIVOS)).limit(1).execute())
+
+
+def sessao_aguardando_energia(carregador_id: str) -> dict | None:
+    return um(supabase.table("sessoes_recarga").select("*").eq("carregador_id", carregador_id)
+              .eq("status", "aguardando_energia").limit(1).execute())
+
+
+def _fila_de_energia(condominio_id: str) -> list[dict]:
+    ids = [c["id"] for c in (supabase.table("carregadores").select("id")
+                             .eq("condominio_id", condominio_id).execute().data or [])]
+    if not ids:
+        return []
+    return supabase.table("sessoes_recarga").select("*").eq("status", "aguardando_energia") \
+        .in_("carregador_id", ids).order("criado_em").execute().data or []
+
+
+def ha_fila_de_energia(condominio_id: str) -> bool:
+    return bool(_fila_de_energia(condominio_id))
+
+
+def posicao_na_fila_de_energia(sessao_id: str, condominio_id: str) -> int | None:
+    for i, s in enumerate(_fila_de_energia(condominio_id), start=1):
+        if s["id"] == sessao_id:
+            return i
+    return None
+
+
+def _ligar_sessao_em_espera(s: dict, alocada: float | None) -> bool:
+    """aguardando_energia -> carregando (condicional) e manda `liberar` à placa."""
+    charger = carregador(s["carregador_id"])
+    r = supabase.table("sessoes_recarga").update({
+        "status": "carregando",
+        "iniciado_em": agora_iso(),
+        "potencia_alocada_kw": alocada,
+        "potencia_atual_kw": 0,
+        "baixa_potencia_desde": None,
+    }).eq("id", s["id"]).eq("status", "aguardando_energia").execute()
+    if not r.data:
+        return False
+    supabase.table("carregadores").update({"status": "em_uso"}).eq("id", charger["id"]).execute()
+    dispositivos.enfileirar(charger["id"], "liberar", s["id"])
+    demanda.alocar(charger["condominio_id"])
+    return True
+
+
+def promover_aguardando_energia(condominio_id: str) -> int:
+    """
+    Liga quem espera energia, por ORDEM DE CHEGADA, enquanto o alocador
+    aceitar. Para no primeiro que não cabe: ninguém fura a fila. Devolve
+    quantas sessões ligaram.
+    """
+    ligadas = 0
+    for s in _fila_de_energia(condominio_id):
+        charger = carregador(s["carregador_id"])
+        v = veiculo(s["veiculo_id"]) or {}
+        try:
+            alocada = demanda.verificar_admissao(condominio_id, charger, v,
+                                                 float(s.get("percentual_bateria_atual") or 0))
+        except HTTPException:
+            break
+        if _ligar_sessao_em_espera(s, alocada):
+            ligadas += 1
+            notificar(s["usuario_id"], f"Energia liberada: sua recarga no ponto {charger['numero']} começou.")
+            print(f"[DEMANDA] sessão {s['id']} saiu da fila de energia")
+    return ligadas
+
+
+def _promover_sem_derrubar(condominio_id: str) -> None:
+    try:
+        promover_aguardando_energia(condominio_id)
+    except Exception as e:
+        print(f"[DEMANDA] promoção da fila de energia falhou: {e}")
+
+
+def cancelar_aguardando_energia(s: dict, motivo: str) -> dict:
+    """Desiste da espera: devolve a reserva INTEIRA (não houve energia)."""
+    atual = sessao(s["id"]) or s
+    r = supabase.table("sessoes_recarga").update({
+        "status": "cancelada", "motivo_recusa": motivo, "finalizado_em": agora_iso(),
+        "custo_final": 0, "potencia_atual_kw": 0,
+    }).eq("id", s["id"]).eq("status", "aguardando_energia").execute()
+    if not r.data:
+        return {"success": True, "ja_encerrada": True}
+
+    reservado = round(float(atual.get("valor_pre_autorizado") or 0), 2)
+    if reservado > 0:
+        carteira.creditar(atual["usuario_id"], reservado, "estorno",
+                          "Espera por energia cancelada: reserva devolvida", atual["id"])
+    supabase.table("sessoes_recarga").update({"valor_estornado": reservado}).eq("id", atual["id"]).execute()
+    supabase.table("pagamentos").update({"valor": 0, "status": "estornado"}) \
+        .eq("sessao_id", atual["id"]).execute()
+
+    charger = carregador(atual["carregador_id"])
+    if charger["status"] != "offline":
+        supabase.table("carregadores").update({"status": "disponivel"}).eq("id", charger["id"]).execute()
+    dispositivos.enfileirar(charger["id"], "bloquear", atual["id"])     # idempotente: o relé já está aberto
+    notificar(atual["usuario_id"], f"Espera por energia no ponto {charger['numero']} cancelada. "
+                                   f"Reserva de {brl(reservado)} devolvida à sua carteira.")
+    _promover_sem_derrubar(charger["condominio_id"])
+    return {"success": True, "custo_final": 0.0, "estorno": reservado, "motivo": motivo}
+
+
+# ---------------------------------------------------------------------------
+# Tela do totem: até 4 linhas, até 20 caracteres, ASCII sem acento
+# ---------------------------------------------------------------------------
+
+def _ascii(texto) -> str:
+    return unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode()
+
+
+def _reais(valor) -> str:
+    return f"R$ {float(valor or 0):.2f}".replace(".", ",")
+
+
+def tela_do_motivo(motivo: str, porta: int, nome: str | None = None, custo=None,
+                   fila: int | None = None, valor=None) -> list[str]:
+    n = porta
+    telas = {
+        "iniciada": [f"Vaga {n} liberada", f"Boa recarga, {nome}!" if nome else "Boa recarga!"],
+        "encerrada": [f"Vaga {n} encerrada", f"Custo {_reais(custo)}" if custo is not None else "",
+                      "Retire o celular"],
+        "confirmada_app": [f"Vaga {n} liberada", "Recarga do app"],
+        "aguardando_energia": [f"Vaga {n} na espera", "Sem energia agora",
+                               f"Fila: {fila}" if fila else "", "Liga sozinha depois"],
+        "vaga_ocupada": [f"Vaga {n} ocupada", "Escolha outra vaga"],
+        "ja_carregando_em_outra_vaga": ["Voce ja esta", "carregando em", "outra vaga"],
+        "saldo_insuficiente": ["Saldo insuficiente", f"Precisa {_reais(valor)}" if valor else "",
+                               "Recarregue no app"],
+        "taxa_pendente": ["Taxa pendente", "Quite no app"],
+        "cartao_nao_cadastrado": ["Tag nao cadastrada", "Cadastre no app"],
+        "cartao_de_outro_usuario": ["Tag de outro", "morador"],
+        "cartao_de_outro_condominio": ["Tag de outro", "condominio"],
+        "sem_veiculo": ["Sem veiculo", "compativel", "Cadastre no app"],
+        "uid_invalido": ["Leitura falhou", "Aproxime de novo"],
+        "sem_recarga_preparada": [f"Vaga {n}: sem recarga", "preparada", "Use o app primeiro"],
+        "espera_encerrada": ["Espera encerrada", "Prepare de novo"],
+    }
+    linhas = telas.get(motivo, ["Nao deu certo", "Veja o app"])
+    return [_ascii(x)[:20] for x in linhas if x][:4]
+
+
+def _resposta(porta: int, autorizado: bool, motivo: str, acao: str, mensagem: str, *,
+              sessao_id: str | None = None, fila_posicao: int | None = None,
+              tela: dict | None = None, legado: dict | None = None) -> dict:
+    """
+    Formato da interface congelada (ADR-018). `legado` traz os campos que a
+    resposta do /v2/rfid já tinha (continuar_aguardando, uid, saldo_atual...):
+    mudança só aditiva, nada some.
+    """
+    r = {k: v for k, v in (legado or {}).items() if k != "sessao"}
+    r.update({
+        "autorizado": bool(autorizado),
+        "motivo": motivo,
+        "acao": acao,
+        "tela": tela_do_motivo(motivo, porta, **(tela or {})),
+        "mensagem": mensagem,
+        "sessao_id": sessao_id,
+        "fila_posicao": fila_posicao,
+    })
+    return r
+
+
+def _do_app(r: dict, porta: int) -> dict:
+    """Recarga preparada no app + tag: traduz a resposta de processar_cartao."""
+    if r.get("autorizado") and r.get("motivo") == "aguardando_energia":
+        return _resposta(porta, True, "aguardando_energia", "nenhuma", r["mensagem"],
+                         sessao_id=r.get("sessao_id"), fila_posicao=r.get("fila_posicao"),
+                         tela={"fila": r.get("fila_posicao")}, legado=r)
+    if r.get("autorizado"):
+        return _resposta(porta, True, "confirmada_app", "ligar", r["mensagem"],
+                         sessao_id=r.get("sessao_id"), legado=r)
+    return _resposta(porta, False, r.get("motivo") or "sem_recarga_preparada", "nenhuma",
+                     r.get("mensagem") or "Cartão não autorizado aqui.", legado=r)
+
+
+def _encerrar_pela_tag(s: dict, porta: int) -> dict:
+    if s["status"] == "carregando":
+        res = encerrar(s, "tag")
+        custo = res.get("custo_final")
+        if custo is None:
+            custo = float((sessao(s["id"]) or {}).get("custo_final") or 0)
+    else:
+        res = cancelar_aguardando_energia(s, "cancelado_pela_tag")
+        custo = 0.0
+    return _resposta(porta, True, "encerrada", "desligar",
+                     f"Recarga na vaga {porta} encerrada. Custo {brl(custo)}.",
+                     sessao_id=s["id"], tela={"custo": custo},
+                     legado={"custo_final": custo, "estorno": res.get("estorno")})
+
+
+def _veiculo_para_tag(usuario_id: str, charger: dict) -> dict | None:
+    """Primeiro veículo compatível do morador (bancada só aceita celular)."""
+    for v in supabase.table("veiculos").select("*").eq("usuario_id", usuario_id) \
+            .order("criado_em").execute().data or []:
+        if charger.get("perfil") == "bancada" and v.get("tipo") != "celular":
+            continue
+        return v
+    return None
+
+
+def _iniciar_pela_tag(charger: dict, cartao: dict, uid: str, porta: int) -> dict:
+    """Vaga livre + cartão pessoal: a recarga nasce da tag (sem passar pelo app)."""
+    usuario_id = cartao["usuario_id"]
+    u = um(supabase.table("usuarios").select("id, nome, condominio_id").eq("id", usuario_id).execute())
+    if not u:
+        return _resposta(porta, False, "cartao_nao_cadastrado", "nenhuma",
+                         f"Cartão {uid} sem morador ativo.", legado={"uid": uid})
+    if u.get("condominio_id") != charger["condominio_id"]:
+        return _resposta(porta, False, "cartao_de_outro_condominio", "nenhuma",
+                         "Este cartão pertence a outro condomínio.")
+    if sessao_viva_do_usuario(usuario_id):
+        return _resposta(porta, False, "ja_carregando_em_outra_vaga", "nenhuma",
+                         "Você já tem uma recarga em andamento em outra vaga.")
+    v = _veiculo_para_tag(usuario_id, charger)
+    if not v:
+        return _resposta(porta, False, "sem_veiculo", "nenhuma",
+                         "Nenhum veículo compatível com este ponto. Cadastre um no app.")
+
+    cond = condominio_de(charger)
+    conhecido = v.get("percentual_bateria")
+    soc = max(0.0, min(99.0, float(conhecido if conhecido is not None else SOC_PADRAO_TAG)))
+    alvo = 100.0
+
+    admitida = True
+    try:
+        alocada = demanda.verificar_admissao(charger["condominio_id"], charger, v, soc)
+    except HTTPException:
+        admitida, alocada = False, None
+    if admitida and ha_fila_de_energia(charger["condominio_id"]):
+        admitida, alocada = False, None           # quem chegou antes liga antes
+
+    est = calcular_estimativa(charger, v, soc, alvo, cond, potencia_alocada_kw=alocada)
+    # A reserva assume a bateria VAZIA: o % é só estimado e, se o celular
+    # estiver mais descarregado que o último registro, a recarga não para no
+    # meio pelo teto. A diferença volta inteira no fim (estorno).
+    pior_caso = calcular_estimativa(charger, v, 0.0, alvo, cond, potencia_alocada_kw=alocada)
+    saldo = carteira.saldo_de(usuario_id)
+    valor = valor_da_reserva(pior_caso["custo_estimado"], saldo)
+    if saldo < valor:
+        return _resposta(porta, False, "saldo_insuficiente", "nenhuma",
+                         f"Saldo insuficiente: a recarga reserva {brl(valor)}. Adicione saldo no app.",
+                         tela={"valor": valor})
+
+    congelados = {}
+    if (cond or {}).get("preco_solar_kwh") is not None:
+        congelados["tarifa_solar_kwh"] = float(cond["preco_solar_kwh"])
+    try:
+        nova = _inserir_sessao({
+            **congelados,
+            "carregador_id": charger["id"], "veiculo_id": v["id"], "usuario_id": usuario_id,
+            "status": "aguardando_energia",
+            "percentual_bateria_inicial": soc, "percentual_bateria_atual": soc,
+            "percentual_origem": "estimado", "alvo_percentual": alvo,
+            "tempo_estimado_min": est["tempo_estimado_min"], "custo_estimado": est["custo_estimado"],
+            "tarifa_kwh": tarifa_base(charger), "multiplicador_ponta": multiplicador_ponta(cond),
+            "origem": "hardware", "uid_inicio": uid, "potencia_atual_kw": 0,
+        })
+    except SessaoDuplicada:
+        return _resposta(porta, False, "vaga_ocupada", "nenhuma",
+                         f"A vaga {porta} acabou de ser ocupada. Escolha outra vaga.")
+
+    try:
+        saldo = carteira.debitar(usuario_id, valor, "pre_autorizacao",
+                                 f"Reserva da recarga no ponto {charger['numero']} (tag)", nova["id"])
+    except carteira.SaldoInsuficiente:
+        supabase.table("sessoes_recarga").update({
+            "status": "recusada", "motivo_recusa": "saldo_insuficiente", "finalizado_em": agora_iso(),
+        }).eq("id", nova["id"]).eq("status", "aguardando_energia").execute()
+        return _resposta(porta, False, "saldo_insuficiente", "nenhuma",
+                         f"Saldo insuficiente: a recarga reserva {brl(valor)}.", tela={"valor": valor})
+
+    supabase.table("sessoes_recarga").update({"valor_pre_autorizado": valor}).eq("id", nova["id"]).execute()
+    supabase.table("pagamentos").insert({
+        "sessao_id": nova["id"], "valor": valor, "metodo": "rfid_pessoal", "status": "pre_autorizado",
+    }).execute()
+    cartoes.marcar_uso(uid)
+    supabase.table("carregadores").update({"status": "em_uso"}).eq("id", charger["id"]).execute()
+    _sair_de_todas_as_filas(usuario_id)
+
+    primeiro = (u.get("nome") or "").split()[0] if u.get("nome") else None
+    legado = {"saldo_atual": saldo, "valor_reservado": valor, "percentual_inicial": soc,
+              "percentual_origem": "estimado"}
+    if admitida and _ligar_sessao_em_espera(nova, alocada):
+        return _resposta(porta, True, "iniciada", "ligar",
+                         f"Recarga iniciada na vaga {porta}. Reserva de {brl(valor)}; "
+                         f"a diferença volta no fim.", sessao_id=nova["id"],
+                         tela={"nome": primeiro}, legado=legado)
+
+    demanda.registrar_recusa(charger["condominio_id"], usuario_id, charger["id"], "cartao")
+    posicao = posicao_na_fila_de_energia(nova["id"], charger["condominio_id"])
+    mensagem = (f"O condomínio está no limite de potência agora. Sua recarga na vaga {porta} está "
+                f"reservada (posição {posicao} na fila) e liga sozinha quando houver energia.")
+    notificar(usuario_id, mensagem)
+    return _resposta(porta, True, "aguardando_energia", "nenhuma", mensagem, sessao_id=nova["id"],
+                     fila_posicao=posicao, tela={"fila": posicao}, legado=legado)
+
+
+def processar_tag(carregador_id: str, uid_bruto: str, porta: int, dispositivo_id: str | None = None,
+                  ip: str | None = None) -> dict:
+    """
+    Decisão do Totem v2.1 para tag + botão da vaga (a rota já autenticou a
+    placa e resolveu a porta). Ordem:
+      1. vaga ocupada?   mesma tag -> encerra | outra -> vaga_ocupada + evento
+      2. recarga do app esperando a tag nesta vaga? -> fluxo do app
+      3. vaga livre      cartão pessoal -> tag-primeiro
+    """
+    try:
+        uid = cartoes.normalizar(uid_bruto)
+    except HTTPException:
+        return _resposta(porta, False, "uid_invalido", "nenhuma",
+                         "Leitura da tag veio corrompida. Aproxime de novo.",
+                         legado={"continuar_aguardando": True})
+
+    charger = carregador(carregador_id)
+    cartao = cartoes.por_uid(uid)
+
+    viva = sessao_viva_na_vaga(carregador_id)
+    if viva:
+        if cartoes.mesma_tag(viva, uid, cartao):
+            return _encerrar_pela_tag(viva, porta)
+        dispositivos.registrar_evento_seguranca(
+            "tag_alheia", dispositivo_id=dispositivo_id, carregador_id=carregador_id, porta=porta,
+            uid=uid, ip=ip, detalhe=f"vaga ocupada pela sessao {viva['id']}")
+        return _resposta(porta, False, "vaga_ocupada", "nenhuma",
+                         f"A vaga {porta} está ocupada. Escolha outra vaga.")
+
+    if sessao_aguardando(carregador_id):
+        return _do_app(processar_cartao(carregador_id, uid, esperar_energia=True), porta)
+
+    if not cartao:
+        return _resposta(porta, False, "cartao_nao_cadastrado", "nenhuma",
+                         f"Cartão {uid} não cadastrado. Cadastre-o pelo app.", legado={"uid": uid})
+    if not cartoes.pagador_da_tag(cartao):
+        if cartao.get("condominio_id") != charger["condominio_id"]:
+            return _resposta(porta, False, "cartao_de_outro_condominio", "nenhuma",
+                             "Este cartão pertence a outro condomínio.")
+        return _resposta(porta, False, "sem_recarga_preparada", "nenhuma",
+                         "O cartão do condomínio só confirma recarga preparada no app.", legado={"uid": uid})
+    return _iniciar_pela_tag(charger, cartao, uid, porta)

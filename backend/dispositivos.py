@@ -14,6 +14,19 @@ mora em `portas_dispositivo`, fechada ao navegador. A coluna antiga
 
 Placa v1 = placa de uma porta só: tudo que ela faz vale para a porta 1.
 
+ESCALA E VAGA SOLAR (migration 17)
+----------------------------------
+`fator_escala` multiplica W/Wh brutos na entrada (ADR-017). `porta_solar` diz
+qual porta é alimentada por painel/bateria: o sol dela é MEDIDO e não é
+atribuído às portas vizinhas, que ficam só na rede (ADR-018 D6).
+
+EVENTOS DE SEGURANÇA
+--------------------
+Tag alheia em vaga ocupada, replay e assinatura inválida viram linha em
+`eventos_seguranca` (só o backend grava; o painel do admin lê no chat D3).
+Repetição do mesmo evento é segurada por alguns segundos: um atacante
+martelando a API não enche a tabela.
+
 As ordens (cada uma carrega a porta):
   solicitar_cartao  "tem uma recarga preparada aqui, peça o cartão"
   cancelar_cartao   "a espera acabou (desistiu, expirou, recusou)"
@@ -22,9 +35,15 @@ As ordens (cada uma carrega a porta):
   ping              "pisque o LED" - teste de ponta a ponta
 """
 
+import threading
+import time
 from datetime import timedelta
 
 from config import MODO_DEMO, SEGUNDOS_ATE_OFFLINE, agora, agora_iso, para_datetime, supabase, um
+
+# Sessões que ocupam a vaga (a espera por energia também ocupa: o celular
+# está plugado e o saldo, reservado).
+STATUS_OCUPA_VAGA = ("carregando", "aguardando_energia")
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +75,46 @@ def dispositivo_do_carregador(carregador_id: str) -> dict | None:
         return None
     d = um(supabase.table("dispositivos").select("*").eq("id", p["dispositivo_id"]).execute())
     return {**d, "porta": p["numero"]} if d else None
+
+
+def fator_escala(d: dict | None) -> float:
+    """
+    Fator da placa (ADR-017). Coluna ausente (banco antes do 17) ou inválida
+    vale 1: nada muda para quem não foi provisionado em escala.
+    """
+    try:
+        f = float((d or {}).get("fator_escala") or 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return f if f > 0 else 1.0
+
+
+def porta_solar(d: dict | None) -> int | None:
+    p = (d or {}).get("porta_solar")
+    return int(p) if p else None
+
+
+def carregadores_so_rede(carregador_ids: list[str]) -> set[str]:
+    """
+    Carregadores que estão numa placa COM vaga solar, mas não são ela. O painel
+    é ligado fisicamente só à porta solar (comutação): atribuir sol às vizinhas
+    contaria a mesma energia duas vezes.
+    """
+    if not carregador_ids:
+        return set()
+    try:
+        portas = supabase.table("portas_dispositivo").select("dispositivo_id, numero, carregador_id") \
+            .in_("carregador_id", list(carregador_ids)).execute().data or []
+        if not portas:
+            return set()
+        placas = supabase.table("dispositivos").select("id, porta_solar") \
+            .in_("id", list({p["dispositivo_id"] for p in portas})).execute().data or []
+    except Exception as e:
+        print(f"[HARDWARE] topologia solar indisponível: {e}")
+        return set()
+    solar = {x["id"]: x.get("porta_solar") for x in placas if x.get("porta_solar")}
+    return {p["carregador_id"] for p in portas
+            if p["dispositivo_id"] in solar and int(p["numero"]) != int(solar[p["dispositivo_id"]])}
 
 
 # ---------------------------------------------------------------------------
@@ -93,9 +152,9 @@ def descartar_pendentes(dispositivo_id: str, motivo: str = "reinicio da placa") 
 # ---------------------------------------------------------------------------
 
 def status_do_ponto(carregador_id: str) -> str:
-    """em_uso se há recarga correndo no ponto, senão disponivel."""
+    """em_uso se há recarga correndo (ou esperando energia) no ponto, senão disponivel."""
     ativa = um(supabase.table("sessoes_recarga").select("id").eq("carregador_id", carregador_id)
-               .eq("status", "carregando").limit(1).execute())
+               .in_("status", list(STATUS_OCUPA_VAGA)).limit(1).execute())
     return "em_uso" if ativa else "disponivel"
 
 
@@ -172,3 +231,67 @@ def _segundos_ate(expira_em) -> int:
     if not dt:
         return 0
     return max(0, int((dt - agora()).total_seconds()))
+
+
+# ---------------------------------------------------------------------------
+# Eventos de segurança (ADR-018 D7)
+# ---------------------------------------------------------------------------
+
+TIPOS_EVENTO = ("tag_alheia", "replay", "assinatura_invalida")      # lista fechada (db/17)
+# Mesmo evento (tipo + placa + ip + uid) dentro deste intervalo não grava de novo.
+SEGURAR_REPETICAO_S = {"tag_alheia": 5, "replay": 30, "assinatura_invalida": 30}
+_ultimos_eventos: dict[tuple, float] = {}
+_trava_eventos = threading.Lock()
+
+
+def _condominio_do_evento(carregador_id: str | None, dispositivo_id: str | None) -> str | None:
+    if not carregador_id and dispositivo_id:
+        portas = portas_do_dispositivo(dispositivo_id)
+        carregador_id = portas[0]["carregador_id"] if portas else None
+    if not carregador_id:
+        return None
+    c = um(supabase.table("carregadores").select("condominio_id").eq("id", carregador_id).execute())
+    return (c or {}).get("condominio_id")
+
+
+def registrar_evento_seguranca(tipo: str, *, dispositivo_id: str | None = None,
+                               carregador_id: str | None = None, porta: int | None = None,
+                               uid: str | None = None, ip: str | None = None,
+                               detalhe: str | None = None) -> bool:
+    """
+    Grava o evento; devolve True se gravou. NUNCA levanta: um evento que não
+    grava não pode derrubar a resposta para a placa.
+    """
+    if tipo not in TIPOS_EVENTO:
+        return False
+    chave = (tipo, dispositivo_id, ip, uid)
+    agora_s = time.monotonic()
+    with _trava_eventos:
+        ultimo = _ultimos_eventos.get(chave)
+        if ultimo is not None and agora_s - ultimo < SEGURAR_REPETICAO_S.get(tipo, 30):
+            return False
+        _ultimos_eventos[chave] = agora_s
+        if len(_ultimos_eventos) > 5000:                  # não cresce para sempre
+            _ultimos_eventos.clear()
+    try:
+        supabase.table("eventos_seguranca").insert({
+            "tipo": tipo,
+            "condominio_id": _condominio_do_evento(carregador_id, dispositivo_id),
+            "dispositivo_id": dispositivo_id,
+            "carregador_id": carregador_id,
+            "porta": porta,
+            "uid": (uid or None) and str(uid)[:64],
+            "ip": (ip or None) and str(ip)[:64],
+            "detalhe": (detalhe or None) and str(detalhe)[:200],
+        }).execute()
+        print(f"[SEGURANCA] {tipo} placa={dispositivo_id} porta={porta} ip={ip}")
+        return True
+    except Exception as e:
+        print(f"[SEGURANCA] evento {tipo} não gravado: {e}")
+        return False
+
+
+def limpar_memoria_de_eventos() -> None:
+    """Para os testes: esquece as repetições seguradas."""
+    with _trava_eventos:
+        _ultimos_eventos.clear()

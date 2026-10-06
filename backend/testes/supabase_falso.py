@@ -3,7 +3,7 @@ Supabase falso, em memória - só o subconjunto da API que o backend usa.
 
 Permite rodar o fluxo completo (login -> preparar -> ESP32 pede cartão ->
 cartão -> saldo -> telemetria -> encerramento -> estorno) sem rede, com o
-TestClient do FastAPI. As funções RPC do 12, 14, 15 e 16 estão replicadas aqui
+TestClient do FastAPI. As funções RPC do 12, 14, 15, 16 e 17 estão replicadas aqui
 em Python com a mesma regra (o comportamento real é provado no Postgres pelo
 db/15_verificacao.sql; aqui o que se testa é o backend em volta delas).
 """
@@ -134,7 +134,8 @@ class FakeSupabase:
     def nova_linha(self, tabela, v):
         linha = {"id": str(uuid.uuid4()), "criado_em": datetime.now(timezone.utc).isoformat()}
         padroes = {"sessoes_recarga": {"energia_entregue_kwh": 0, "energia_ponta_kwh": 0,
-                                       "tentativas_cartao": 0, "potencia_atual_kw": 0},
+                                       "tentativas_cartao": 0, "potencia_atual_kw": 0,
+                                       "percentual_origem": "informado"},
                    "notificacoes": {"lida": False},
                    "usuarios": {"saldo": 0},
                    "dispositivos": {"protocolo": 1, "chave_versao": 1, "boot_atual": None,
@@ -219,28 +220,55 @@ class FakeSupabase:
         raise ErroRPC("replay")
 
     def _registrar_lote(self, p):
-        lote = p.get("p_leituras")
-        if not isinstance(lote, list) or not 1 <= len(lote) <= 30:
+        """Mesma regra do db/17: leituras 0-30 + fontes 0-20 (pelo menos 1), escala e origem da placa."""
+        lote = p.get("p_leituras") if p.get("p_leituras") is not None else []
+        fontes = p.get("p_fontes") if p.get("p_fontes") is not None else []
+        if not isinstance(lote, list) or not isinstance(fontes, list) or len(lote) > 30 \
+                or len(fontes) > 20 or len(lote) + len(fontes) == 0:
             raise ErroRPC("lote_invalido")
         estado = copy.deepcopy(self.t("dispositivos"))
         self._consumir_seq(p, False)
+        d = next(x for x in self.t("dispositivos") if x["id"] == p["p_dispositivo"])
+        # Linha sem a coluna (semeada antes do 17 nos testes) vale 1, como no backend.
+        fator = float(d.get("fator_escala") or 1)
+        origem = "simulado" if d.get("virtual") else "medido"
         portas = {x["numero"]: x["carregador_id"] for x in self.t("portas_dispositivo")
                   if x["dispositivo_id"] == p["p_dispositivo"]}
         if any(l.get("porta") not in portas for l in lote):
             self.tabelas["dispositivos"] = estado          # a transação inteira volta
             raise ErroRPC("porta_inexistente")
+        if any(f.get("fonte") not in ("painel", "bateria") for f in fontes):
+            self.tabelas["dispositivos"] = estado
+            raise ErroRPC("lote_invalido")
         agora = datetime.now(timezone.utc)
+
+        def medido_em(t_ms):
+            atraso = max(0, min(600000, p["p_t_envio_ms"] - (t_ms if t_ms is not None else p["p_t_envio_ms"])))
+            return (agora - timedelta(milliseconds=atraso)).isoformat()
+
+        def escala(v):
+            return None if v is None else float(v) * fator / 1000.0
+
         for l in lote:
             s = next((x for x in self.t("sessoes_recarga")
                       if x["carregador_id"] == portas[l["porta"]] and x["status"] == "carregando"), None)
-            atraso = max(0, min(600000, p["p_t_envio_ms"] - (l.get("t_ms") or p["p_t_envio_ms"])))
             self.t("leituras_hardware").append(self.nova_linha("leituras_hardware", {
                 "dispositivo_id": p["p_dispositivo"], "porta": l["porta"],
                 "sessao_id": s["id"] if s else None,
                 **{k: l.get(k) for k in ("potencia_w", "energia_wh", "tensao_v", "corrente_a",
                                          "temperatura_c", "rele_ligado")},
-                "medido_em": (agora - timedelta(milliseconds=atraso)).isoformat(),
-                "origem": "medido"}))
+                "medido_em": medido_em(l.get("t_ms")), "origem": origem, "fator_escala": fator,
+                "potencia_escalada_kw": escala(l.get("potencia_w")),
+                "energia_escalada_kwh": escala(l.get("energia_wh"))}))
+        for f in fontes:
+            soc = f.get("soc_estimado")
+            self.t("leituras_fonte").append(self.nova_linha("leituras_fonte", {
+                "dispositivo_id": p["p_dispositivo"], "fonte": f["fonte"],
+                "medido_em": medido_em(f.get("t_ms")),
+                **{k: f.get(k) for k in ("potencia_w", "tensao_v", "corrente_a")},
+                "fator_escala": fator, "potencia_escalada_kw": escala(f.get("potencia_w")),
+                "soc_estimado": None if soc is None else min(100.0, max(0.0, float(soc))),
+                "origem": origem}))
         return len(lote)
 
     def _cadastrar(self, p):

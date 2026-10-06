@@ -38,6 +38,13 @@ ADMISSÃO
 Conta só a REDE. O sol não é despachável: admitir um carro contando com o
 meio-dia é prometer o que não se cumpre às 17h.
 
+VAGA SOLAR DO TOTEM (ADR-018 D6)
+--------------------------------
+Na bancada o painel é ligado SÓ à porta solar (comutação painel/bateria,
+nunca em paralelo). As portas vizinhas da mesma placa entram com
+`so_rede = True`: não recebem sol atribuído. A política da bateria da porta
+solar (Modbus 10030 + 10024) é `decidir_vaga_solar()`, função pura.
+
 HONESTIDADE
 -----------
 Os parâmetros são armazenados e simulados; o sistema não fala Modbus RS485
@@ -49,6 +56,7 @@ from datetime import timedelta
 
 from fastapi import HTTPException
 
+import dispositivos
 from config import SOLAR_VALIDADE_MIN, agora, supabase, um
 from fisica import MINIMO_MONOFASICO_KW, em_horario_de_ponta, minimo_kw, potencia_no_soc, teto_kw
 
@@ -114,7 +122,7 @@ def modo_efetivo(charger: dict, cond: dict | None) -> int:
 
 
 def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id: str,
-            ordem: int, medida_kw: float = 0.0) -> dict:
+            ordem: int, medida_kw: float = 0.0, so_rede: bool = False) -> dict:
     """Um ponto em uso visto pelo alocador."""
     teto = teto_kw(charger, veiculo)
     hardware = charger.get("origem") == "hardware"
@@ -134,6 +142,7 @@ def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id
         "modo": modo_efetivo(charger, cond),
         "garantir_minimo": bool(charger.get("garantir_minimo")),
         "ordem": ordem,
+        "so_rede": bool(so_rede),
     }
 
 
@@ -151,11 +160,13 @@ def _sessoes_ativas(condominio_id: str, cond: dict | None = None) -> list[dict]:
     # Ordem de chegada decide quem pausa primeiro na falta.
     sessoes.sort(key=lambda s: str(s.get("iniciado_em") or s.get("criado_em") or ""))
 
+    so_rede = dispositivos.carregadores_so_rede(list({s["carregador_id"] for s in sessoes})) \
+        if sessoes else set()
     itens = []
     for ordem, s in enumerate(sessoes):
         it = item_de(por_id[s["carregador_id"]], s.get("veiculos") or {},
                      float(s.get("percentual_bateria_atual") or 0), cond, s["id"], ordem,
-                     float(s.get("potencia_atual_kw") or 0))
+                     float(s.get("potencia_atual_kw") or 0), so_rede=s["carregador_id"] in so_rede)
         it["alocado_atual"] = s.get("potencia_alocada_kw")
         it["alocado_solar_atual"] = s.get("potencia_alocada_solar_kw")
         itens.append(it)
@@ -243,8 +254,9 @@ def distribuir_fontes(limite_rede_kw: float, solar_kw: float, itens: list[dict])
                       "pausado_motivo": None} for it in norm}
 
     # 1. Fixas: levam o que pedem. Sol primeiro, depois rede - mesmo que estoure.
+    #    `so_rede` (porta vizinha da vaga solar na bancada) não recebe sol.
     for it in (i for i in norm if not i["controlavel"]):
-        do_sol = min(it["demanda_kw"], sol)
+        do_sol = 0.0 if it.get("so_rede") else min(it["demanda_kw"], sol)
         sol -= do_sol
         da_rede = it["demanda_kw"] - do_sol
         rede -= da_rede
@@ -309,6 +321,39 @@ def avaliar_admissao(limite_rede_kw: float, itens: list[dict], nova: dict) -> tu
     if any(x["pausado_motivo"] == PAUSA_LIMITE for x in r["itens"].values()):
         return None, "minimo"
     return recebe, None
+
+
+# ---------------------------------------------------------------------------
+# Vaga solar: bateria x Modbus 10030 / 10024 (função pura)
+# ---------------------------------------------------------------------------
+
+HISTERESE_SOC = 5.0            # volta ao sol só com 10030 + 5 pontos (sem liga-desliga)
+LIMIAR_DESCARGA_W = 0.05       # W BRUTOS: a bateria está entregando à vaga
+MODOS_VAGA_SOLAR = ("solar", "rede", "pausada")
+
+
+def decidir_vaga_solar(modo_atual: str | None, soc: float | None, bateria_w: float | None,
+                       soc_minimo: float, garantir_minimo: bool) -> str:
+    """
+    Modbus 10030: abaixo deste SOC a bateria NÃO descarrega mais para o ponto.
+    Com o painel dando conta (bateria parada), a vaga segue no sol mesmo com
+    a bateria baixa. Com a bateria descarregando abaixo do mínimo:
+      10024 ligado    -> "rede"     (manual 3.5: garantir potência mínima)
+      10024 desligado -> "pausada"  (status 10 do 10017: PV/bateria insuficiente)
+    Volta ao "solar" quando o SOC passa de 10030 + HISTERESE_SOC.
+    Sem leitura de bateria, não muda nada (não se decide no escuro).
+    """
+    modo = modo_atual if modo_atual in MODOS_VAGA_SOLAR else "solar"
+    if soc is None:
+        return modo
+    minimo = max(0.0, min(100.0, float(soc_minimo)))
+    if modo in ("pausada", "rede"):
+        if soc >= minimo + HISTERESE_SOC:
+            return "solar"
+        return "rede" if garantir_minimo else "pausada"
+    if soc < minimo and float(bateria_w or 0) > LIMIAR_DESCARGA_W:
+        return "rede" if garantir_minimo else "pausada"
+    return "solar"
 
 
 # ---------------------------------------------------------------------------

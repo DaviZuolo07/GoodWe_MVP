@@ -8,7 +8,9 @@ A cada ciclo, nesta ordem:
   3. por condomínio com FV: grava a geração SOLAR SIMULADA (ADR-016 D9)
   4. por condomínio: roda o ALOCADOR de demanda e avança as recargas
      simuladas com a potência que ele liberou - e de qual fonte
-  5. encerra recarga de ponto físico que ficou sem placa
+  5. encerra recarga de ponto físico cuja placa sumiu há mais de
+     SEGUNDOS_OFFLINE_ENCERRA (o totem corta sozinho aos 120 s; ADR-018)
+  5b. liga quem espera energia (fila por ordem de chegada, ADR-018)
   6. registra a carga total do condomínio (e quanto veio da rede) na curva
      horária do gestor
 
@@ -17,7 +19,9 @@ SOLAR SIMULADO
 Curva de céu limpo, determinística (ver config.py). O simulador é o ÚNICO
 lugar que conhece a curva: o alocador lê `geracao_solar`, a mesma tabela que
 um inversor de verdade vai preencher com origem 'medido'. Quando houver
-leitura medida recente, o simulador para de gravar naquele condomínio.
+leitura medida recente - ou qualquer linha gravada por uma placa (painel do
+totem, real ou virtual) -, o simulador para de gravar naquele condomínio:
+ele é o fallback rotulado.
 
 Por que `asyncio.to_thread`: o cliente do Supabase é síncrono. Chamado direto
 dentro do laço assíncrono, cada ciclo congelava o servidor inteiro por alguns
@@ -34,7 +38,7 @@ import demanda
 import dispositivos
 import recarga
 from config import (FUSO, SOLAR_BALDE_MIN, SOLAR_FATOR_PICO, SOLAR_NASCER_H, SOLAR_POR_H,
-                    SOLAR_VALIDADE_MIN, agora, supabase, um)
+                    SOLAR_VALIDADE_MIN, agora, para_datetime, supabase)
 from fisica import EFICIENCIA_CARGA, em_horario_de_ponta, potencia_efetiva, teto_kw, tempo_de_carga_min
 
 INTERVALO_S = 10
@@ -42,6 +46,10 @@ INTERVALO_S = 10
 # A energia simulada usa o tempo real decorrido (com teto, para um servidor
 # que ficou parado não despejar horas de energia de uma vez).
 MAX_DT_S = 30
+# A placa marca offline aos 30 s (config.SEGUNDOS_ATE_OFFLINE), mas a recarga
+# só é encerrada depois disto: o totem segue carregando até a trava offline
+# dele (120 s, ADR-020 P2) e reconcilia pelo handshake se a rede voltar antes.
+SEGUNDOS_OFFLINE_ENCERRA = 150
 _ultimo_ciclo = None
 
 
@@ -135,9 +143,9 @@ def gravar_geracao_solar(cond: dict, momento: datetime | None = None) -> None:
         return
     try:
         desde = (momento - timedelta(minutes=SOLAR_VALIDADE_MIN)).isoformat()
-        medida = um(supabase.table("geracao_solar").select("momento").eq("condominio_id", cond["id"])
-                    .eq("origem", "medido").gte("momento", desde).limit(1).execute())
-        if medida:
+        recentes = supabase.table("geracao_solar").select("origem, dispositivo_id") \
+            .eq("condominio_id", cond["id"]).gte("momento", desde).limit(20).execute().data or []
+        if any(r.get("origem") == "medido" or r.get("dispositivo_id") for r in recentes):
             return
         supabase.table("geracao_solar").upsert({"condominio_id": cond["id"], **linha},
                                                on_conflict="condominio_id,momento").execute()
@@ -149,6 +157,24 @@ def gravar_geracao_solar(cond: dict, momento: datetime | None = None) -> None:
 # Ciclo
 # ---------------------------------------------------------------------------
 
+def _offline_ha_muito(carregador_id: str) -> bool:
+    d = dispositivos.dispositivo_do_carregador(carregador_id)
+    ultimo = para_datetime((d or {}).get("ultimo_contato"))
+    return not ultimo or (agora() - ultimo).total_seconds() >= SEGUNDOS_OFFLINE_ENCERRA
+
+
+def _promover_filas_de_energia(chargers_por_id: dict) -> None:
+    """Fim da ponta, sol que voltou, limite que subiu: quem espera energia liga."""
+    espera = supabase.table("sessoes_recarga").select("carregador_id") \
+        .eq("status", "aguardando_energia").execute().data or []
+    for cond_id in {chargers_por_id[s["carregador_id"]]["condominio_id"]
+                    for s in espera if s["carregador_id"] in chargers_por_id}:
+        try:
+            recarga.promover_aguardando_energia(cond_id)
+        except Exception as e:
+            print(f"[SIMULADOR] fila de energia de {cond_id} não andou: {e}")
+
+
 def ciclo() -> None:
     horas = _horas_decorridas()
     dispositivos.marcar_offline_sem_contato()
@@ -158,6 +184,7 @@ def ciclo() -> None:
     chargers = supabase.table("carregadores").select("*").execute().data or []
     _temperaturas(chargers)
     por_id = {c["id"]: c for c in chargers}
+    _promover_filas_de_energia(por_id)
 
     sessoes = supabase.table("sessoes_recarga").select(
         "*, veiculos(capacidade_bateria_kwh, potencia_carro_kw, tipo)"
@@ -185,7 +212,8 @@ def ciclo() -> None:
                 # Energia deste ponto vem do sensor do ESP32 (hardware_api).
                 # Aqui só tratamos a placa que sumiu no meio da recarga.
                 if c["status"] == "offline":
-                    recarga.encerrar(s, "dispositivo_offline")
+                    if _offline_ha_muito(c["id"]):
+                        recarga.encerrar(s, "dispositivo_offline")
                 else:
                     medida = float(s.get("potencia_atual_kw") or 0)
                     carga_total += medida

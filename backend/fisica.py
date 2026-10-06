@@ -18,6 +18,12 @@ E duas coisas mudam só o custo:
                         custa `ponta_multiplicador_tarifa` vezes a tarifa base.
   5. Fonte (ADR-016)  - kWh do excedente solar tem preço próprio, sem ponta.
                         Todo kWh da sessão é solar, rede fora ou rede ponta.
+
+E duas conversões da bancada (ADR-017/018):
+  6. Escala          - a placa manda W/Wh BRUTOS; o fator (1000 na maquete)
+                       leva para kW/kWh de produto na ENTRADA da telemetria.
+                       Tudo o que a placa recebe de volta volta para o bruto.
+  7. Bateria 18650   - SOC ESTIMADO pela tensão (curva de circuito aberto).
 """
 
 import math
@@ -159,6 +165,54 @@ def minimo_kw(charger: dict, veiculo: dict | None = None) -> float:
     if trifasico(charger) and carro > 7.4:
         return MINIMO_TRIFASICO_KW
     return MINIMO_MONOFASICO_KW
+
+
+# ---------------------------------------------------------------------------
+# Escala de bancada (ADR-017)
+# ---------------------------------------------------------------------------
+
+def potencia_escalada_kw(potencia_w, fator: float) -> float:
+    """W brutos da placa -> kW de produto. Fator 1000: 7,5 W -> 7,5 kW."""
+    return float(potencia_w or 0) * float(fator) / 1000.0
+
+
+def energia_escalada_kwh(energia_wh, fator: float) -> float:
+    """Wh brutos da placa -> kWh de produto. Fator 1000: 12 Wh -> 12 kWh."""
+    return float(energia_wh or 0) * float(fator) / 1000.0
+
+
+def energia_bruta_wh(energia_kwh, fator: float) -> float:
+    """A volta: kWh de produto -> Wh que a placa conhece (handshake e resposta)."""
+    return float(energia_kwh or 0) * 1000.0 / float(fator)
+
+
+# ---------------------------------------------------------------------------
+# Bateria 18650 da vaga solar
+# ---------------------------------------------------------------------------
+
+# SOC (%) -> tensão em circuito aberto de uma 18650 (curva típica de Li-íon).
+# A MESMA tabela do totem virtual (totem_virtual/fisica.py): ida e volta batem.
+CURVA_18650 = [(0, 3.00), (5, 3.30), (10, 3.45), (20, 3.60), (30, 3.68), (40, 3.74),
+               (50, 3.80), (60, 3.87), (70, 3.95), (80, 4.02), (90, 4.10), (100, 4.20)]
+
+
+def soc_pela_tensao_18650(tensao_v) -> float | None:
+    """
+    SOC ESTIMADO pela tensão (interpolação na curva). Sob carga a tensão cai
+    na resistência interna e o SOC sai menor que o real: erra para o lado
+    seguro (protege a bateria antes). Sem tensão = None (não se inventa SOC).
+    """
+    if tensao_v is None:
+        return None
+    v = float(tensao_v)
+    if v <= 0:
+        return None
+    if v <= CURVA_18650[0][1]:
+        return 0.0
+    for (s0, v0), (s1, v1) in zip(CURVA_18650, CURVA_18650[1:]):
+        if v <= v1:
+            return round(s0 + (s1 - s0) * (v - v0) / (v1 - v0), 1)
+    return 100.0
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,14 @@ prepara e encosta -> debita do Joaquim; Marcos prepara e encosta o MESMO
 cartão -> debita do Marcos. A placa não guarda nem aprende nada sobre eles -
 ela só manda o uid e recebe sim ou não.
 
+TAG-PRIMEIRO (Totem v2.1, ADR-018)
+----------------------------------
+No totem a recarga também pode nascer da tag, sem passar pelo app. Aí o
+cartão PRECISA identificar quem paga: só o PESSOAL inicia recarga sozinho.
+O compartilhado continua só confirmando recarga preparada no app (numa vaga
+livre ele responde `sem_recarga_preparada`). Quem encerra pela tag é a
+MESMA tag que iniciou (`sessoes_recarga.uid_inicio`).
+
 O QUE O COMPARTILHADO NÃO FAZ
 -----------------------------
 Não prova identidade. Quem estiver com ele pode confirmar a recarga que já
@@ -131,3 +139,21 @@ def autoriza(cartao: dict, sessao: dict, condominio_id: str) -> tuple[bool, str 
     if cartao.get("condominio_id") != condominio_id:
         return False, "cartao_de_outro_condominio"
     return True, None
+
+
+def pagador_da_tag(cartao: dict | None) -> str | None:
+    """Quem paga uma recarga iniciada pela tag: só o dono de cartão PESSOAL."""
+    if cartao and cartao.get("escopo") == "pessoal" and cartao.get("ativo", True):
+        return cartao.get("usuario_id")
+    return None
+
+
+def mesma_tag(sessao: dict, uid: str, cartao: dict | None) -> bool:
+    """
+    A tag aproximada é a que iniciou esta sessão? Sessão sem `uid_inicio`
+    (anterior ao 17) aceita o cartão PESSOAL do dono - nunca o compartilhado.
+    """
+    if sessao.get("uid_inicio"):
+        return sessao["uid_inicio"] == uid
+    return bool(cartao and cartao.get("escopo") == "pessoal"
+                and cartao.get("usuario_id") == sessao.get("usuario_id"))
