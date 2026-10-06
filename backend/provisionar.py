@@ -546,6 +546,17 @@ def cmd_verificar(_args):
         (f"{a['nome']} lê a tabela fila direto (só pela view)",
          lambda: bloqueado(get("fila?select=id&limit=1", token_a))),
         ("anon lê a geração solar", lambda: bloqueado(get("geracao_solar?select=momento&limit=1"))),
+        # ADR-016: funções novas fechadas ao navegador.
+        (f"{a['nome']} grava consumo do condomínio pelo RPC",
+         lambda: rpc_bloqueada("registrar_consumo", {
+             "p_cond": a.get("condominio_id"), "p_kwh": 999, "p_ponta": False, "p_carga_kw": 999,
+             "p_demanda_kw": 999, "p_solar_kwh": 0, "p_rede_kw": 999}, token_a)),
+        (f"{a['nome']} soma a geração solar pelo RPC",
+         lambda: rpc_bloqueada("somar_geracao_solar", {
+             "p_cond": a.get("condominio_id"), "p_desde": "2026-01-01T00:00:00Z"}, token_a)),
+        ("CONTROLE: migration 16 aplicada (energia por fonte na sessão)",
+         lambda: sb.table("sessoes_recarga").select("energia_solar_kwh, origem_solar, tarifa_solar_kwh")
+         .limit(1).execute() is not None),
         ("token forjado (assinatura errada)",
          lambda: get("carregadores?select=id&limit=1", token_a[:-4] + "AAAA").status_code in (401, 403)),
         # Controle positivo: se isto falhar, o token não está sendo aceito

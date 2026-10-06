@@ -3,7 +3,7 @@ Supabase falso, em memória - só o subconjunto da API que o backend usa.
 
 Permite rodar o fluxo completo (login -> preparar -> ESP32 pede cartão ->
 cartão -> saldo -> telemetria -> encerramento -> estorno) sem rede, com o
-TestClient do FastAPI. As funções RPC do 12, 14 e 15 estão replicadas aqui
+TestClient do FastAPI. As funções RPC do 12, 14, 15 e 16 estão replicadas aqui
 em Python com a mesma regra (o comportamento real é provado no Postgres pelo
 db/15_verificacao.sql; aqui o que se testa é o backend em volta delas).
 """
@@ -140,7 +140,8 @@ class FakeSupabase:
                    "dispositivos": {"protocolo": 1, "chave_versao": 1, "boot_atual": None,
                                     "seq_atual": 0, "online": False},
                    "comandos_dispositivo": {"porta": 1},
-                   "leituras_hardware": {"porta": 1, "origem": "medido"}}
+                   "leituras_hardware": {"porta": 1, "origem": "medido"},
+                   "geracao_solar": {"origem": "simulado"}}
         linha.update(padroes.get(tabela, {}))
         linha.update(copy.deepcopy(v))
         return linha
@@ -271,6 +272,38 @@ class FakeSupabase:
             self._mover(u["id"], p.get("p_bonus", 100), "bonus", "Crédito de boas-vindas (simulado)")
         return u["id"]
 
+    def _registrar_consumo(self, p):
+        """Mesma regra do db/16: soma energia (total, ponta só da rede, solar) e guarda os picos."""
+        hora = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0).isoformat()
+        kwh = max(0.0, float(p["p_kwh"]))
+        solar = min(kwh, max(0.0, float(p.get("p_solar_kwh") or 0)))
+        carga = max(0.0, float(p["p_carga_kw"]))
+        rede = p.get("p_rede_kw")
+        rede = max(0.0, float(carga if rede is None else rede))
+        linha = next((x for x in self.t("consumo_horario")
+                      if x["condominio_id"] == p["p_cond"] and x["hora"] == hora), None)
+        if not linha:
+            linha = {"condominio_id": p["p_cond"], "hora": hora, "energia_kwh": 0.0, "energia_ponta_kwh": 0.0,
+                     "energia_solar_kwh": 0.0, "pico_kw": 0.0, "demanda_kw": 0.0, "pico_rede_kw": 0.0}
+            self.t("consumo_horario").append(linha)
+        linha["energia_kwh"] += kwh
+        linha["energia_solar_kwh"] += solar
+        if p["p_ponta"]:
+            linha["energia_ponta_kwh"] += kwh - solar
+        linha["pico_kw"] = max(linha["pico_kw"], carga)
+        linha["demanda_kw"] = max(linha["demanda_kw"], float(p.get("p_demanda_kw") or 0), carga)
+        linha["pico_rede_kw"] = max(linha["pico_rede_kw"], rede)
+
+    def _somar_geracao(self, p):
+        desde = _cmp(p["p_desde"])
+        por = {}
+        for g in self.t("geracao_solar"):
+            if g["condominio_id"] == p["p_cond"] and _cmp(g["momento"]) >= desde:
+                o = por.setdefault(g["origem"], {"origem": g["origem"], "energia_kwh": 0.0, "pico_kw": 0.0})
+                o["energia_kwh"] += float(g["energia_kwh"])
+                o["pico_kw"] = max(o["pico_kw"], float(g["potencia_kw"]))
+        return list(por.values())
+
     def rpc(self, nome, p):
         db = self
 
@@ -299,7 +332,9 @@ class FakeSupabase:
                 if nome == "registrar_lote_telemetria":
                     return _Resp(db._registrar_lote(p))
                 if nome == "registrar_consumo":
-                    db.t("consumo_horario").append(dict(p))
+                    db._registrar_consumo(p)
                     return _Resp(None)
+                if nome == "somar_geracao_solar":
+                    return _Resp(db._somar_geracao(p))
                 raise ErroRPC(f"rpc desconhecida {nome}")
         return _R()

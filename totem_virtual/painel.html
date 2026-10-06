@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Totem virtual · ChargeOps</title>
+<style>
+  :root {
+    --fundo: #14171a; --placa: #1d2226; --borda: #2f373d; --texto: #e6eaed; --fraco: #8c979f;
+    --lcd: #b7c93a; --lcd-tinta: #1f2a08; --ligado: #47c26b; --alerta: #e8a13a; --erro: #e2604f;
+    --acento: #4aa3df; --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--fundo); color: var(--texto);
+         font: 14px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+           padding: 14px 20px; border-bottom: 1px solid var(--borda); }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  h2 { font-size: 12px; margin: 0 0 10px; color: var(--fraco); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .08em; }
+  .selo { background: var(--alerta); color: #231703; font-weight: 700; font-size: 12px;
+          padding: 3px 9px; border-radius: 3px; letter-spacing: .04em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  .chip { border: 1px solid var(--borda); border-radius: 999px; padding: 2px 10px;
+          font: 12px var(--mono); color: var(--fraco); }
+  .chip.ok { color: var(--ligado); border-color: #2c5e3b; }
+  .chip.ruim { color: var(--erro); border-color: #6b312a; }
+  main { display: grid; gap: 16px; padding: 16px 20px 28px;
+         grid-template-columns: minmax(300px, 380px) 1fr; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); padding: 12px; } }
+  @media (max-width: 420px) { #lcd { font-size: 15px; } }
+  section { background: var(--placa); border: 1px solid var(--borda); border-radius: 8px; padding: 14px; }
+  .coluna { display: grid; gap: 16px; min-width: 0; }
+  section { min-width: 0; }
+  .origem { font-size: 11px; color: var(--fraco); }
+  .origem b { color: var(--alerta); font-weight: 600; }
+
+  #lcd { background: var(--lcd); color: var(--lcd-tinta); border-radius: 5px; padding: 12px 14px;
+         font: 600 19px/1.32 var(--mono); white-space: pre; letter-spacing: .09em;
+         box-shadow: inset 0 0 0 3px #8e9d2b, inset 0 2px 14px rgba(0,0,0,.35); overflow: hidden; }
+  .linha { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  button, input, select { font: inherit; color: var(--texto); background: #262d32;
+          border: 1px solid var(--borda); border-radius: 5px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--acento); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--acento); outline-offset: 1px; }
+  button.vaga { width: 46px; height: 46px; border-radius: 50%; font-weight: 700; font-size: 16px; }
+  button.perigo { border-color: #6b312a; }
+  button.perigo:hover { border-color: var(--erro); }
+  input[type=number] { width: 74px; }
+  input[type=text] { width: 130px; font-family: var(--mono); text-transform: uppercase; }
+  input[type=range] { flex: 1; min-width: 120px; padding: 0; accent-color: var(--acento); }
+  label { color: var(--fraco); font-size: 12px; }
+
+  #vagas { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .cartao { border: 1px solid var(--borda); border-radius: 7px; padding: 12px; background: #191e21; }
+  .cartao.ligada { border-color: #2c5e3b; }
+  .topo { display: flex; justify-content: space-between; align-items: baseline; }
+  .topo strong { font-size: 15px; }
+  .rele { font: 11px var(--mono); padding: 2px 7px; border-radius: 3px; background: #2a3035; color: var(--fraco); }
+  .ligada .rele { background: #1f4a2c; color: #9be0b0; }
+  .watts { font: 600 26px var(--mono); margin: 8px 0 2px; }
+  .mini { font: 12px var(--mono); color: var(--fraco); }
+  .estado { margin: 8px 0; font-size: 13px; }
+  .barra { height: 6px; background: #2a3035; border-radius: 3px; overflow: hidden; margin: 6px 0; }
+  .barra i { display: block; height: 100%; background: var(--acento); width: 0; }
+  table { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+  td { padding: 2px 8px 2px 0; vertical-align: top; color: var(--fraco); white-space: nowrap; }
+  td.livre { white-space: normal; color: var(--texto); }
+  .rolagem { max-height: 250px; overflow: auto; }
+  .s200 { color: var(--ligado); } .sruim { color: var(--erro); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 8px 0 0; font: 12px var(--mono); }
+  dt { color: var(--fraco); } dd { margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Totem virtual · ChargeOps × GoodWe</h1>
+  <span class="selo">SIMULADO — gêmeo digital do ESP32</span>
+  <div class="chips">
+    <span class="chip" id="c-wifi">Wi-Fi</span>
+    <span class="chip" id="c-servidor">servidor</span>
+    <span class="chip" id="c-boot">boot</span>
+    <span class="chip" id="c-seq">seq</span>
+    <span class="chip" id="c-fila">fila</span>
+  </div>
+</header>
+
+<main>
+  <div class="coluna">
+    <section>
+      <h2>Tela do totem (LCD 20x4)</h2>
+      <div id="lcd" aria-live="polite"></div>
+      <div class="linha" id="tags"></div>
+      <div class="linha">
+        <input type="text" id="uid" maxlength="32" placeholder="UID em hexa" aria-label="UID da tag">
+        <button id="b-tag">Aproximar tag</button>
+      </div>
+      <div class="linha">
+        <label>Botão da vaga</label>
+        <button class="vaga" data-botao="1">1</button><button class="vaga" data-botao="2">2</button>
+        <button class="vaga" data-botao="3">3</button><button class="vaga" data-botao="4">4</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Vaga 4 · solar</h2>
+      <div class="linha"><label for="luz">Luz no painel</label>
+        <input type="range" id="luz" min="0" max="100" step="1"><span class="mini" id="luz-v"></span></div>
+      <div class="linha"><label for="bat">Carga da bateria</label>
+        <input type="range" id="bat" min="0" max="100" step="0.5"><span class="mini" id="bat-v"></span></div>
+      <dl>
+        <dt>Fonte da vaga</dt><dd id="s-fonte"></dd>
+        <dt>Painel</dt><dd id="s-painel"></dd>
+        <dt>Bateria 18650</dt><dd id="s-bateria"></dd>
+      </dl>
+      <p class="origem">Origem: <b>simulado</b> (modelo simplificado; limiares a calibrar na bancada real).</p>
+    </section>
+
+    <section>
+      <h2>Falhas</h2>
+      <div class="linha">
+        <button id="b-wifi" class="perigo">Derrubar o Wi-Fi</button>
+        <button id="b-reboot" class="perigo">Reiniciar a placa</button>
+      </div>
+      <dl>
+        <dt>Leituras guardadas</dt><dd id="f-fila"></dd>
+        <dt>Lotes enviados</dt><dd id="f-lotes"></dd>
+        <dt>Reinícios</dt><dd id="f-reboots"></dd>
+      </dl>
+    </section>
+  </div>
+
+  <div class="coluna">
+    <section>
+      <h2>Vagas</h2>
+      <div id="vagas"></div>
+      <p class="origem">Tensão, corrente, potência e energia: <b>simulado</b> no totem (W brutos, sem escala).
+        Percentual e custo: respondidos pelo backend a partir dessas leituras.</p>
+    </section>
+    <section>
+      <h2>Conversa com o backend</h2>
+      <div class="rolagem"><table id="trocas"></table></div>
+    </section>
+    <section>
+      <h2>Eventos da placa</h2>
+      <div class="rolagem"><table id="eventos"></table></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const TOKEN = "__TOKEN__";
+const TAGS = __TAGS__;
+const $ = id => document.getElementById(id);
+const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls;
+                                if (txt !== undefined) e.textContent = txt; return e; };
+let ultimo = null;
+
+async function acao(dados) {
+  await fetch("/api/acao", { method: "POST", body: JSON.stringify(dados),
+    headers: { "Content-Type": "application/json", "X-Totem-Token": TOKEN } });
+  atualizar();
+}
+
+// --- montagem (uma vez) -------------------------------------------------
+for (const [apelido, uid] of Object.entries(TAGS)) {
+  const b = el("button", "", "Tag " + (apelido.length === 1 ? apelido : apelido.replace("_", " ").toLowerCase()));
+  b.title = uid;
+  b.onclick = () => acao({ acao: "tag", uid });
+  $("tags").appendChild(b);
+}
+$("b-tag").onclick = () => { const uid = $("uid").value.trim(); if (uid) acao({ acao: "tag", uid }); };
+document.querySelectorAll("[data-botao]").forEach(b =>
+  b.onclick = () => acao({ acao: "botao", porta: +b.dataset.botao }));
+$("b-wifi").onclick = () => acao({ acao: "wifi", ligado: !(ultimo && ultimo.wifi) });
+$("b-reboot").onclick = () => acao({ acao: "reiniciar" });
+for (const [id, nome] of [["luz", "luz"], ["bat", "bateria"]]) {
+  $(id).oninput = () => { $(id + "-v").textContent = n(+$(id).value, 0) + "%"; };
+  $(id).onchange = () => acao({ acao: nome, valor: +$(id).value });
+}
+
+const cartoes = {};
+for (let p = 1; p <= 4; p++) {
+  const c = el("div", "cartao");
+  const topo = el("div", "topo");
+  topo.append(el("strong", "", "Vaga " + p + (p === 4 ? " · solar" : "")), el("span", "rele"));
+  const cap = Object.assign(el("input"), { type: "number", min: 0.05, max: 200, step: 0.5, value: 15 });
+  cap.setAttribute("aria-label", "Capacidade do celular em Wh");
+  const soc = Object.assign(el("input"), { type: "number", min: 0, max: 100, step: 1, value: 20 });
+  soc.setAttribute("aria-label", "Carga inicial do celular em %");
+  const plugar = el("button", "", "Plugar");
+  plugar.onclick = () => acao({ acao: "plugar", porta: p, capacidade_wh: +cap.value, soc: +soc.value });
+  const desplugar = el("button", "", "Desplugar");
+  desplugar.onclick = () => acao({ acao: "desplugar", porta: p });
+  const form = el("div", "linha");
+  form.append(cap, el("label", "", "Wh"), soc, el("label", "", "%"), plugar);
+  const plugado = el("div", "linha");
+  const barra = el("div", "barra"); barra.appendChild(el("i"));
+  c.append(topo, el("div", "watts"), el("div", "mini"), el("div", "estado"),
+           el("div", "mini"), el("div", "mini"), barra, form, plugado);
+  plugado.append(desplugar);
+  $("vagas").appendChild(c);
+  cartoes[p] = { c, rele: topo.lastChild, watts: c.children[1], medidas: c.children[2],
+                 estado: c.children[3], backend: c.children[4], celular: c.children[5],
+                 barra: barra.firstChild, form, plugado };
+}
+
+// --- atualização ----------------------------------------------------------
+const NOMES = { livre: "Livre", aguardando_energia: "Aguardando energia", carregando: "Carregando",
+                pausada: "Pausada", completa_tolerancia: "Completa (tolerância)",
+                completa_taxa: "Completa (taxa correndo)" };
+const n = (v, casas) => (v === null || v === undefined) ? "–" :
+  Number(v).toLocaleString("pt-BR", { minimumFractionDigits: casas, maximumFractionDigits: casas });
+
+function chip(id, texto, ok) { const c = $(id); c.textContent = texto;
+  c.className = "chip " + (ok === true ? "ok" : ok === false ? "ruim" : ""); }
+
+function tabela(id, linhas, montar) {
+  const t = $(id); t.replaceChildren();
+  for (const x of linhas.slice().reverse()) { const tr = el("tr"); montar(tr, x); t.appendChild(tr); }
+}
+
+function desenhar(e) {
+  ultimo = e;
+  $("lcd").textContent = e.lcd.join("\n");
+  chip("c-wifi", e.wifi ? "Wi-Fi ok" : "Wi-Fi CAÍDO", e.wifi);
+  chip("c-servidor", e.chave_recusada ? "chave recusada" : e.online ? "servidor ok" : (e.link === "PRONTO" ? "sem servidor" : "conectando"),
+       e.online);
+  chip("c-boot", "boot " + e.boot); chip("c-seq", "seq " + e.seq);
+  chip("c-fila", "fila " + e.fila_leituras, e.fila_leituras > 40 ? false : undefined);
+  $("b-wifi").textContent = e.wifi ? "Derrubar o Wi-Fi" : "Religar o Wi-Fi";
+  $("f-fila").textContent = e.fila_leituras + " das vagas, " + e.fila_fontes + " das fontes" +
+    (e.descartadas ? " (" + e.descartadas + " descartadas)" : "");
+  $("f-lotes").textContent = e.lotes_enviados + (e.lotes_descartados ? " (" + e.lotes_descartados + " recusados)" : "");
+  $("f-reboots").textContent = e.reinicios;
+
+  for (const v of e.vagas) {
+    const k = cartoes[v.porta];
+    k.c.classList.toggle("ligada", v.rele);
+    k.rele.textContent = !v.existe ? "sem porta" : v.rele ? "RELÉ LIGADO" : "relé aberto";
+    k.watts.textContent = n(v.potencia_w, 2) + " W";
+    k.medidas.textContent = n(v.tensao_v, 2) + " V · " + n(v.corrente_a, 3) + " A · " + n(v.energia_wh, 3) + " Wh";
+    k.estado.textContent = (NOMES[v.estado] || v.estado) +
+      (v.estado_do_backend ? " — informado pelo backend" : " — derivado do relé") +
+      (v.aguarda_tag ? " · app pediu a tag" + (v.pedido ? " (" + v.pedido + ")" : "") : "");
+    const b = v.backend || {};
+    k.backend.textContent = "backend: " + (b.percentual != null ? n(b.percentual, 1) + "% · " : "") +
+      (b.custo_ate_agora != null ? "R$ " + n(b.custo_ate_agora, 2) : "sem sessão");
+    k.celular.textContent = v.celular ? "celular: " + n(v.celular.soc, 1) + "% de " + n(v.celular.capacidade_wh, 1) + " Wh"
+                                      : "nenhum celular plugado";
+    k.barra.style.width = (v.celular ? v.celular.soc : 0) + "%";
+    k.form.hidden = !!v.celular; k.plugado.hidden = !v.celular;
+  }
+
+  const s = e.solar;
+  if (document.activeElement !== $("luz")) { $("luz").value = s.luz; $("luz-v").textContent = n(s.luz, 0) + "%"; }
+  if (document.activeElement !== $("bat")) { $("bat").value = s.bateria_soc; $("bat-v").textContent = n(s.bateria_soc, 1) + "%"; }
+  $("s-fonte").textContent = s.fonte + (s.bateria_ok ? "" : " (bateria cortada: tensão baixa)");
+  $("s-painel").textContent = n(s.painel.tensao_v, 2) + " V · " + n(s.painel.potencia_w, 2) + " W fornecidos";
+  $("s-bateria").textContent = n(s.bateria.tensao_v, 2) + " V · " + n(s.bateria.potencia_w, 2) + " W fornecidos";
+
+  tabela("trocas", e.trocas, (tr, x) => {
+    tr.append(el("td", "", n(x.t_ms / 1000, 1) + " s"), el("td", "", "#" + x.seq),
+              el("td", "", x.metodo + " " + x.rota),
+              el("td", x.status === 200 ? "s200" : "sruim", x.status === null ? "—" : String(x.status)),
+              el("td", "livre", x.resumo + (x.fontes ? " · " + x.fontes + " fontes" : "")));
+  });
+  tabela("eventos", e.eventos, (tr, x) => {
+    tr.append(el("td", "", n(x.t_ms / 1000, 1) + " s"), el("td", "livre", x.texto));
+  });
+}
+
+async function atualizar() {
+  try {
+    const r = await fetch("/api/estado", { headers: { "X-Totem-Token": TOKEN } });
+    if (r.ok) desenhar(await r.json());
+  } catch (_) { chip("c-servidor", "página sem o totem (processo parou?)", false); }
+}
+setInterval(atualizar, 400);
+atualizar();
+</script>
+</body>
+</html>

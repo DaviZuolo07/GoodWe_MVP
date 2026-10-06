@@ -208,3 +208,15 @@ def um(resposta) -> dict | None:
     """Primeira linha de uma consulta, ou None. Evita `.data[0]` explodindo."""
     dados = getattr(resposta, "data", None)
     return dados[0] if dados else None
+
+
+# --- Solar SIMULADO (ADR-016 D9) -------------------------------------------
+# Parâmetros do SIMULADOR, não de preço (preço e custo moram no condomínio).
+# Curva de céu limpo: P = kWp x FATOR_PICO x sen²(pi x (h - NASCER) / (POR - NASCER)).
+# Com 0,75 e 6h-18h rende ~4,5 kWh/kWp/dia, ordem de grandeza de São Paulo.
+SOLAR_FATOR_PICO = 0.75
+SOLAR_NASCER_H = 6.0
+SOLAR_POR_H = 18.0
+# Baldes gravados em geracao_solar e quanto tempo uma leitura vale para o alocador.
+SOLAR_BALDE_MIN = 5
+SOLAR_VALIDADE_MIN = 10

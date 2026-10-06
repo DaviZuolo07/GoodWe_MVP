@@ -5,10 +5,19 @@ simulador.py - O laço de 10 s que mantém o sistema andando sozinho.
 A cada ciclo, nesta ordem:
   1. derruba ESP32 sem contato e expira esperas de cartão vencidas
   2. esquenta/esfria os pontos SIMULADOS (o do ESP32 manda a própria)
-  3. por condomínio: roda o ALOCADOR de demanda e avança as recargas
-     simuladas com a potência que ele liberou - não com o teto do carregador
-  4. encerra recarga de ponto físico que ficou sem placa
-  5. registra a carga total do condomínio na curva horária do gestor
+  3. por condomínio com FV: grava a geração SOLAR SIMULADA (ADR-016 D9)
+  4. por condomínio: roda o ALOCADOR de demanda e avança as recargas
+     simuladas com a potência que ele liberou - e de qual fonte
+  5. encerra recarga de ponto físico que ficou sem placa
+  6. registra a carga total do condomínio (e quanto veio da rede) na curva
+     horária do gestor
+
+SOLAR SIMULADO
+--------------
+Curva de céu limpo, determinística (ver config.py). O simulador é o ÚNICO
+lugar que conhece a curva: o alocador lê `geracao_solar`, a mesma tabela que
+um inversor de verdade vai preencher com origem 'medido'. Quando houver
+leitura medida recente, o simulador para de gravar naquele condomínio.
 
 Por que `asyncio.to_thread`: o cliente do Supabase é síncrono. Chamado direto
 dentro do laço assíncrono, cada ciclo congelava o servidor inteiro por alguns
@@ -16,13 +25,16 @@ segundos - inclusive o GET /hardware/comandos que o ESP32 faz a cada 2 s.
 """
 
 import asyncio
+import math
 import random
 import time
+from datetime import datetime, timedelta, timezone
 
 import demanda
 import dispositivos
 import recarga
-from config import supabase
+from config import (FUSO, SOLAR_BALDE_MIN, SOLAR_FATOR_PICO, SOLAR_NASCER_H, SOLAR_POR_H,
+                    SOLAR_VALIDADE_MIN, agora, supabase, um)
 from fisica import EFICIENCIA_CARGA, em_horario_de_ponta, potencia_efetiva, teto_kw, tempo_de_carga_min
 
 INTERVALO_S = 10
@@ -56,6 +68,87 @@ def _temperaturas(chargers: list[dict]) -> None:
             c["temperatura_c"] = round(nova, 1)
 
 
+# ---------------------------------------------------------------------------
+# Solar simulado (funções puras + gravação)
+# ---------------------------------------------------------------------------
+
+def _hora_local(momento: datetime) -> float:
+    m = momento.astimezone(FUSO)
+    return m.hour + m.minute / 60 + m.second / 3600 + m.microsecond / 3.6e9
+
+
+def potencia_solar_kw(kwp: float, momento: datetime) -> float:
+    """Potência FV de céu limpo no instante (0 à noite)."""
+    h = _hora_local(momento)
+    if kwp <= 0 or not SOLAR_NASCER_H < h < SOLAR_POR_H:
+        return 0.0
+    u = math.pi * (h - SOLAR_NASCER_H) / (SOLAR_POR_H - SOLAR_NASCER_H)
+    return kwp * SOLAR_FATOR_PICO * math.sin(u) ** 2
+
+
+def energia_solar_kwh(kwp: float, inicio: datetime, fim: datetime) -> float:
+    """
+    Integral exata da curva entre dois instantes do MESMO dia local:
+    integral de sen²(u) = u/2 - sen(2u)/4.
+    """
+    if kwp <= 0 or fim <= inicio:
+        return 0.0
+    dia = SOLAR_POR_H - SOLAR_NASCER_H
+    h1 = min(max(_hora_local(inicio), SOLAR_NASCER_H), SOLAR_POR_H)
+    h2 = min(max(_hora_local(fim), SOLAR_NASCER_H), SOLAR_POR_H)
+    if h2 <= h1:
+        return 0.0
+
+    def primitiva(h):
+        u = math.pi * (h - SOLAR_NASCER_H) / dia
+        return u / 2 - math.sin(2 * u) / 4
+
+    return kwp * SOLAR_FATOR_PICO * dia / math.pi * (primitiva(h2) - primitiva(h1))
+
+
+def inicio_do_balde(momento: datetime) -> datetime:
+    m = momento.astimezone(timezone.utc)
+    return m.replace(minute=m.minute - m.minute % SOLAR_BALDE_MIN, second=0, microsecond=0)
+
+
+def balde_solar(kwp: float, momento: datetime) -> dict | None:
+    """A linha de `geracao_solar` do balde que contém `momento` (None à noite)."""
+    inicio = inicio_do_balde(momento)
+    energia = energia_solar_kwh(kwp, inicio, inicio + timedelta(minutes=SOLAR_BALDE_MIN))
+    if energia <= 0:
+        return None
+    return {"momento": inicio.isoformat(), "energia_kwh": round(energia, 6),
+            "potencia_kw": round(energia / (SOLAR_BALDE_MIN / 60), 4), "origem": "simulado"}
+
+
+def gravar_geracao_solar(cond: dict, momento: datetime | None = None) -> None:
+    """
+    Upsert idempotente do balde atual: reescrever dá o mesmo valor, então não
+    precisa de RPC. Não sobrescreve leitura MEDIDA recente (inversor real).
+    """
+    kwp = float(cond.get("fv_potencia_kwp") or 0)
+    if kwp <= 0:
+        return
+    momento = momento or agora()
+    linha = balde_solar(kwp, momento)
+    if not linha:
+        return
+    try:
+        desde = (momento - timedelta(minutes=SOLAR_VALIDADE_MIN)).isoformat()
+        medida = um(supabase.table("geracao_solar").select("momento").eq("condominio_id", cond["id"])
+                    .eq("origem", "medido").gte("momento", desde).limit(1).execute())
+        if medida:
+            return
+        supabase.table("geracao_solar").upsert({"condominio_id": cond["id"], **linha},
+                                               on_conflict="condominio_id,momento").execute()
+    except Exception as e:
+        print(f"[SOLAR] geração não gravada: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Ciclo
+# ---------------------------------------------------------------------------
+
 def ciclo() -> None:
     horas = _horas_decorridas()
     dispositivos.marcar_offline_sem_contato()
@@ -71,18 +164,22 @@ def ciclo() -> None:
     ).eq("status", "carregando").execute().data or []
 
     for cond in conds:
+        gravar_geracao_solar(cond)
+
         ids = {c["id"] for c in chargers if c["condominio_id"] == cond["id"]}
         do_local = [s for s in sessoes if s["carregador_id"] in ids]
         if not do_local:
             continue
 
         estado = demanda.alocar(cond["id"])
-        alocado = {x["id"]: x["alocado_kw"] for x in estado.get("sessoes", [])}
-        carga_total = 0.0
+        por_sessao = {x["id"]: x for x in estado.get("sessoes", [])}
+        origem_solar = (estado.get("origem_solar") or "solar_simulado").removeprefix("solar_")
+        carga_total = solar_total = 0.0
 
         for s in do_local:
             c = por_id[s["carregador_id"]]
             v = s.get("veiculos") or {}
+            x = por_sessao.get(s["id"], {})
 
             if c.get("origem") == "hardware":
                 # Energia deste ponto vem do sensor do ESP32 (hardware_api).
@@ -90,28 +187,36 @@ def ciclo() -> None:
                 if c["status"] == "offline":
                     recarga.encerrar(s, "dispositivo_offline")
                 else:
-                    carga_total += float(s.get("potencia_atual_kw") or 0)
+                    medida = float(s.get("potencia_atual_kw") or 0)
+                    carga_total += medida
+                    solar_total += min(medida, float(x.get("alocado_solar_kw") or 0))
                 continue
 
             capacidade = float(v.get("capacidade_bateria_kwh") or 40)
             soc = float(s.get("percentual_bateria_atual") or 0)
             alvo = float(s.get("alvo_percentual") or 100)
             teto = teto_kw(c, v)
-            liberado = alocado.get(s["id"])
+            liberado = x.get("alocado_kw", s.get("potencia_alocada_kw"))
 
             # O carro puxa o MENOR entre a curva da bateria e o que o alocador
-            # liberou - a curva é aplicada uma vez só.
+            # liberou; dessa potência, o sol alocado vem primeiro.
             potencia = potencia_efetiva(teto, soc, liberado)
-            energia_rede = potencia * horas
+            do_sol = min(potencia, float(x.get("alocado_solar_kw") or 0))
+            fracao = do_sol / potencia if potencia > 0 else 0.0
+
+            energia_rede = potencia * horas            # energia que sai da tomada
             novo_soc = min(100.0, soc + energia_rede * EFICIENCIA_CARGA / capacidade * 100)
             nova_energia = float(s.get("energia_entregue_kwh") or 0) + energia_rede
             tempo = tempo_de_carga_min(capacidade, novo_soc, alvo, teto, liberado)
 
             carga_total += potencia
-            recarga.registrar_progresso(s, v, cond, nova_energia, potencia, novo_soc, tempo)
+            solar_total += do_sol
+            recarga.registrar_progresso(s, v, cond, nova_energia, potencia, novo_soc, tempo,
+                                        fracao_solar=fracao, origem_solar=origem_solar)
 
         demanda.registrar_consumo(cond["id"], 0, em_horario_de_ponta(cond), carga_total,
-                                  demanda_kw=estado.get("demanda_kw", carga_total))
+                                  demanda_kw=estado.get("demanda_kw", carga_total),
+                                  rede_kw=max(0.0, carga_total - solar_total))
 
 async def laco() -> None:
     while True:

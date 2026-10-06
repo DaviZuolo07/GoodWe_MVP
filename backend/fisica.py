@@ -13,11 +13,14 @@ Três coisas mudam o tempo e o custo de uma recarga:
   3. Eficiência      - parte da energia da tomada vira calor. Cobra-se pela
                        energia que SAI DA TOMADA, como na conta de luz.
 
-E uma coisa muda só o custo:
-  4. Horário de ponta - dias úteis, na janela do condomínio, a energia custa
-                        `ponta_multiplicador_tarifa` vezes a tarifa base.
+E duas coisas mudam só o custo:
+  4. Horário de ponta - dias úteis, na janela do condomínio, a energia DA REDE
+                        custa `ponta_multiplicador_tarifa` vezes a tarifa base.
+  5. Fonte (ADR-016)  - kWh do excedente solar tem preço próprio, sem ponta.
+                        Todo kWh da sessão é solar, rede fora ou rede ponta.
 """
 
+import math
 from datetime import datetime, time, timedelta
 
 from config import FUSO
@@ -25,7 +28,11 @@ from config import FUSO
 EFICIENCIA_CARGA = 0.92
 SOC_JOELHO = 80.0
 FATOR_FINAL = 0.20
-TARIFA_PADRAO_KWH = 2.10
+TARIFA_PADRAO_KWH = 2.10        # só para sessão antiga sem tarifa congelada
+
+# Manual HCA G2, 3.5: corrente mínima de 6 A por fase.
+MINIMO_MONOFASICO_KW = 1.4      # carregador de 7 kW
+MINIMO_TRIFASICO_KW = 4.2       # carregadores de 11 e 22 kW
 
 
 # ---------------------------------------------------------------------------
@@ -102,11 +109,56 @@ def tempo_de_carga_min(capacidade_kwh: float, soc_ini: float, soc_fim: float,
     return int(round(_integrar(capacidade_kwh, soc_ini, soc_fim, potencia_max_kw, limite_kw)["horas"] * 60))
 
 
+def trifasico(charger: dict) -> bool:
+    """HCA G2: 7 kW é monofásico; 11 e 22 kW são trifásicos (registrador 10059)."""
+    nominal = charger.get("potencia_nominal_kw")
+    if nominal is None:
+        nominal = float(charger.get("potencia_maxima_kw") or 0)
+    return charger.get("perfil") != "bancada" and float(nominal) > 7.4
+
+
+def potencia_disjuntor_kw(charger: dict) -> float | None:
+    """
+    Registrador 10026 (corrente do disjuntor) em kW: V x I no monofásico,
+    raiz(3) x V x I no trifásico (V = tensão de linha do cadastro).
+    Só vale com o 10025 (controle dinâmico) ligado - no HCA G2 é o controle
+    dinâmico que lê o disjuntor. 0 ou vazio = não configurado.
+    """
+    if charger.get("controle_dinamico") is not True:
+        return None
+    corrente = float(charger.get("limite_disjuntor_a") or 0)
+    if corrente <= 0:
+        return None
+    tensao = float(charger.get("tensao_v") or 230)
+    fator = math.sqrt(3) if trifasico(charger) else 1.0
+    return round(tensao * corrente * fator / 1000.0, 4)
+
+
 def teto_kw(charger: dict, veiculo: dict) -> float:
-    """O menor entre o carregador e o que o veículo aceita, já com derating."""
+    """
+    O menor entre o carregador (10029), o veículo e o disjuntor do ponto
+    (10026, se o controle dinâmico estiver ligado), já com derating.
+    """
     nominal = min(float(charger.get("potencia_maxima_kw") or 0),
                   float(veiculo.get("potencia_carro_kw") or charger.get("potencia_maxima_kw") or 0))
+    disjuntor = potencia_disjuntor_kw(charger)
+    if disjuntor is not None:
+        nominal = min(nominal, disjuntor)
     return nominal * fator_termico(charger.get("temperatura_c"))
+
+
+def minimo_kw(charger: dict, veiculo: dict | None = None) -> float:
+    """
+    Menor potência que o ponto consegue sinalizar (6 A por fase). Carro com
+    carregador de bordo monofásico (até 7,4 kW) num ponto trifásico carrega
+    numa fase só, então vale o mínimo monofásico. Bancada USB: sem mínimo.
+    """
+    if charger.get("perfil") == "bancada":
+        return 0.0
+    carro = float((veiculo or {}).get("potencia_carro_kw") or 99)
+    if trifasico(charger) and carro > 7.4:
+        return MINIMO_TRIFASICO_KW
+    return MINIMO_MONOFASICO_KW
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +280,8 @@ def calcular_estimativa(charger: dict, veiculo: dict, percentual_atual: float,
         "temperatura_c": charger.get("temperatura_c"),
         "eficiencia": EFICIENCIA_CARGA,
         "limitado_pela_demanda": limite is not None and limite < teto_fisico,
+        # A reserva assume tudo pela rede (pior caso): o sol só aumenta o estorno.
+        "reserva_considera_so_rede": True,
     }
 
 
@@ -235,31 +289,70 @@ def detalhar_custo(sessao: dict) -> dict:
     """
     As linhas do recibo. Cada linha é arredondada no centavo e o total é a
     SOMA das linhas - o morador confere com calculadora e bate.
-    A tarifa e o multiplicador foram CONGELADOS na sessão quando ela começou:
-    mudar a tabela depois não muda a conta de quem já estava carregando.
+
+    Três fontes, nunca misturadas (ADR-016): solar (preço próprio, sem ponta),
+    rede fora da ponta e rede na ponta. Preços CONGELADOS na sessão quando ela
+    começou: mudar a tabela depois não muda a conta de quem já estava carregando.
+
+    `itens` é a forma nova (uma linha por fonte, com origem). As chaves antigas
+    continuam para o ReciboModal atual; `energia_fora_ponta_kwh` é rede fora.
     """
-    energia = float(sessao.get("energia_entregue_kwh") or 0)
-    ponta = min(energia, float(sessao.get("energia_ponta_kwh") or 0))
-    fora = energia - ponta
+    energia = max(0.0, float(sessao.get("energia_entregue_kwh") or 0))
+    solar = min(energia, max(0.0, float(sessao.get("energia_solar_kwh") or 0)))
+    ponta = min(energia - solar, max(0.0, float(sessao.get("energia_ponta_kwh") or 0)))
+    fora = max(0.0, energia - solar - ponta)
+
     tarifa = float(sessao.get("tarifa_kwh") or TARIFA_PADRAO_KWH)
     mult = float(sessao.get("multiplicador_ponta") or 1.0)
+    # Sem preço solar congelado (sessão iniciada antes do 16): cobra como rede
+    # fora da ponta - nunca mais caro que a rede, nunca de graça.
+    tarifa_solar = sessao.get("tarifa_solar_kwh")
+    tarifa_solar = float(tarifa_solar) if tarifa_solar is not None else tarifa
+
+    sub_solar = round(solar * tarifa_solar, 2)
     sub_fora = round(fora * tarifa, 2)
     sub_ponta = round(ponta * tarifa * mult, 2)
+    origem_solar = "solar_" + (sessao.get("origem_solar") or "simulado")
+
+    itens = [linha for linha in (
+        {"origem": origem_solar, "faixa": None, "energia_kwh": round(solar, 6),
+         "tarifa_kwh": round(tarifa_solar, 4), "subtotal": sub_solar},
+        {"origem": "rede", "faixa": "fora_ponta", "energia_kwh": round(fora, 6),
+         "tarifa_kwh": round(tarifa, 4), "subtotal": sub_fora},
+        {"origem": "rede", "faixa": "ponta", "energia_kwh": round(ponta, 6),
+         "tarifa_kwh": round(tarifa * mult, 4), "subtotal": sub_ponta},
+    ) if linha["energia_kwh"] > 0]
+
     return {
         "energia_kwh": round(energia, 6),
+        "energia_solar_kwh": round(solar, 6),
         "energia_fora_ponta_kwh": round(fora, 6),
         "energia_ponta_kwh": round(ponta, 6),
         "tarifa_kwh": tarifa,
         "tarifa_ponta_kwh": round(tarifa * mult, 4),
+        "tarifa_solar_kwh": round(tarifa_solar, 4),
         "multiplicador_ponta": mult,
+        "origem_solar": origem_solar if solar > 0 else None,
+        "subtotal_solar": sub_solar,
         "subtotal_fora_ponta": sub_fora,
         "subtotal_ponta": sub_ponta,
-        "total": round(sub_fora + sub_ponta, 2),
+        "itens": itens,
+        "total": round(sub_solar + sub_fora + sub_ponta, 2),
     }
 
 
+def economia_vs_so_rede(sessao: dict) -> float:
+    """
+    Quanto o morador economizou porque parte da energia veio do sol: o kWh
+    solar comparado com a tarifa da rede fora da ponta congelada na sessão
+    (o sol quase não existe na ponta). É ESTIMATIVA - rótulo no recibo.
+    """
+    d = detalhar_custo(sessao)
+    return round(max(0.0, d["energia_solar_kwh"] * (d["tarifa_kwh"] - d["tarifa_solar_kwh"])), 2)
+
+
 def custo_da_sessao(sessao: dict) -> float:
-    """Custo real: fora da ponta pela tarifa base, ponta pela base x multiplicador."""
+    """Custo real: solar pelo preço solar, rede fora pela base, ponta pela base x multiplicador."""
     return detalhar_custo(sessao)["total"]
 
 

@@ -53,6 +53,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+import demanda
 import dispositivos
 import recarga
 from config import CORPO_MAX_V2, JANELA_REPLAY_S, MAX_LEITURAS_LOTE, agora, agora_iso, \
@@ -212,11 +213,28 @@ def _cartao(carregador_id: str, uid_bruto: str) -> dict:
     return resposta
 
 
-def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload) -> dict:
+def _fracao_solar(s: dict, cond: dict | None, potencia_kw: float) -> tuple[float, str | None]:
+    """
+    O kWh é MEDIDO; a divisão entre sol e rede é ATRIBUÍDA pela alocação do
+    ciclo (o alocador deu `potencia_alocada_solar_kw` de sol a este ponto).
+    Só consulta a origem do número solar quando há sol alocado.
+    """
+    do_sol = min(potencia_kw, float(s.get("potencia_alocada_solar_kw") or 0))
+    if do_sol <= 0 or potencia_kw <= 0:
+        return 0.0, None
+    _, origem = demanda.excedente_solar(cond)
+    return do_sol / potencia_kw, origem
+
+
+def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
+                       com_alocacao: bool = False) -> dict:
     """
     A partir daqui a energia da sessão deixa de ser calculada e passa a ser
     MEDIDA. O modelo físico só entra para derivar o SoC; o tempo restante sai
     da potência que o sensor está vendo. A leitura JÁ foi gravada por quem chamou.
+
+    `com_alocacao` (v2): a resposta traz `alocado_kw`, a potência que o
+    alocador liberou para a porta. Informativo - o relé do ESP32 não modula.
     """
     if leitura.temperatura_c is not None:
         supabase.table("carregadores").update({"temperatura_c": round(leitura.temperatura_c, 1)}) \
@@ -227,8 +245,11 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload) -> dict:
         # Sem sessão o relé tem que estar aberto: trava contra energia correndo
         # sem ninguém pagando.
         aguardando = recarga.sessao_aguardando(carregador_id)
-        return {"ok": True, "sessao_ativa": False, "deve_liberar": False,
-                "aguardando_cartao": bool(aguardando)}
+        resposta = {"ok": True, "sessao_ativa": False, "deve_liberar": False,
+                    "aguardando_cartao": bool(aguardando)}
+        if com_alocacao:
+            resposta["alocado_kw"] = 0.0
+        return resposta
 
     v = recarga.veiculo(s["veiculo_id"]) or {}
     cond = recarga.condominio_de(recarga.carregador(carregador_id))
@@ -257,13 +278,18 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload) -> dict:
     elif s.get("baixa_potencia_desde"):
         supabase.table("sessoes_recarga").update({"baixa_potencia_desde": None}).eq("id", s["id"]).execute()
 
-    motivo = recarga.registrar_progresso(s, v, cond, energia_kwh, potencia_kw, soc, tempo, media)
+    fracao, origem_solar = _fracao_solar(s, cond, potencia_kw)
+    motivo = recarga.registrar_progresso(s, v, cond, energia_kwh, potencia_kw, soc, tempo, media,
+                                         fracao_solar=fracao, origem_solar=origem_solar)
     if not motivo and fim_por_dispositivo:
         motivo = "dispositivo_carregado"
         recarga.encerrar(recarga.sessao(s["id"]) or s, motivo)
 
     atual = recarga.sessao(s["id"]) or s
+    extra = {"alocado_kw": round(float(atual.get("potencia_alocada_kw") or 0), 4) if motivo is None else 0.0} \
+        if com_alocacao else {}
     return {
+        **extra,
         "ok": True,
         "sessao_ativa": motivo is None,
         "deve_liberar": motivo is None,
@@ -528,7 +554,7 @@ def receber_telemetria_v2(payload: TelemetriaV2Payload, d: dict = Depends(_assin
     respostas = []
     for porta in sorted(ultima):
         carregador_id = dispositivos.carregador_da_porta(d["id"], porta)
-        respostas.append({"porta": porta, **_processar_leitura(carregador_id, ultima[porta])})
+        respostas.append({"porta": porta, **_processar_leitura(carregador_id, ultima[porta], com_alocacao=True)})
     return {"ok": True, "gravadas": len(leituras), "portas": respostas}
 
 

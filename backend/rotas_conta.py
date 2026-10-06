@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 import cartoes
 import carteira
 from config import BONUS_BOAS_VINDAS, CONDOMINIO_PADRAO, CREDITO_MAXIMO, supabase, um
+from fisica import detalhar_custo
 from identidade import CAMPOS_PUBLICOS, usuario_logado
 from seguranca import (SENHA_MAX, conferir_senha, emitir_token, gerar_hash_senha,
                        hash_ficticio, limitador_cadastro, limitador_por_ip,
@@ -216,6 +217,30 @@ def creditar(payload: CreditoRequest, usuario: dict = Depends(usuario_logado)):
     """Crédito simulado (sem gateway). Vai para o extrato como qualquer movimento."""
     saldo = carteira.creditar(usuario["id"], payload.valor, "credito", "Crédito adicionado pelo app")
     return {"success": True, "saldo_atual": saldo}
+
+
+@router.get("/me/extrato")
+def extrato(limite: int = 100, usuario: dict = Depends(usuario_logado)):
+    """
+    O extrato da carteira com a energia de cada recarga POR FONTE (ADR-016 D8).
+    O dinheiro continua reserva -> estorno (saldo = soma do extrato); cada
+    movimento ligado a uma recarga traz as linhas do recibo dela: energia,
+    origem (rede | solar_simulado | solar_medido) e preço de cada uma.
+    """
+    limite = max(1, min(200, int(limite)))
+    movimentos = supabase.table("movimentacoes_carteira").select(
+        "tipo, valor, saldo_apos, descricao, sessao_id, criado_em"
+    ).eq("usuario_id", usuario["id"]).order("criado_em", desc=True).limit(limite).execute().data or []
+    ids = list({m["sessao_id"] for m in movimentos if m.get("sessao_id")})
+    sessoes = {}
+    if ids:
+        for s in supabase.table("sessoes_recarga").select("*").in_("id", ids) \
+                .eq("usuario_id", usuario["id"]).execute().data or []:
+            sessoes[s["id"]] = s
+    for m in movimentos:
+        s = sessoes.get(m.get("sessao_id"))
+        m["energia_por_fonte"] = detalhar_custo(s)["itens"] if s and s.get("status") == "finalizada" else None
+    return {"saldo": carteira.saldo_de(usuario["id"]), "movimentos": movimentos}
 
 
 @router.get("/me/cartoes")

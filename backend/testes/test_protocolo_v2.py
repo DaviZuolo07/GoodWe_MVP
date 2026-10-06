@@ -194,8 +194,11 @@ def test_recarga_na_porta_2_com_telemetria_em_lote():
         ultimo = {p["porta"]: p for p in r.json()["portas"]}
         assert r.json()["gravadas"] == 30
         assert ultimo[1]["deve_liberar"] is False and ultimo[1]["sessao_ativa"] is False
+        # ADR-016 D11: cada porta diz quanto o alocador liberou (porta parada = 0).
+        assert ultimo[1]["alocado_kw"] == 0
         if not ultimo[2]["deve_liberar"]:
             break
+        assert ultimo[2]["alocado_kw"] > 0
 
     assert ultimo[2]["motivo"] == "alvo_atingido", ultimo[2]
     s = next(x for x in fake.t("sessoes_recarga") if x["id"] == sessao_id)

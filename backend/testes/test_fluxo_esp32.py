@@ -195,6 +195,7 @@ def main_teste():
            f"SoC subiu pela energia medida até {ultimo.get('percentual')}%", ultimo)
     checar(ultimo["motivo"] == "alvo_atingido", "recarga para no alvo de 80%, não em 100%", ultimo)
     checar(ultimo["deve_liberar"] is False, "resposta manda abrir o relé")
+    checar("alocado_kw" not in ultimo, "resposta v1 não mudou (alocado_kw é só do v2)")
 
     leituras = CLIENTE.get(f"/recargas/{sessao_id}/leituras", headers=gus).json()
     checar(len(leituras) > 10, f"{len(leituras)} leituras gravadas para o gráfico")

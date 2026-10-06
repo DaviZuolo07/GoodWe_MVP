@@ -34,8 +34,8 @@ import dispositivos
 from identidade import sessao_do_usuario, veiculo_do_usuario
 from config import (MAX_TENTATIVAS_CARTAO, MODO_DEMO, RESERVA_MINIMA, SEGUNDOS_ESPERA_CARTAO,
                     agora, agora_iso, para_datetime, supabase, um)
-from fisica import (calcular_estimativa, custo_da_sessao, detalhar_custo, em_horario_de_ponta,
-                    multiplicador_ponta, tarifa_base)
+from fisica import (calcular_estimativa, custo_da_sessao, detalhar_custo, economia_vs_so_rede,
+                    em_horario_de_ponta, multiplicador_ponta, tarifa_base)
 
 LIMIAR_BAIXA_POTENCIA_KW = 0.0005      # 0,5 W: o celular parou de puxar
 SEGUNDOS_BAIXA_POTENCIA = 30
@@ -219,8 +219,14 @@ def preparar(usuario: dict, charger_id: str, veiculo_id: str, soc: float, alvo: 
     saldo_suficiente = usuario["saldo"] >= est["custo_estimado"]
 
     expira = agora() + timedelta(seconds=SEGUNDOS_ESPERA_CARTAO)
+    congelados = {}
+    # Preço solar congelado no início, como a tarifa da rede (ADR-016 D6).
+    # Só com a coluna presente: sem o 16, o insert segue igual ao de antes.
+    if (cond or {}).get("preco_solar_kwh") is not None:
+        congelados["tarifa_solar_kwh"] = float(cond["preco_solar_kwh"])
     try:
         nova = _inserir_sessao({
+            **congelados,
             "carregador_id": charger_id,
             "veiculo_id": veiculo_id,
             "usuario_id": usuario["id"],
@@ -466,26 +472,43 @@ def expirar_esperas() -> None:
 
 def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: float,
                         potencia_kw: float, soc: float | None, tempo_min: int | None,
-                        potencia_media_kw: float | None = None) -> str | None:
+                        potencia_media_kw: float | None = None, fracao_solar: float = 0.0,
+                        origem_solar: str | None = None) -> str | None:
     """
     Grava uma leitura na sessão e decide se ela acabou. Devolve o motivo do
     encerramento (e encerra) ou None.
 
-    A energia é separada em ponta e fora-ponta pelo INSTANTE em que chegou.
+    Cada kWh novo é separado em três baldes que nunca se misturam (ADR-016):
+      solar        a fração que o alocador deu do excedente FV
+      rede ponta   o resto, se chegou no horário de ponta
+      rede fora    o resto, fora da ponta
     Uma recarga que começa às 17h e termina às 19h paga cada kWh pelo preço
-    do horário em que ele foi entregue.
+    da fonte e do horário em que ele foi entregue.
     """
     atual = float(s.get("energia_entregue_kwh") or 0)
     energia_total_kwh = max(atual, float(energia_total_kwh))     # monotônica
     delta = energia_total_kwh - atual
     ponta = em_horario_de_ponta(cond)
 
+    fracao = min(1.0, max(0.0, float(fracao_solar or 0)))
+    delta_solar = delta * fracao
+    delta_rede = delta - delta_solar
+
     update = {
         "energia_entregue_kwh": round(energia_total_kwh, 6),
         "potencia_atual_kw": round(max(0.0, float(potencia_kw or 0)), 5),
     }
-    if ponta and delta > 0:
-        update["energia_ponta_kwh"] = round(float(s.get("energia_ponta_kwh") or 0) + delta, 6)
+    solar_total = float(s.get("energia_solar_kwh") or 0)
+    if delta_solar > 0:
+        solar_total = min(energia_total_kwh, solar_total + delta_solar)
+        update["energia_solar_kwh"] = round(solar_total, 6)
+        update["origem_solar"] = origem_solar or s.get("origem_solar") or "simulado"
+        if s.get("tarifa_solar_kwh") is None and (cond or {}).get("preco_solar_kwh") is not None:
+            update["tarifa_solar_kwh"] = float(cond["preco_solar_kwh"])
+    if ponta and delta_rede > 0:
+        # Ponta conta só REDE, e a soma das fontes nunca passa do total.
+        ponta_total = float(s.get("energia_ponta_kwh") or 0) + delta_rede
+        update["energia_ponta_kwh"] = round(max(0.0, min(ponta_total, energia_total_kwh - solar_total)), 6)
     if soc is not None:
         update["percentual_bateria_atual"] = round(soc, 1)
     if tempo_min is not None:
@@ -494,7 +517,7 @@ def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: 
         update["potencia_media_kw"] = round(potencia_media_kw, 5)
 
     if delta > 0 and cond:
-        demanda.registrar_consumo(cond["id"], delta, ponta, 0)
+        demanda.registrar_consumo(cond["id"], delta, ponta, 0, solar_kwh=delta_solar)
 
     supabase.table("sessoes_recarga").update(update).eq("id", s["id"]) \
         .eq("status", "carregando").execute()
@@ -512,6 +535,18 @@ def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: 
     if motivo:
         encerrar(merged, motivo)
     return motivo
+
+
+def resumo_por_fonte(sessao: dict) -> str:
+    """'3,20 kWh solar (simulado) a R$ 0,75 + 4,10 kWh rede a R$ 1,15' - para notificação."""
+    partes = []
+    for it in detalhar_custo(sessao)["itens"]:
+        if it["origem"].startswith("solar_"):
+            nome = f"solar ({it['origem'].removeprefix('solar_')})"
+        else:
+            nome = "rede na ponta" if it["faixa"] == "ponta" else "rede"
+        partes.append(f"{energia_legivel(it['energia_kwh'])} {nome} a {brl(it['tarifa_kwh'])}/kWh")
+    return " + ".join(partes)
 
 
 # ---------------------------------------------------------------------------
@@ -568,9 +603,10 @@ def encerrar(s: dict, motivo: str) -> dict:
 
     dispositivos.enfileirar(charger["id"], "bloquear", atual["id"])
 
+    fontes = resumo_por_fonte(atual)
     notificar(atual["usuario_id"], (
         f"Recarga no ponto {charger['numero']} finalizada ({MENSAGEM_MOTIVO.get(motivo, motivo)}): "
-        f"{energia_legivel(atual.get('energia_entregue_kwh'))}, custo {brl(custo)}"
+        f"{fontes or energia_legivel(atual.get('energia_entregue_kwh'))}, custo {brl(custo)}"
         + (f", estorno de {brl(estorno)} já na sua carteira." if estorno > 0 else ".")))
 
     avisar_proximo_da_fila(charger["id"])
@@ -668,5 +704,10 @@ def recibo(usuario: dict, sessao_id: str) -> dict:
                            else round(max(0.0, reservado - cobrado), 2),
         "limitado_pela_reserva": finalizada and reservado > 0 and linhas["total"] > reservado + 1e-9,
         "preco_medio_kwh": round(cobrado / energia, 4) if energia > 0 else None,
+        # Uma linha por fonte, cada uma com origem e preço próprio (ADR-016).
+        "itens": linhas["itens"],
+        "economia_vs_so_rede": {"valor": economia_vs_so_rede(s), "origem": "estimado",
+                                "explicacao": "kWh solar comparado com a tarifa da rede fora da ponta "
+                                              "congelada nesta recarga."},
         "movimentacoes": movimentos,
     }
