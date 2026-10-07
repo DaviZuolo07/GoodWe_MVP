@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 /* ===========================================================================
    Sidebar — navegação principal
    ---------------------------------------------------------------------------
@@ -16,8 +18,6 @@ export const NAV_GROUPS = [
       { label: 'Assistente IA', page: null, acao: 'chat', icon: 'chat' },
       { label: 'Meus Veículos', page: 'veiculos', icon: 'car' },
       { label: 'Histórico de Recargas', page: 'historico', icon: 'history' },
-      // Só aparece para quem tem tipo_usuario = 'gestor'.
-      { label: 'Gestão do condomínio', page: 'gestao', icon: 'dashboard', somenteGestor: true },
     ],
   },
   {
@@ -179,34 +179,101 @@ function NavItem({ item, ativo, onNavigate, onAcao, badge = 0 }) {
 }
 
 /* --------------------------------------------------------------------------
-   Navegação compacta — abaixo de lg, onde a sidebar não cabe
+   Barra inferior — abaixo de lg, onde a sidebar não cabe
+   --------------------------------------------------------------------------
+   No celular a navegação fica ao alcance do polegar: quatro destinos fixos,
+   o assistente no meio e "Mais" abrindo o resto (inclusive Sair, que antes
+   não existia no celular).
    -------------------------------------------------------------------------- */
 
-export function NavCompacta({ paginaAtiva, onNavigate, ehGestor = false }) {
-  const itens = NAV_GROUPS.flatMap((g) => g.itens)
-    .filter((i) => i.page !== null && (!i.somenteGestor || ehGestor))
+const BARRA = [
+  { label: 'Início', page: 'inicio', icon: 'dashboard' },
+  { label: 'Carteira', page: 'carteira', icon: 'wallet' },
+  { label: 'Assistente', acao: 'chat', icon: 'bolt', destaque: true },
+  { label: 'Histórico', page: 'historico', icon: 'history' },
+  { label: 'Mais', acao: 'mais', icon: 'settings' },
+]
+const NA_FOLHA = ['veiculos', 'notificacoes', 'configuracoes', 'como-funciona', 'suporte']
+
+export function NavInferior({ paginaAtiva, onNavigate, onAbrirChat, onLogout, naoLidas = 0 }) {
+  const [folha, setFolha] = useState(false)
+  const itensFolha = NAV_GROUPS.flatMap((g) => g.itens).filter((i) => NA_FOLHA.includes(i.page))
+  const maisAtivo = NA_FOLHA.includes(paginaAtiva)
+
+  function ir(pagina) {
+    setFolha(false)
+    onNavigate(pagina)
+  }
 
   return (
-    <nav className="scroll-slim flex gap-2 overflow-x-auto lg:hidden" aria-label="Navegação">
-      {itens.map((item) => {
-        const ativo = item.page === paginaAtiva
-        return (
-          <button
-            key={item.label}
-            type="button"
-            onClick={() => onNavigate(item.page)}
-            className={`flex shrink-0 items-center gap-2 rounded-chip border px-3 py-2 text-sm transition-colors duration-200 ${
-              ativo
-                ? 'border-flux/40 bg-flux/10 text-ink'
-                : 'border-line bg-panel text-mute hover:text-ink'
-            }`}
-          >
-            <Ico name={item.icon} className={`h-4 w-4 ${ativo ? 'text-flux' : 'text-dim'}`} />
-            {item.label}
-          </button>
-        )
-      })}
-    </nav>
+    <>
+      {folha && (
+        <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Mais opções">
+          <button type="button" aria-label="Fechar" className="absolute inset-0 bg-black/60" onClick={() => setFolha(false)} />
+          <div className="folha vidro barra-inferior absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-line px-4 pt-3">
+            <span className="mx-auto mb-3 block h-1 w-10 rounded-full bg-line" aria-hidden="true" />
+            <div className="space-y-1 pb-[4.75rem]">
+              {itensFolha.map((item) => (
+                <button key={item.page} type="button" onClick={() => ir(item.page)}
+                        aria-current={item.page === paginaAtiva ? 'page' : undefined}
+                        className={`flex w-full items-center gap-3 rounded-chip px-3.5 py-3 text-left text-[0.9375rem] ${
+                          item.page === paginaAtiva ? 'nav-ativo text-ink' : 'text-mute active:bg-raise'}`}>
+                  <Ico name={item.icon} className="h-5 w-5 shrink-0 text-dim" />
+                  <span className="flex-1">{item.label}</span>
+                  {item.page === 'notificacoes' && naoLidas > 0 && (
+                    <span className="num rounded-md bg-flux px-1.5 py-0.5 text-[0.625rem] font-semibold text-white">
+                      {naoLidas > 9 ? '9+' : naoLidas}
+                    </span>
+                  )}
+                </button>
+              ))}
+              <button type="button" onClick={onLogout}
+                      className="flex w-full items-center gap-3 rounded-chip px-3.5 py-3 text-left text-[0.9375rem] text-flux active:bg-flux/10">
+                <Ico name="power" className="h-5 w-5 shrink-0" />
+                Sair da conta
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <nav className="vidro barra-inferior fixed inset-x-0 bottom-0 z-50 border-t border-line px-2 pt-1.5 lg:hidden"
+           aria-label="Navegação">
+        <ul className="mx-auto grid max-w-md grid-cols-5 items-end">
+          {BARRA.map((item) => {
+            const ativo = item.acao === 'mais' ? (folha || maisAtivo) : (!folha && item.page === paginaAtiva)
+            const acionar = () => {
+              if (item.acao === 'chat') { setFolha(false); return onAbrirChat?.() }
+              if (item.acao === 'mais') return setFolha((v) => !v)
+              ir(item.page)
+            }
+            if (item.destaque) {
+              return (
+                <li key={item.label} className="flex justify-center">
+                  <button type="button" onClick={acionar} aria-label="Abrir o assistente"
+                          className="-mt-5 flex h-14 w-14 items-center justify-center rounded-full bg-flux text-white shadow-flux active:scale-95">
+                    <Ico name={item.icon} className="h-6 w-6" />
+                  </button>
+                </li>
+              )
+            }
+            return (
+              <li key={item.label}>
+                <button type="button" onClick={acionar} aria-current={ativo ? 'page' : undefined}
+                        className={`relative flex h-14 w-full flex-col items-center justify-center gap-1 rounded-chip text-[0.6875rem] ${
+                          ativo ? 'text-ink' : 'text-dim'}`}>
+                  <Ico name={item.icon} className={`h-5 w-5 ${ativo ? 'text-flux' : ''}`} />
+                  {item.label}
+                  {item.acao === 'mais' && naoLidas > 0 && (
+                    <span className="absolute right-[26%] top-2 h-2 w-2 rounded-full bg-flux" aria-label={`${naoLidas} notificações`} />
+                  )}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </nav>
+    </>
   )
 }
 
@@ -214,7 +281,7 @@ export function NavCompacta({ paginaAtiva, onNavigate, ehGestor = false }) {
    Sidebar
    -------------------------------------------------------------------------- */
 
-function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLidas = 0, ehGestor = false }) {
+function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLidas = 0 }) {
   const { usuario, veiculo } = sessao
 
   const iniciais = (usuario.nome || '?')
@@ -244,7 +311,7 @@ function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLi
           <div key={grupo.titulo} className={i > 0 ? 'mt-7' : ''}>
             <p className="eyebrow px-3.5 pb-2.5">{grupo.titulo}</p>
             <div className="space-y-1">
-              {grupo.itens.filter((i) => !i.somenteGestor || ehGestor).map((item) => (
+              {grupo.itens.map((item) => (
                 <NavItem
                   key={item.label}
                   item={item}

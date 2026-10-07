@@ -1,0 +1,625 @@
+/* Fontes servidas pelo próprio app (pacotes @fontsource): nada é buscado em
+   servidor de terceiro, o que permite uma CSP fechada e funciona em rede de
+   estande sem saída para o Google Fonts. */
+@import "@fontsource-variable/space-grotesk/wght.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
+@import "@fontsource/ibm-plex-mono/latin-600.css";
+@import "tailwindcss";
+
+/* ===========================================================================
+   GoodWe ChargeOps — PAINEL DO GESTOR — camada de design
+   (cópia dos tokens do app do morador: os dois projetos não compartilham
+   arquivos de propósito, para que nenhum build dependa do outro)
+   ---------------------------------------------------------------------------
+   Tudo que é cor, fonte, raio e sombra do produto nasce aqui. Nenhum
+   componente deve escrever hex na mão: usem as classes geradas por estes
+   tokens (bg-panel, text-mute, border-line, text-flux...).
+
+   Tailwind v4 gera as utilities automaticamente a partir do @theme:
+     --color-panel  ->  bg-panel / text-panel / border-panel
+     --font-mono    ->  font-mono
+     --radius-panel ->  rounded-panel
+   =========================================================================== */
+
+@theme {
+  /* Superfícies — do mais fundo para o mais próximo do usuário */
+  --color-void: #060607;   /* fundo da página (sob a fibra de carbono) */
+  --color-panel: #0f1012;  /* cards e painéis */
+  --color-raise: #17181b;  /* item ativo, hover, campos */
+  --color-line: #27292e;   /* borda visível */
+  --color-hair: #1c1d21;   /* divisória interna, mais discreta */
+
+  /* Texto — três níveis, bem separados de propósito */
+  --color-ink: #f3f5f8;    /* título e números */
+  --color-mute: #9ca0a8;   /* apoio, legenda */
+  --color-dim: #61656d;    /* rótulo, metadado */
+
+  /* Acento GoodWe: "flux" = energia em movimento */
+  --color-flux: #e5352b;
+  --color-flare: #ff6a45;  /* par quente do gradiente, só em movimento */
+
+  /* Estados operacionais dos carregadores */
+  --color-live: #2fd07a;   /* disponível */
+  --color-queue: #f5b33f;  /* fila */
+  --color-off: #4b515c;    /* offline */
+
+  /* Tipografia
+     Space Grotesk: display + interface (técnica, sem ser fria)
+     IBM Plex Mono: telemetria — número que muda sozinho é lido em mono */
+  --font-display: "Space Grotesk Variable", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --radius-panel: 1rem;
+  --radius-chip: 0.625rem;
+
+  --shadow-lift: 0 1px 0 0 rgb(255 255 255 / 0.03) inset,
+                 0 18px 40px -24px rgb(0 0 0 / 0.9);
+  --shadow-flux: 0 0 0 1px rgb(229 53 43 / 0.35),
+                 0 12px 32px -12px rgb(229 53 43 / 0.45);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Número que muda sozinho não pode "dançar" na tela */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background: rgb(229 53 43 / 0.35);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-flux);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Rótulo de seção / eyebrow — mono, caixa alta, bem espaçado
+   --------------------------------------------------------------------------- */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-dim);
+}
+
+/* ---------------------------------------------------------------------------
+   Assinatura visual: o "barramento" — a linha viva que atravessa o produto.
+   Aparece no item ativo da navegação e na borda do painel selecionado.
+   --------------------------------------------------------------------------- */
+.bus {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  translate: 0 -50%;
+  width: 2px;
+  height: 60%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, var(--color-flux), transparent);
+  box-shadow: 0 0 12px 1px rgb(229 53 43 / 0.6);
+}
+
+/* Gradiente de energia em movimento — barra de bateria, carga ativa */
+@keyframes gw-flux {
+  from { background-position: 0% 50%; }
+  to   { background-position: 200% 50%; }
+}
+.flux-bar {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-flux) 0%,
+    var(--color-flare) 45%,
+    var(--color-flux) 100%
+  );
+  background-size: 200% 100%;
+  animation: gw-flux 2.6s linear infinite;
+}
+
+/* Ponto de status "vivo" — anel que respira */
+@keyframes gw-ping {
+  0%   { box-shadow: 0 0 0 0 currentColor; opacity: 0.9; }
+  70%  { box-shadow: 0 0 0 6px transparent; opacity: 1; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 0.9; }
+}
+.dot-live {
+  animation: gw-ping 2s ease-out infinite;
+}
+
+/* Entrada de painel / card */
+@keyframes gw-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.rise {
+  animation: gw-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Esqueleto de carregamento */
+@keyframes gw-shimmer {
+  from { background-position: -180% 0; }
+  to   { background-position: 180% 0; }
+}
+.skeleton {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-panel) 0%,
+    var(--color-raise) 50%,
+    var(--color-panel) 100%
+  );
+  background-size: 180% 100%;
+  animation: gw-shimmer 1.6s ease-in-out infinite;
+}
+
+/* Brilho ambiente antigo. No escuro e no claro, quem desenha o fundo agora é
+   o ::before da seção CARBONO, no fim deste arquivo. */
+.ambient-legado {
+  background-image:
+    radial-gradient(900px 460px at 10% -12%, rgb(229 53 43 / 0.10), transparent 62%),
+    radial-gradient(720px 380px at 96% -6%, rgb(255 106 69 / 0.05), transparent 60%);
+}
+
+/* Barra de rolagem interna dos painéis */
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+.scroll-slim::-webkit-scrollbar { width: 8px; }
+.scroll-slim::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+}
+.scroll-slim::-webkit-scrollbar-track { background: transparent; }
+
+/* Piso de qualidade: quem pediu menos movimento, recebe menos movimento */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Varredura de luz no hover — só transform, roda na GPU, não repinta layout.
+   --------------------------------------------------------------------------- */
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgb(255 255 255 / 0.07) 50%,
+    transparent 65%
+  );
+  transform: translateX(-120%);
+  transition: transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sweep:hover::after {
+  transform: translateX(120%);
+}
+
+/* Entrada da coluna de detalhe */
+@keyframes gw-slide-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+.slide-in {
+  animation: gw-slide-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ===========================================================================
+   TEMA CLARO — prata
+   ---------------------------------------------------------------------------
+   Só os tokens mudam. Como toda a interface usa var(--color-*), reescrever
+   estas variáveis vira a aplicação inteira de uma vez: nenhum componente
+   precisa saber que existe mais de um tema.
+
+   O vermelho GoodWe permanece idêntico — o pedido foi trocar o preto pelo
+   prata, não a marca. Verde e âmbar ganharam tons mais fechados: os originais
+   foram escolhidos para brilhar sobre preto e sumiriam sobre prata.
+   =========================================================================== */
+
+[data-tema="claro"] {
+  --color-void: #c4d0d8;   /* base da página */
+  --color-panel: #e4e9ec;  /* cards e painéis */
+  --color-raise: #f1f4f6;  /* item ativo, hover, campos */
+  --color-line: #a9a9a9;   /* borda visível */
+  --color-hair: #c6ced3;   /* divisória interna */
+
+  --color-ink: #171c23;    /* título e números */
+  --color-mute: #4d565f;   /* apoio, legenda */
+  --color-dim: #6d7681;    /* rótulo, metadado */
+
+  --color-flux: #d42a20;   /* vermelho GoodWe, levemente fechado p/ contraste */
+  --color-flare: #ef5a34;
+
+  --color-live: #12874a;
+  --color-queue: #9a6a05;
+  --color-off: #8d959c;
+
+  --shadow-lift: 0 1px 0 0 rgb(255 255 255 / 0.7) inset,
+                 0 16px 32px -22px rgb(40 50 60 / 0.55);
+  --shadow-flux: 0 0 0 1px rgb(212 42 32 / 0.35),
+                 0 12px 28px -14px rgb(212 42 32 / 0.4);
+
+  color-scheme: light;
+}
+
+/* O degradê prateado pedido, aplicado ao fundo da página. */
+[data-tema="claro"] body {
+  background-color: var(--color-void);
+  background-image: linear-gradient(160deg, #b8cad4 0%, #d3d3d3 52%, #a9a9a9 100%);
+  background-attachment: fixed;
+}
+
+/* No escuro o brilho ambiente é vermelho sobre preto; no claro isso vira
+   sujeira. Aqui ele só aprofunda o prata. */
+[data-tema="claro"] .ambient-legado {
+  background-image:
+    radial-gradient(900px 460px at 10% -12%, rgb(255 255 255 / 0.55), transparent 62%),
+    radial-gradient(720px 380px at 96% -6%, rgb(169 169 169 / 0.35), transparent 60%);
+}
+
+/* Varredura branca é invisível sobre prata: inverte para sombra. */
+[data-tema="claro"] .sweep::after {
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgb(23 28 35 / 0.06) 50%,
+    transparent 65%
+  );
+}
+
+[data-tema="claro"] .bus {
+  box-shadow: 0 0 10px 1px rgb(212 42 32 / 0.45);
+}
+
+/* ===========================================================================
+   CARBONO — identidade visual do tema escuro
+   ---------------------------------------------------------------------------
+   Três camadas, todas puramente decorativas (pointer-events: none):
+     1. trama de fibra de carbono em toda a página;
+     2. malha hexagonal prateada que só aparece no canto superior direito;
+     3. brilho vermelho GoodWe vindo do topo.
+   As texturas são SVGs próprios em src/assets/texturas (sem imagem de banco).
+   Nenhum componente precisa saber que isso existe: o fundo fica atrás de tudo
+   via ::before/::after com z-index negativo dentro de um contexto isolado.
+   =========================================================================== */
+
+.ambient,
+.carbono {
+  position: relative;
+  isolation: isolate;
+}
+
+.ambient::before,
+.carbono::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background-color: var(--color-void);
+  background-image:
+    radial-gradient(1100px 560px at 12% -10%, rgb(229 53 43 / 0.13), transparent 60%),
+    radial-gradient(900px 480px at 100% 0%, rgb(255 255 255 / 0.035), transparent 62%),
+    radial-gradient(140% 90% at 50% 110%, rgb(0 0 0 / 0.75), transparent 60%),
+    url("./assets/texturas/carbono.svg");
+  background-size: auto, auto, auto, 12px 12px;
+}
+
+.ambient::after,
+.carbono::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: url("./assets/texturas/hex.svg");
+  background-size: 34px auto;
+  opacity: 0.1;
+  -webkit-mask-image: radial-gradient(900px 620px at 100% 0%, #000 0%, transparent 75%);
+          mask-image: radial-gradient(900px 620px at 100% 0%, #000 0%, transparent 75%);
+}
+
+:root {
+  --gw-fio: rgb(255 255 255 / 0.10);
+  --gw-brilho: rgb(255 255 255 / 0.025);
+}
+
+/* Painéis: um fio de luz no topo e um degradê leve de cima para baixo, como
+   uma chapa escovada. Só background-image: não mexe em cor, borda nem sombra,
+   então nenhum hover ou estado existente é sobrescrito. */
+.bg-panel {
+  background-image:
+    linear-gradient(90deg, transparent 6%, var(--gw-fio) 50%, transparent 94%),
+    linear-gradient(180deg, var(--gw-brilho), transparent 42%);
+  background-size: 100% 1px, 100% 100%;
+  background-repeat: no-repeat;
+}
+
+/* Barra superior: vidro sobre o carbono e um filete vermelho na base */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(229 53 43 / 0.55) 22%, rgb(229 53 43 / 0.08) 62%, transparent);
+}
+
+/* Trilho lateral: a borda da sidebar acende em vermelho no alto e apaga */
+.trilho::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgb(229 53 43 / 0.7), rgb(229 53 43 / 0.08) 38%, transparent 70%);
+}
+
+/* Item de navegação ativo: pílula vermelha translúcida, como no protótipo */
+.nav-ativo {
+  background-image: linear-gradient(90deg, rgb(229 53 43 / 0.2), rgb(229 53 43 / 0.04) 85%);
+  box-shadow: inset 0 0 0 1px rgb(229 53 43 / 0.22);
+}
+
+/* Botão de ação principal: brilho vermelho ao passar o mouse */
+.brilho-flux {
+  transition: box-shadow 0.25s ease, background-color 0.2s ease;
+}
+.brilho-flux:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px rgb(229 53 43 / 0.45), 0 10px 28px -10px rgb(229 53 43 / 0.75);
+}
+
+/* Cards de indicador: canto com a malha hexagonal */
+.kpi {
+  position: relative;
+  overflow: hidden;
+}
+.kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto auto;
+  width: 60%;
+  height: 100%;
+  pointer-events: none;
+  background-image: url("./assets/texturas/hex.svg");
+  background-size: 26px auto;
+  opacity: 0.08;
+  -webkit-mask-image: radial-gradient(circle at 100% 0%, #000, transparent 70%);
+          mask-image: radial-gradient(circle at 100% 0%, #000, transparent 70%);
+}
+.kpi > * {
+  position: relative;
+}
+
+/* Painel de marca do login: chevrons prateados sobre carbono */
+.chevrons {
+  background-image: url("./assets/texturas/chevrons.svg");
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: auto 100%;
+}
+
+/* ---------------------------------------------------------------------------
+   Tema claro: o carbono sai; fica o prata escovado com a malha bem de leve.
+   --------------------------------------------------------------------------- */
+[data-tema="claro"] {
+  --gw-fio: rgb(255 255 255 / 0.9);
+  --gw-brilho: rgb(255 255 255 / 0.35);
+}
+[data-tema="claro"] .ambient::before,
+[data-tema="claro"] .carbono::before {
+  background-color: transparent;
+  background-image:
+    radial-gradient(900px 460px at 10% -12%, rgb(255 255 255 / 0.55), transparent 62%),
+    radial-gradient(720px 380px at 96% -6%, rgb(169 169 169 / 0.35), transparent 60%);
+  background-size: auto;
+}
+[data-tema="claro"] .ambient::after,
+[data-tema="claro"] .carbono::after,
+[data-tema="claro"] .kpi::before {
+  filter: invert(1);
+  opacity: 0.06;
+}
+[data-tema="claro"] .nav-ativo {
+  background-image: linear-gradient(90deg, rgb(212 42 32 / 0.14), rgb(212 42 32 / 0.02) 85%);
+  box-shadow: inset 0 0 0 1px rgb(212 42 32 / 0.25);
+}
+
+/* Marca GOODWE: brilho vermelho só sobre o carbono; no prata ele borra. */
+.marca {
+  text-shadow: 0 0 28px rgb(229 53 43 / 0.4);
+}
+[data-tema="claro"] .marca {
+  text-shadow: none;
+}
+
+
+/* ===========================================================================
+   FLUXO — a camada de movimento (outubro/2026)
+   ---------------------------------------------------------------------------
+   Regra única: na tela, MOVIMENTO SIGNIFICA ENERGIA PASSANDO. Linha parada =
+   ponto sem carga; linha correndo = corrente; mais rápido = mais potência.
+   Nada aqui se mexe só para enfeitar, e tudo respeita prefers-reduced-motion
+   (bloco global mais acima).
+   =========================================================================== */
+
+/* Condutor do diagrama unifilar. Parado é só um traço fino. */
+.fio {
+  fill: none;
+  stroke: var(--color-line);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+/* A corrente: tracinhos correndo por cima do condutor. A duração vem do
+   componente (--fluxo-dur), proporcional à potência. */
+@keyframes gw-corrente {
+  to { stroke-dashoffset: -28; }
+}
+.corrente {
+  fill: none;
+  stroke: var(--color-flux);
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-dasharray: 3 11;
+  animation: gw-corrente var(--fluxo-dur, 1.6s) linear infinite;
+  filter: drop-shadow(0 0 3px rgb(229 53 43 / 0.9));
+}
+.corrente-sol {
+  stroke: var(--color-queue);
+  filter: drop-shadow(0 0 3px rgb(245 179 63 / 0.8));
+}
+
+/* Nó aceso (quadro, ponto carregando): halo que respira devagar */
+@keyframes gw-halo {
+  0%, 100% { opacity: 0.08; transform: scale(1); }
+  50%      { opacity: 0.24; transform: scale(1.12); }
+}
+.halo {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gw-halo 2.4s ease-in-out infinite;
+}
+
+@keyframes gw-pulsa {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.95; }
+}
+.pulsa {
+  animation: gw-pulsa 2.4s ease-in-out infinite;
+}
+
+/* Arco do medidor do quadro: cresce suave quando a carga muda */
+.arco {
+  transition: stroke-dashoffset 0.9s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.4s ease;
+}
+
+/* Card com recarga em andamento: a borda vira um condutor - um trecho de luz
+   percorre o contorno. Um pseudo-elemento com máscara, só transform/opacity. */
+@property --gw-giro {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes gw-giro {
+  to { --gw-giro: 360deg; }
+}
+.carregando-borda::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: conic-gradient(from var(--gw-giro), transparent 0 62%, var(--color-flare) 78%, var(--color-flux) 86%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  animation: gw-giro 3.2s linear infinite;
+}
+
+/* Troca de página: o conteúdo novo entra de leve por cima do antigo.
+   Só existe em navegador com View Transitions; nos outros a troca é seca. */
+::view-transition-old(conteudo) {
+  animation: 140ms ease-out both gw-sai;
+}
+::view-transition-new(conteudo) {
+  animation: 260ms cubic-bezier(0.22, 1, 0.36, 1) both gw-rise;
+}
+@keyframes gw-sai {
+  to { opacity: 0; }
+}
+.vt-conteudo {
+  view-transition-name: conteudo;
+}
+
+/* Painel de vidro (barra inferior do celular, folhas) */
+.vidro {
+  background-color: color-mix(in oklab, var(--color-void) 78%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+          backdrop-filter: blur(18px) saturate(1.4);
+}
+
+/* Barra inferior do celular: respeita a área do gesto do iPhone */
+.barra-inferior {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+.com-barra-inferior {
+  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+}
+@media (min-width: 64rem) {
+  .com-barra-inferior { padding-bottom: 2.25rem; }
+}
+
+/* Folha que sobe do rodapé ("Mais") */
+@keyframes gw-sobe {
+  from { transform: translateY(100%); }
+  to   { transform: none; }
+}
+.folha {
+  animation: gw-sobe 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Tela de entrada: grade em perspectiva sob o diagrama, como um piso técnico */
+.piso {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 65% at 50% 45%, #000 20%, transparent 78%);
+          mask-image: radial-gradient(ellipse 75% 65% at 50% 45%, #000 20%, transparent 78%);
+}
+[data-tema="claro"] .piso {
+  background-image:
+    linear-gradient(to right, rgb(23 28 35 / 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(23 28 35 / 0.07) 1px, transparent 1px);
+}
+[data-tema="claro"] .corrente { filter: none; }
+
+/* Entrada orquestrada (uma vez, na tela de entrada): cada peça com seu atraso */
+.entra {
+  animation: gw-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 90ms);
+}
+
+/* Toque no celular: sem o flash azul do navegador, alvo confortável */
+button, a, [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+html {
+  -webkit-text-size-adjust: 100%;
+}
+/* iOS dá zoom na página quando o campo tem fonte menor que 16px */
+@media (max-width: 40rem) {
+  input, select, textarea { font-size: 16px; }
+}

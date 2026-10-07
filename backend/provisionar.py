@@ -49,6 +49,20 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
       recarga preparada no ponto e cobra de quem preparou no app. Um cartão
       físico atende todos os moradores.
 
+  python provisionar.py chave-mfa
+      Painel do gestor (ADR-023). Gera a ADMIN_MFA_KEY para o .env: é ela que
+      cifra, no banco, o segredo do app autenticador de cada gestor.
+
+  python provisionar.py gestor-mfa --nome "Nome do Gestor" [--trocar]
+      Cadastra o segundo fator do gestor: grava o segredo CIFRADO e mostra,
+      UMA vez, o endereço para o app autenticador (Google/Microsoft
+      Authenticator, Authy, 1Password). --trocar substitui um cadastro que já
+      existe (celular perdido). --remover apaga o segundo fator da conta.
+
+  python provisionar.py chave-jwt-admin
+      Opcional. Chave SEPARADA para assinar o token do painel do gestor
+      (ADMIN_JWT_PRIVATE_JWK). Não precisa ser importada no Supabase.
+
   python provisionar.py verificar
       Teste de invasão contra o banco real. Precisa de SUPABASE_ANON_KEY no
       .env (a mesma chave pública que o frontend usa). Imprime PASSOU/FALHOU.
@@ -581,6 +595,65 @@ def cmd_verificar(_args):
     sys.exit(1 if falhas else 0)
 
 
+def cmd_chave_mfa(_args):
+    import secrets
+    print("\nCole esta linha no backend/.env (e nas variáveis da hospedagem):\n")
+    print(f"  ADMIN_MFA_KEY={secrets.token_urlsafe(48)}\n")
+    print("ATENÇÃO: trocar esta chave torna ilegível o segundo fator de TODOS os")
+    print("gestores (cada um precisa refazer o `gestor-mfa --trocar`).")
+    print("Não commite, não mande no grupo.\n")
+
+
+def cmd_chave_jwt_admin(_args):
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    n = ec.generate_private_key(ec.SECP256R1()).private_numbers()
+    jwk = {"kty": "EC", "kid": str(uuid.uuid4()), "crv": "P-256", "d": _b64(n.private_value),
+           "x": _b64(n.public_numbers.x), "y": _b64(n.public_numbers.y)}
+    print("\nCole esta linha no backend/.env (só o backend usa; NÃO vai para o Supabase):\n")
+    print(f"ADMIN_JWT_PRIVATE_JWK='{json.dumps(jwk, separators=(',', ':'))}'\n")
+    print("ATENÇÃO: chave PRIVADA. Quem tiver ela emite token de gestor.\n")
+
+
+def cmd_gestor_mfa(args):
+    from seguranca import cifrar_segredo_mfa, gerar_segredo_totp, mfa_configurado, uri_totp
+
+    if not mfa_configurado():
+        sys.exit("ADMIN_MFA_KEY não está no .env. Gere com: python provisionar.py chave-mfa")
+    sb = _supabase()
+    achados = sb.table("usuarios").select("id, nome, tipo_usuario").ilike("nome", args.nome).execute().data
+    if not achados:
+        sys.exit(f"Nenhum usuário chamado '{args.nome}'.")
+    u = achados[0]
+    if u["tipo_usuario"] != "gestor":
+        sys.exit(f"'{u['nome']}' não é gestor (tipo_usuario = {u['tipo_usuario']}).")
+    atual = sb.table("gestor_mfa").select("usuario_id, ativado_em").eq("usuario_id", u["id"]).execute().data
+
+    if args.remover:
+        sb.table("gestor_mfa").delete().eq("usuario_id", u["id"]).execute()
+        print(f"Segundo fator removido de '{u['nome']}'. Com ADMIN_MFA=obrigatorio a conta "
+              "fica sem acesso ao painel até um novo cadastro.")
+        return
+    if atual and atual[0].get("ativado_em") and not args.trocar:
+        sys.exit(f"'{u['nome']}' já tem segundo fator ativo. Use --trocar para substituir.")
+
+    from datetime import datetime, timezone
+    segredo = gerar_segredo_totp()
+    linha = {"usuario_id": u["id"], "segredo_cifrado": cifrar_segredo_mfa(segredo),
+             "ativado_em": datetime.now(timezone.utc).isoformat(), "ultimo_passo": None}
+    if atual:
+        sb.table("gestor_mfa").update(linha).eq("usuario_id", u["id"]).execute()
+    else:
+        sb.table("gestor_mfa").insert(linha).execute()
+
+    print(f"\nSegundo fator de '{u['nome']}' cadastrado. Isto aparece UMA vez:\n")
+    print(f"  Chave para digitar no app:  {segredo}")
+    print(f"  Ou abra/gere um QR com:     {uri_totp(segredo, u['nome'])}\n")
+    print("No app autenticador: adicionar conta -> inserir chave de configuração ->")
+    print("tipo 'baseada em tempo'. O painel vai pedir o código de 6 dígitos no login.")
+    print("Não mande esta chave em grupo: quem tiver ela gera os códigos.\n")
+
+
 # ---------------------------------------------------------------------------
 
 def main():
@@ -632,6 +705,15 @@ def main():
     c.add_argument("--condominio", required=True, help="UUID do condomínio")
     c.add_argument("--apelido", default="Cartão da bancada")
     c.set_defaults(fn=cmd_cartao_compartilhado)
+
+    sub.add_parser("chave-mfa").set_defaults(fn=cmd_chave_mfa)
+    sub.add_parser("chave-jwt-admin").set_defaults(fn=cmd_chave_jwt_admin)
+
+    g = sub.add_parser("gestor-mfa")
+    g.add_argument("--nome", required=True, help="nome de login do gestor")
+    g.add_argument("--trocar", action="store_true", help="substitui um segundo fator já ativo")
+    g.add_argument("--remover", action="store_true", help="apaga o segundo fator da conta")
+    g.set_defaults(fn=cmd_gestor_mfa)
 
     sub.add_parser("verificar").set_defaults(fn=cmd_verificar)
 

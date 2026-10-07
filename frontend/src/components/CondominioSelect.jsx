@@ -95,7 +95,7 @@ function CondominioSelect({
   const ehTitulo = variante === 'titulo'
 
   return (
-    <div ref={caixaRef} className="relative">
+    <div ref={caixaRef} className="relative min-w-0">
       <button
         type="button"
         onClick={() => setAberto((v) => !v)}
@@ -103,7 +103,7 @@ function CondominioSelect({
         aria-haspopup="listbox"
         className={
           ehTitulo
-            ? 'group flex max-w-full items-center gap-2 rounded-chip px-2 py-1 -mx-2 transition-colors duration-200 hover:bg-raise/60'
+            ? 'group flex max-w-full items-center gap-2 rounded-chip py-1 pr-2 transition-colors duration-200 hover:bg-raise/60'
             : 'flex w-full items-center justify-between gap-3 rounded-chip border border-line bg-raise/50 px-4 py-2.5 text-left text-sm transition-colors duration-200 hover:border-flux/40 focus:border-flux/50 focus:outline-none'
         }
       >

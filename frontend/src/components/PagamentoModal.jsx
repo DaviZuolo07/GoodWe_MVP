@@ -258,14 +258,10 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
     }
   }
 
-  async function cadastrarCartao(escopo) {
+  async function cadastrarCartao() {
     setCadastrando(true)
     try {
-      if (escopo === 'condominio') {
-        await post('/gestor/cartoes', { uid: uidDesconhecido, apelido: 'Cartão do ponto' })
-      } else {
-        await post('/me/cartao', { rfid_uid: uidDesconhecido })
-      }
+      await post('/me/cartao', { rfid_uid: uidDesconhecido })
       setUidDesconhecido('')
     } catch (e) {
       setErro(e.message)
@@ -479,18 +475,11 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
                 sistema não conhece. Cadastre e aproxime de novo — a espera continua valendo.
               </p>
               <div className="flex flex-col gap-2">
-                <button disabled={cadastrando} onClick={() => cadastrarCartao('pessoal')}
+                <button disabled={cadastrando} onClick={cadastrarCartao}
                         className="rounded-chip bg-flux py-2 text-sm font-medium text-white
                                    transition hover:bg-flare disabled:opacity-40">
                   Cadastrar como meu cartão pessoal
                 </button>
-                {usuario.tipo_usuario === 'gestor' && (
-                  <button disabled={cadastrando} onClick={() => cadastrarCartao('condominio')}
-                          className="rounded-chip bg-raise py-2 text-sm font-medium text-mute
-                                     transition hover:bg-line hover:text-ink disabled:opacity-40">
-                    Cadastrar como cartão do condomínio (serve para todos)
-                  </button>
-                )}
               </div>
             </div>
           ) : semSaldo ? (

@@ -20,8 +20,11 @@ PASSO_S = 0.05          # 20 voltas por segundo, como um loop() folgado
 
 class TotemVirtual:
     def __init__(self, cfg: Config, http=None, base: str | None = None,
-                 relogio: Relogio | None = None, rng: random.Random | None = None):
+                 relogio: Relogio | None = None, rng: random.Random | None = None, avisar=None):
+        """`avisar(texto)`: chamado uma vez a cada diagnóstico novo (o terminal, no painel)."""
         self.cfg = cfg
+        self.avisar = avisar
+        self._avisado = None
         self._http_proprio = http is None
         if http is None:
             import httpx
@@ -45,6 +48,11 @@ class TotemVirtual:
             self.bancada.avancar(max(0.0, min(1.0, agora - self._ultimo)))
             self._ultimo = agora
             self.firmware.loop()
+            diagnostico = self.firmware.diagnostico
+            if diagnostico != self._avisado:
+                self._avisado = diagnostico
+                if diagnostico and self.avisar:
+                    self.avisar(diagnostico)
 
     def iniciar(self) -> None:
         if self._thread:
@@ -106,6 +114,7 @@ class TotemVirtual:
             self.bancada.reiniciar()
             self.enlace.reiniciar()
             self.firmware = Firmware(self.bancada, self.enlace, self.cfg)
+            self._avisado = None
             self.reinicios += 1
             self._ultimo = self.relogio.agora_s()
 
@@ -133,6 +142,8 @@ class TotemVirtual:
                 "lcd": list(b.lcd.linhas),
                 "ui": fw.ui, "link": fw.link, "online": fw.online(), "wifi": b.wifi,
                 "chave_recusada": fw.chave_recusada,
+                "recusa": fw.recusa, "recusas_seguidas": fw.recusas_seguidas,
+                "diagnostico": fw.diagnostico,
                 "boot": self.enlace.boot, "seq": self.enlace.seq, "millis": b.millis(),
                 "reinicios": self.reinicios,
                 "fila_leituras": len(fw.fila_leituras), "fila_fontes": len(fw.fila_fontes),
@@ -140,7 +151,8 @@ class TotemVirtual:
                 "lotes_descartados": fw.lotes_descartados,
                 "vagas": vagas,
                 "solar": {"luz": round(b.painel.luz * 100, 1), "fonte": b.fonte_selecionada(),
-                          "painel": b.ler_fonte("painel"), "bateria": b.ler_fonte("bateria"),
+                          "fonte_backend": fw.fonte_backend,
+                          "painel": b.painel_visto(), "bateria": b.ler_bateria(),
                           "bateria_soc": round(b.bateria.soc, 2), "bateria_ok": fw.bateria_ok},
                 "eventos": list(fw.eventos)[-40:],
                 "trocas": [{k: x.get(k) for k in ("n", "t_ms", "seq", "metodo", "rota", "status",

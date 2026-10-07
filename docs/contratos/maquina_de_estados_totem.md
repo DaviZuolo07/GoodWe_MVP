@@ -1,22 +1,22 @@
 # Máquina de estados do totem — base do firmware
 
-- **Origem:** ADR-020 (totem virtual). **Implementação de referência:** `totem_virtual/firmware.py`.
+- **Origem:** ADR-020 (totem virtual), ADR-021 (recusa de autenticação), ADR-022 (hardware real). **Implementação de referência:** `totem_virtual/firmware.py`. **Tradução:** `firmware/totem_central/`.
 - **Protocolo:** v2 do ADR-015 (HMAC, boot/seq, lote) + Totem v2.1 do contrato (ADR-018). A assinatura é a de `backend/testes/placa_v2.py`.
 - **Regra de manutenção:** este arquivo e `firmware.py` mudam juntos. Se o `.ino` precisar se desviar daqui, primeiro muda-se aqui (via ADR + PR), depois no totem virtual, depois no firmware.
 
-Hardware alvo: 1 ESP32, 1 LCD 20x4, 1 leitor RFID, 4 botões, 4 vagas com relé + INA219. A vaga 4 é solar: painel **ou** bateria 18650, com uma chave de fonte intertravada.
+Hardware alvo (ADR-022): 1 ESP32, 1 LCD **16x2**, 1 leitor RFID, 4 botões, 4 vagas com relé + INA219, 1 INA219 na bateria solar. A vaga 4 é solar: um **relé reversor** escolhe bateria solar (MT3608) **ou** rede (barramento de 5 V), nunca as duas.
 
 ---
 
 ## 1. Regras gerais
 
 1. **Nada de `delay()`.** Toda espera é `millis() - marca >= prazo`. A única chamada que bloqueia é o HTTP, com timeout de 3 s.
-2. **Ao ligar, todo relé aberto** e a chave de fonte em `nenhuma`.
+2. **Ao ligar, todo relé aberto** e o reversor da vaga 4 em `rede` (bobina desligada).
 3. **O relé só fecha por ordem do backend.** `autorizado: true` sozinho **não** fecha (pode vir com `aguardando_energia`).
 4. **O totem não inventa estado de vaga.** Mostra o `estado` que o backend informou; sem ele, usa `carregando` (relé fechado) ou `livre` (relé aberto).
 5. **Energia é acumulada por sessão**, nunca delta. Um lote perdido se corrige no próximo.
 6. **Tudo em unidade bruta:** W, V, A, Wh. A escala 1:1000 é do backend.
-7. **LCD só ASCII**, 4 linhas de 20. Texto do backend passa pelo mesmo corte.
+7. **LCD só ASCII**, 2 linhas de 16. Texto do backend é re-quebrado em 16 colunas e paginado (§13).
 
 ## 2. Constantes
 
@@ -31,15 +31,18 @@ Hardware alvo: 1 ESP32, 1 LCD 20x4, 1 leitor RFID, 4 botões, 4 vagas com relé 
 | `COMANDOS_MS` | 2000 | busca de comandos (o handshake pode trocar: `intervalo_comandos_s`) |
 | `OFFLINE_CORTE_MS` | 120000 | sem servidor por este tempo, abre os relés |
 | `RETENTATIVA_MIN_MS` / `MAX_MS` | 1000 / 10000 | espera entre tentativas de rede (dobra a cada falha) |
+| `RECUSAS_PARA_BLOQUEAR` | 3 | 401 de autenticação seguidos do mesmo tipo até bloquear (ADR-021) |
+| `BLOQUEIO_MS` | 60000 | espera depois de bloquear |
 | `MAX_LEITURAS_LOTE` | 30 | teto do servidor |
 | `MAX_FONTES_LOTE` | 20 | |
 | `CORPO_MAX_BYTES` | 7000 | o servidor recusa acima de 8 KB |
 | `FILA_LEITURAS_MAX` / `FILA_FONTES_MAX` | 240 / 120 | o que se guarda sem rede |
-| `TROCA_FONTE_MS` | 200 | tempo com as duas fontes abertas na troca |
+| `TROCA_FONTE_MS` | 200 | medida estabilizando depois de virar o reversor |
+| `FONTE_MIN_MS` | 30000 | tempo mínimo na rede antes de voltar à solar |
 | `QUEDA_MS` | 1000 | tensão baixa precisa durar isto |
-| `V_PAINEL_ENTRA` | 5,60 V | **calibrar na bancada** |
-| `V_BARRA_MINIMA` | 4,75 V | **calibrar na bancada** |
 | `V_BATERIA_CORTE` / `VOLTA` | 3,30 / 3,60 V | **calibrar na bancada** |
+| `PAGINA_MS` | 2000 | uma página de 2 linhas da tela |
+| `ALTERNA_MS` | 3000 | tela de espera: convite ↔ quadro das vagas |
 
 ## 3. Dados
 
@@ -61,9 +64,10 @@ struct Vaga {
 
 interface:  ui ∈ {INICIANDO, AGUARDANDO_TAG, ESCOLHA_VAGA, MOSTRA_TELA}, t_ui, uid, tela[4]
 enlace:     link ∈ {SEM_HORA, SEM_HANDSHAKE, PRONTO}, handshake_feito,
-            proxima_tentativa, espera_ms, offline_desde, cortou_offline
+            proxima_tentativa, espera_ms, offline_desde, cortou_offline,
+            recusa (código do último 401), recusas_seguidas, diagnostico
 filas:      fila_leituras (anel), fila_fontes (anel), drenando, lote_max
-solar:      fonte_alvo ∈ {painel, bateria, nenhuma}, t_troca, queda_desde, bateria_ok
+solar:      fonte ∈ {rede, solar}, t_troca, queda_desde, bateria_ok, fonte_backend ∈ {solar, rede, vazio}
 protocolo:  boot (u32 aleatório ao ligar), seq (+1 a cada requisição assinada), offset do relógio
 ```
 
@@ -72,9 +76,9 @@ protocolo:  boot (u32 aleatório ao ligar), seq (+1 a cada requisição assinada
 ```
 setup():
   para cada vaga: rele(porta, ABERTO)
-  selecionar_fonte(nenhuma)
+  selecionar_fonte(rede)
   ui = INICIANDO ; link = SEM_HORA ; boot = aleatorio32() ; seq = 0
-  filas vazias ; fonte_alvo = nenhuma ; bateria_ok = true
+  filas vazias ; fonte = rede ; fonte_backend = vazio ; bateria_ok = true
 
 loop():
   agora = millis()
@@ -102,29 +106,47 @@ rede(agora):
     GET /hardware/v2/hora            (pública; guarda offset = ts_servidor - ts_local)
     falhou -> falha(agora) ; retorna
     link = PRONTO se handshake_feito, senão SEM_HANDSHAKE
+    se link == PRONTO e recusa vazia: sucesso()      # /hora não prova que a placa é aceita
     retorna
 
   # link == SEM_HANDSHAKE
   POST /hardware/v2/handshake {mac, ip, firmware}
   200 -> aplicar_handshake() ; link = PRONTO ; handshake_feito = true ; cortou_offline = false
 
-falha(agora):                        # servidor não respondeu
-  se offline_desde vazio: offline_desde = agora
+esperar_mais(agora):
   proxima_tentativa = agora + espera_ms ; espera_ms = min(MAX, espera_ms * 2)
 
-sucesso():                           # servidor respondeu qualquer coisa assinável
+falha(agora):                        # servidor não respondeu
+  se offline_desde vazio: offline_desde = agora
+  esperar_mais(agora)
+
+sucesso():                           # servidor respondeu e ACEITOU a placa
   offline_desde = vazio ; espera_ms = MIN
+  recusa = vazio ; recusas_seguidas = 0 ; diagnostico = vazio
+
+recusado(codigo, agora):             # 401 assinatura_invalida | fora_da_janela (ADR-021)
+  se offline_desde vazio: offline_desde = agora     # quem não aceita a placa não acompanha a recarga
+  recusas_seguidas = (codigo == recusa) ? recusas_seguidas + 1 : 1 ; recusa = codigo
+  se codigo == fora_da_janela: link = SEM_HORA      # o relógio da placa pode ter derivado
+  se recusas_seguidas < RECUSAS_PARA_BLOQUEAR: esperar_mais(agora) ; retorna
+  proxima_tentativa = agora + BLOQUEIO_MS
+  se recusas_seguidas == RECUSAS_PARA_BLOQUEAR:
+    diagnostico = DIAGNOSTICO[codigo] ; registra no serial/terminal UMA vez
 
 tratar(resposta, agora) -> bool:     # roda em TODA resposta do v2
-  sem resposta                  -> falha(agora) ; false
-  401 assinatura_invalida       -> tela "Chave invalida" ; proxima_tentativa = agora + MAX ; false
+  sem resposta                         -> falha(agora) ; false
+  401 assinatura_invalida/fora_da_janela -> recusado(codigo, agora) ; false
   sucesso()
   200                           -> true
   409 boot_desconhecido         -> link = SEM_HANDSHAKE
   409 replay                    -> boot = aleatorio32() ; seq = 0 ; link = SEM_HANDSHAKE
-  401 fora_da_janela            -> link = SEM_HORA
   false
 ```
+
+| `recusa` | Diagnóstico (terminal / serial) | LCD |
+|---|---|---|
+| `assinatura_invalida` | a chave não bate com a `DEVICE_MASTER_KEY` do backend (ou o id não existe no banco dele): rodar `backend/preparar_totem.py` de novo | `Chave invalida` |
+| `fora_da_janela` | recusado mesmo logo depois de acertar a hora: o relógio do PC do backend discorda do banco; sincronizar o relógio e reiniciar o backend | `Relogio servidor` |
 
 **Handshake = reconciliação.** Para cada porta da resposta:
 
@@ -156,8 +178,8 @@ interface(agora):
   se ui == ESCOLHA_VAGA:
     se botao:                              enviar_tag(botao)
     senão se agora - t_ui >= TIMEOUT_ESCOLHA_MS:
-      uid = vazio ; mostrar("Tempo esgotado", AVISO_MS)      # NÃO chama o backend
-  senão se botao e ui == AGUARDANDO_TAG:   mostrar("Aproxime a tag primeiro", AVISO_MS)
+      uid = vazio ; mostrar("Tempo esgotado / Aproxime de novo", AVISO_MS)   # NÃO chama o backend
+  senão se botao e ui == AGUARDANDO_TAG:   mostrar("Aproxime o / cartao primeiro", AVISO_MS)
   senão se ui == MOSTRA_TELA e agora - t_ui >= duracao:  ui = AGUARDANDO_TAG
 
 enviar_tag(porta):
@@ -166,7 +188,8 @@ enviar_tag(porta):
     mostrar("Sem conexao / Tente de novo") ; retorna          # NÃO guarda para depois
   r = POST /hardware/v2/rfid {porta, uid: u}
   se não tratar(r):
-    sem resposta -> "Sem conexao" ; 422 -> "Vaga N indisponivel" ; outro -> "Nao deu certo"
+    sem resposta -> "Sem conexao / Tente de novo" ; 422 -> "Vaga N / indisponivel" ;
+    outro -> "Nao deu certo / Aproxime de novo"
     retorna
   se r.acao == "ligar":     ligar(vaga[porta], r.sessao_id)
   se r.acao == "desligar":  desligar(vaga[porta])
@@ -187,22 +210,26 @@ AGUARDANDO ─────► ESCOLHA_VAGA ───────────► 
 
 ### Tela quando o backend não manda `tela`
 
+Cada linha cabe em 16 colunas (LCD 16x2, ADR-022). Mais de 2 linhas = 2 páginas.
+
 | `motivo` | Linhas (`{n}` = vaga) |
 |---|---|
 | `iniciada` | `Vaga {n} liberada` / `Boa recarga!` |
-| `encerrada` | `Vaga {n} encerrada` / `Retire o celular` |
+| `encerrada` | `Vaga {n} encerrou` / `Retire o celular` |
 | `confirmada_app` | `Vaga {n} liberada` / `Recarga do app` |
-| `aguardando_energia` | `Vaga {n} na espera` / `Sem energia agora` / `Liga sozinha depois` |
-| `vaga_ocupada` | `Vaga {n} ocupada` / `Escolha outra vaga` |
-| `ja_carregando_em_outra_vaga` | `Voce ja esta` / `carregando em` / `outra vaga` |
-| `saldo_insuficiente` | `Saldo insuficiente` / `Recarregue no app` |
+| `aguardando_energia` | `Vaga {n} na fila` / `Limite atingido` / `Liga sozinha` / `quando liberar` |
+| `vaga_ocupada` | `Vaga {n} ocupada` / `Escolha outra` |
+| `ja_carregando_em_outra_vaga` | `Voce ja carrega` / `em outra vaga` |
+| `saldo_insuficiente` | `Sem saldo` / `Adicione no app` |
 | `taxa_pendente` | `Taxa pendente` / `Quite no app` |
-| `cartao_nao_cadastrado` | `Tag nao cadastrada` / `Cadastre no app` |
+| `cartao_nao_cadastrado` | `Tag desconhecida` / `Cadastre no app` |
 | `cartao_de_outro_usuario` | `Tag de outro` / `morador` |
 | `cartao_de_outro_condominio` | `Tag de outro` / `condominio` |
 | `sem_veiculo` | `Sem veiculo` / `Cadastre no app` |
 | `uid_invalido` | `Leitura falhou` / `Aproxime de novo` |
-| `sem_recarga_preparada` (backend de hoje) | `Vaga {n}: sem recarga` / `preparada` / `Use o app primeiro` |
+| `sem_recarga_preparada` (legado) | `Sem recarga` / `preparada no app` |
+| `limite_de_potencia` (legado) | `Sem energia` / `Tente mais tarde` |
+| `espera_encerrada` (legado) | `Espera encerrada` / `Prepare de novo` |
 
 ## 7. Relé e estado da vaga
 
@@ -251,41 +278,37 @@ medir(agora):
   para cada vaga que existe:
     fila_leituras.empurra({porta, t_ms: agora, potencia_w, energia_wh, tensao_v, corrente_a, rele_ligado})
     # fila cheia: a mais antiga sai (a energia é acumulada, a última basta)
-  para fonte em (painel, bateria):
-    fila_fontes.empurra({fonte, t_ms: agora, potencia_w, tensao_v, corrente_a})
-    # potência FORNECIDA pela fonte, >= 0
+  se vaga[PORTA_SOLAR].existe:
+    fila_fontes.empurra({fonte: "bateria", t_ms: agora, potencia_w, tensao_v, corrente_a})
+    # INA219 em série com a 18650 (ADR-022 D2): COM SINAL, + descarregando, - carregando.
+    # O painel não é medido: não vai "painel" no lote.
 ```
 
 O firmware não "sabe" que o celular foi desplugado: ele mede corrente zero com o relé fechado e reporta. Quem conclui é o backend.
 
-## 9. Vaga 4: painel ou bateria, nunca os dois
+## 9. Vaga 4: solar ou rede, nunca as duas (ADR-022 D1)
+
+Um relé reversor (SPDT): bobina desligada = `rede` (barramento de 5 V), ligada = `solar` (MT3608 da 18650). O contato é *break-before-make*: as duas fontes nunca se tocam, nem durante a troca.
 
 ```
-trocar_fonte(alvo):
-  se alvo == fonte_alvo: retorna
-  selecionar_fonte(nenhuma)            # abre as duas
-  fonte_alvo = alvo ; t_troca = agora ; queda_desde = vazio
+virar(nova, agora, forcada):
+  se nova == fonte: retorna
+  reversor(nova) ; fonte = nova ; t_troca = agora ; queda_desde = vazio
+  t_forcada = agora se forcada, senão vazio
 
 fonte_solar(agora):
-  se chave != fonte_alvo:                                  # no meio de uma troca
-    se agora - t_troca >= TROCA_FONTE_MS: selecionar_fonte(fonte_alvo) ; t_troca = agora
-    retorna
-  se agora - t_troca < TROCA_FONTE_MS + MEDICAO_MS: retorna   # medida estabilizando
-  se relé da vaga 4 aberto: trocar_fonte(nenhuma) ; retorna    # o painel carrega a bateria
-
-  se não bateria_ok e V_bateria >= V_BATERIA_VOLTA: bateria_ok = true
-
-  caso fonte_alvo:
-    painel:   se V_barra_vaga4 < V_BARRA_MINIMA por QUEDA_MS:
-                trocar_fonte(bateria se bateria_ok, senão nenhuma)
-    bateria:  se V_painel >= V_PAINEL_ENTRA: trocar_fonte(painel)
-              senão se V_bateria < V_BATERIA_CORTE por QUEDA_MS:
-                bateria_ok = false ; trocar_fonte(nenhuma)
-    nenhuma:  se V_painel >= V_PAINEL_ENTRA: trocar_fonte(painel)
-              senão se bateria_ok: trocar_fonte(bateria)
+  se agora - t_troca < TROCA_FONTE_MS: retorna                 # medida estabilizando
+  v_bat = ina_solar.tensao_v
+  se não bateria_ok e fonte == rede e v_bat >= V_BATERIA_VOLTA: bateria_ok = true
+  se relé da vaga 4 aberto: virar(rede, nao forcada) ; retorna   # sem carga: o painel carrega a 18650
+  se fonte == solar e v_bat < V_BATERIA_CORTE por QUEDA_MS:     # proteção local, vale offline
+    bateria_ok = false ; virar(rede, forcada) ; retorna
+  se fonte_backend == rede ou não bateria_ok: virar(rede, forcada) ; retorna
+  se fonte == rede e t_forcada e agora - t_forcada < FONTE_MIN_MS: retorna   # sem vai-e-volta
+  virar(solar, nao forcada)
 ```
 
-Sem fonte, o relé da vaga 4 **continua fechado** e a corrente medida é zero. O totem reporta isso e as `fontes`; a decisão (pausar, liberar) é do backend.
+`fonte_backend` vem do campo `fonte` (`solar` | `rede`) da porta solar na telemetria (§10). Pausar a vaga solar é do backend (`deve_liberar: false`, trava de sessão), não do totem.
 
 ## 10. Telemetria em lote
 
@@ -310,6 +333,7 @@ telemetria(agora):
 
 resposta_da_porta(p):
   se p.estado veio: v.estado = p.estado (do backend) ; se livre e relé aberto: v.sessao_id = vazio
+  se p.porta == PORTA_SOLAR e p.fonte em (solar, rede): fonte_backend = p.fonte
   se p.tela veio e mudou e ui == AGUARDANDO_TAG: mostrar(p.tela, TELA_MS)
   se p.deve_liberar == false e v.rele: desligar(v)                    # trava de sessão
   se p.deve_liberar == true e não v.rele:
@@ -351,17 +375,25 @@ trava_offline(agora):
 
 ## 13. LCD
 
-```
-MOSTRA_TELA   -> a tela guardada
-ESCOLHA_VAGA  -> "Tag lida" / "Escolha a vaga:" / "botoes 1 2 3 4" / "Tempo: NN s"
-INICIANDO     -> "ChargeOps     GoodWe" / "Iniciando..." / passo (hora, servidor, Sem Wi-Fi, Chave invalida)
-AGUARDANDO    -> "ChargeOps     GoodWe"
-                 "1:<rot>   2:<rot>"          <rot> com 7 colunas
-                 "3:<rot>   4:<rot>"
-                 rodapé: "Chave invalida" | "Sem rede: aguarde" | "Vaga N: aproxime tag" | "Aproxime a tag"
+LCD 16x2 (ADR-022 D3). Toda tela passa por `reflow`: cada linha é re-quebrada em 16 colunas
+sem cortar palavra (palavra maior que 16 é cortada), sem acento.
 
-<rot>:  carregando -> "7.4W" (vaga 4: "7.4W S" no painel, "7.4W B" na bateria, "S/FONTE" sem fonte)
-        livre -> LIVRE ; aguardando_energia -> ESPERA ; pausada -> PAUSA ;
+```
+mostrar(linhas, agora, duracao):
+  tela = reflow(linhas) ; paginas = teto(tamanho(tela) / 2)
+  ui = MOSTRA_TELA ; t_ui = agora ; duracao_tela = max(duracao, paginas * PAGINA_MS)
+
+MOSTRA_TELA   -> página min((agora - t_ui) / PAGINA_MS, paginas - 1) da tela guardada
+ESCOLHA_VAGA  -> "Escolha vaga 1-4" / "Tempo: NN s"
+INICIANDO     -> "ChargeOps GoodWe" / passo: "Chave invalida" | "Relogio servidor" | "Sem Wi-Fi" |
+                 "Acertando hora" | "Conectando..."
+AGUARDANDO    -> alterna a cada ALTERNA_MS, pela página (agora / ALTERNA_MS) % 2:
+  0: "ChargeOps GoodWe" / aviso: "Chave invalida" | "Relogio servidor" | "Sem rede: espere" |
+                                 "Vaga N: aproxime" | "Aproxime cartao"
+  1: "1:<rot> 2:<rot>" / "3:<rot> 4:<rot>"      cada vaga = "N:" + <rot> em 5 colunas + espaço
+
+<rot>:  carregando -> "7.4W" (< 10 W, uma casa) ou "12W"; vaga 4 com sufixo S (solar) ou R (rede)
+        livre -> LIVRE ; aguardando_energia -> FILA ; pausada -> PAUSA ;
         completa_tolerancia -> CHEIO ; completa_taxa -> TAXA ; porta fora do handshake -> "--"
 ```
 
@@ -377,6 +409,6 @@ AGUARDANDO    -> "ChargeOps     GoodWe"
 
 ## 15. O que este documento NÃO decide
 
-- Pinos, bibliotecas e debounce (são do chat do firmware).
-- Os limiares de tensão da vaga 4: os valores aqui fecham com o **modelo simplificado** do totem virtual e precisam ser medidos na bancada.
+- Pinos e bibliotecas: estão no ADR-022 D4 e em `firmware/totem_central/`.
+- Os limiares de tensão da bateria solar: os valores aqui fecham com o **modelo simplificado** do totem virtual e precisam ser medidos na bancada.
 - Regras de negócio (taxa de ocupação, quem pode encerrar, prazos de detecção): são do backend. O totem só mostra `estado` e `tela`.

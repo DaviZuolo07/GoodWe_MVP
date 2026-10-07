@@ -1,6 +1,6 @@
 # ADR-020 — Totem virtual (gêmeo digital do ESP32 "Totem Central")
 
-- **Status:** PROPOSTO em 06/10/2026 (Davi) — pontos da seção 9 aguardam o Daniel
+- **Status:** ACEITO (seção 9 respondida no ADR-018). **Substituído em parte:** D4 (LCD 20x4) e D5 (vaga 4 painel/bateria) pelo ADR-022; a linha `401 assinatura_invalida` do D6 pelo ADR-021
 - **Chat:** V1 — Totem virtual
 - **Entrega:** `totem_virtual/` + `docs/contratos/maquina_de_estados_totem.md` + pedido em `docs/decisoes/pedidos/`
 - **Não toca:** `backend/`, `db/`, `backend/testes/placa_v2.py` (só importa)

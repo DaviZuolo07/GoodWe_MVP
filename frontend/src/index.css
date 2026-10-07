@@ -1,4 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+/* Fontes servidas pelo próprio app (pacotes @fontsource): nada é buscado em
+   servidor de terceiro, o que permite uma CSP fechada e funciona em rede de
+   estande sem saída para o Google Fonts. */
+@import "@fontsource-variable/space-grotesk/wght.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "@fontsource/ibm-plex-mono/latin-500.css";
+@import "@fontsource/ibm-plex-mono/latin-600.css";
 @import "tailwindcss";
 
 /* ===========================================================================
@@ -39,7 +45,7 @@
   /* Tipografia
      Space Grotesk: display + interface (técnica, sem ser fria)
      IBM Plex Mono: telemetria — número que muda sozinho é lido em mono */
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk Variable", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
 
   --radius-panel: 1rem;
@@ -454,4 +460,164 @@
 }
 [data-tema="claro"] .marca {
   text-shadow: none;
+}
+
+
+/* ===========================================================================
+   FLUXO — a camada de movimento (outubro/2026)
+   ---------------------------------------------------------------------------
+   Regra única: na tela, MOVIMENTO SIGNIFICA ENERGIA PASSANDO. Linha parada =
+   ponto sem carga; linha correndo = corrente; mais rápido = mais potência.
+   Nada aqui se mexe só para enfeitar, e tudo respeita prefers-reduced-motion
+   (bloco global mais acima).
+   =========================================================================== */
+
+/* Condutor do diagrama unifilar. Parado é só um traço fino. */
+.fio {
+  fill: none;
+  stroke: var(--color-line);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+/* A corrente: tracinhos correndo por cima do condutor. A duração vem do
+   componente (--fluxo-dur), proporcional à potência. */
+@keyframes gw-corrente {
+  to { stroke-dashoffset: -28; }
+}
+.corrente {
+  fill: none;
+  stroke: var(--color-flux);
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-dasharray: 3 11;
+  animation: gw-corrente var(--fluxo-dur, 1.6s) linear infinite;
+  filter: drop-shadow(0 0 3px rgb(229 53 43 / 0.9));
+}
+.corrente-sol {
+  stroke: var(--color-queue);
+  filter: drop-shadow(0 0 3px rgb(245 179 63 / 0.8));
+}
+
+/* Nó aceso (quadro, ponto carregando): halo que respira devagar */
+@keyframes gw-halo {
+  0%, 100% { opacity: 0.08; transform: scale(1); }
+  50%      { opacity: 0.24; transform: scale(1.12); }
+}
+.halo {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gw-halo 2.4s ease-in-out infinite;
+}
+
+@keyframes gw-pulsa {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.95; }
+}
+.pulsa {
+  animation: gw-pulsa 2.4s ease-in-out infinite;
+}
+
+/* Arco do medidor do quadro: cresce suave quando a carga muda */
+.arco {
+  transition: stroke-dashoffset 0.9s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.4s ease;
+}
+
+/* Card com recarga em andamento: a borda vira um condutor - um trecho de luz
+   percorre o contorno. Um pseudo-elemento com máscara, só transform/opacity. */
+@property --gw-giro {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes gw-giro {
+  to { --gw-giro: 360deg; }
+}
+.carregando-borda::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: conic-gradient(from var(--gw-giro), transparent 0 62%, var(--color-flare) 78%, var(--color-flux) 86%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  animation: gw-giro 3.2s linear infinite;
+}
+
+/* Troca de página: o conteúdo novo entra de leve por cima do antigo.
+   Só existe em navegador com View Transitions; nos outros a troca é seca. */
+::view-transition-old(conteudo) {
+  animation: 140ms ease-out both gw-sai;
+}
+::view-transition-new(conteudo) {
+  animation: 260ms cubic-bezier(0.22, 1, 0.36, 1) both gw-rise;
+}
+@keyframes gw-sai {
+  to { opacity: 0; }
+}
+.vt-conteudo {
+  view-transition-name: conteudo;
+}
+
+/* Painel de vidro (barra inferior do celular, folhas) */
+.vidro {
+  background-color: color-mix(in oklab, var(--color-void) 78%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+          backdrop-filter: blur(18px) saturate(1.4);
+}
+
+/* Barra inferior do celular: respeita a área do gesto do iPhone */
+.barra-inferior {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+.com-barra-inferior {
+  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+}
+@media (min-width: 64rem) {
+  .com-barra-inferior { padding-bottom: 2.25rem; }
+}
+
+/* Folha que sobe do rodapé ("Mais") */
+@keyframes gw-sobe {
+  from { transform: translateY(100%); }
+  to   { transform: none; }
+}
+.folha {
+  animation: gw-sobe 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Tela de entrada: grade em perspectiva sob o diagrama, como um piso técnico */
+.piso {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 65% at 50% 45%, #000 20%, transparent 78%);
+          mask-image: radial-gradient(ellipse 75% 65% at 50% 45%, #000 20%, transparent 78%);
+}
+[data-tema="claro"] .piso {
+  background-image:
+    linear-gradient(to right, rgb(23 28 35 / 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(23 28 35 / 0.07) 1px, transparent 1px);
+}
+[data-tema="claro"] .corrente { filter: none; }
+
+/* Entrada orquestrada (uma vez, na tela de entrada): cada peça com seu atraso */
+.entra {
+  animation: gw-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 90ms);
+}
+
+/* Toque no celular: sem o flash azul do navegador, alvo confortável */
+button, a, [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+html {
+  -webkit-text-size-adjust: 100%;
+}
+/* iOS dá zoom na página quando o campo tem fonte menor que 16px */
+@media (max-width: 40rem) {
+  input, select, textarea { font-size: 16px; }
 }

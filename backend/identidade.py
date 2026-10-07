@@ -17,7 +17,7 @@ veículo, sessão, fila - é conferido contra ela.
 from fastapi import Depends, HTTPException
 
 from config import supabase, um
-from seguranca import usuario_atual
+from seguranca import admin_atual, usuario_atual
 
 CAMPOS_PUBLICOS = ("id, nome, papel, tipo_usuario, condominio_id, bloco_apto, "
                    "saldo, criado_em")
@@ -33,10 +33,27 @@ def usuario_logado(usuario_id: str = Depends(usuario_atual)) -> dict:
     return u
 
 
-def gestor_logado(usuario: dict = Depends(usuario_logado)) -> dict:
-    if usuario.get("tipo_usuario") != "gestor":
+def gestor_logado(claims: dict = Depends(admin_atual)) -> dict:
+    """
+    Só existe na API ADMINISTRATIVA (main_admin.py). Três condições, todas
+    conferidas no servidor a cada chamada:
+
+      1. o token é o administrativo (audiência própria - o do morador não serve);
+      2. a conta ainda existe;
+      3. a conta ainda é de gestor AGORA, no banco - quem foi rebaixado perde
+         o acesso na chamada seguinte, sem esperar o token vencer.
+
+    Nada disso depende do que o navegador diz sobre si mesmo.
+    """
+    u = um(supabase.table("usuarios").select(CAMPOS_PUBLICOS).eq("id", claims["sub"]).execute())
+    if not u:
+        raise HTTPException(status_code=401, detail="Sessão inválida. Entre novamente.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    if u.get("tipo_usuario") != "gestor":
         raise HTTPException(status_code=403, detail="Área restrita ao gestor do condomínio.")
-    return usuario
+    u["saldo"] = round(float(u.get("saldo") or 0), 2)
+    u["_mfa"] = "otp" in (claims.get("amr") or [])
+    return u
 
 
 def veiculo_do_usuario(veiculo_id: str, usuario_id: str) -> dict:

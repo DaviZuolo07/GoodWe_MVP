@@ -111,29 +111,69 @@ _original = _postgrest.session
 _postgrest.session = _sessao_http(str(_original.base_url), _original.headers)
 _original.close()
 
+# --- Ambiente -------------------------------------------------------------
+# AMBIENTE=producao é o que se põe na hospedagem. Ele FECHA o que só faz
+# sentido na bancada: documentação /docs, CORS para qualquer IP da rede local,
+# detalhes de operação na rota de saúde. O padrão é "desenvolvimento" para o
+# `uvicorn main:app --reload` de sempre continuar igual.
+AMBIENTE = (os.getenv("AMBIENTE", "desenvolvimento") or "desenvolvimento").strip().lower()
+PRODUCAO = AMBIENTE in ("producao", "produção", "production", "prod")
+
 # --- Modo de demonstração -------------------------------------------------
 # MODO_DEMO=1 suspende a varredura de ESP32 mortos e libera as rotas /debug.
 # NUNCA ligar com a placa conectada: as travas existem para não cobrar uma
 # recarga que não vai acontecer.
 MODO_DEMO = os.getenv("MODO_DEMO", "0") == "1"
 
-# --- CORS -----------------------------------------------------------------
-# Lista fechada de origens do frontend. Para abrir no celular, acrescente o
-# endereço que o Vite mostra (ex.: http://192.168.0.10:5173).
-FRONTEND_ORIGINS = [
-    o.strip() for o in os.getenv(
-        "FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
-    ).split(",") if o.strip()
-]
 
-# Qualquer endereço de rede local na porta do Vite (celular, notebook do Gus,
-# IP que muda a cada WiFi) sem editar o .env. Só IPs privados (RFC 1918) e
-# localhost: nada da internet pública entra por aqui. Vazio desliga.
-FRONTEND_ORIGIN_REGEX = os.getenv(
-    "FRONTEND_ORIGIN_REGEX",
-    r"http://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
-    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):5173",
-) or None
+def _lista(nome: str, padrao: str) -> list[str]:
+    return [o.strip().rstrip("/") for o in os.getenv(nome, padrao).split(",") if o.strip()]
+
+
+def _regex_rede_local(porta: int) -> str:
+    return (r"http://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}"
+            r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+            r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):" + str(porta))
+
+
+# --- CORS -----------------------------------------------------------------
+# Lista fechada de origens. São DUAS listas porque são dois aplicativos:
+# o do morador fala só com a API pública, o do gestor só com a administrativa.
+# A origem do morador NÃO entra na lista do gestor (e vice-versa): uma página
+# do app do morador não consegue nem ler a resposta da API administrativa.
+FRONTEND_ORIGINS = _lista("FRONTEND_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+ADMIN_ORIGINS = _lista("ADMIN_ORIGINS", "http://localhost:5174,http://127.0.0.1:5174")
+
+# Rede local na porta do Vite (celular, notebook do Gus, IP que muda a cada
+# WiFi) sem editar o .env. Só IPs privados (RFC 1918) e localhost. Em
+# PRODUÇÃO isto fica desligado: lá só entra o que está escrito na lista.
+if PRODUCAO:
+    FRONTEND_ORIGIN_REGEX = os.getenv("FRONTEND_ORIGIN_REGEX") or None
+    ADMIN_ORIGIN_REGEX = os.getenv("ADMIN_ORIGIN_REGEX") or None
+else:
+    FRONTEND_ORIGIN_REGEX = os.getenv("FRONTEND_ORIGIN_REGEX", _regex_rede_local(5173)) or None
+    ADMIN_ORIGIN_REGEX = os.getenv("ADMIN_ORIGIN_REGEX", _regex_rede_local(5174)) or None
+
+if PRODUCAO:
+    _http = [o for o in FRONTEND_ORIGINS + ADMIN_ORIGINS if not o.startswith("https://")]
+    if _http:
+        print(f"[CONFIG] AVISO: origem sem HTTPS em produção: {', '.join(_http)}")
+    if set(FRONTEND_ORIGINS) & set(ADMIN_ORIGINS):
+        raise RuntimeError("FRONTEND_ORIGINS e ADMIN_ORIGINS não podem ter origem em comum: "
+                           "o painel do gestor precisa de endereço próprio.")
+
+# --- Cadastro e painel do gestor -----------------------------------------
+# Código de convite do evento. Vazio = cadastro aberto (rede local). Definido,
+# o /cadastro só aceita quem digitar o código - sem isso, publicado na
+# internet, qualquer script cria contas e gasta a cota do assistente.
+CODIGO_CADASTRO = (os.getenv("CODIGO_CADASTRO") or "").strip()
+
+# Segundo fator do gestor: "obrigatorio" recusa o login de quem ainda não
+# cadastrou o app autenticador; "opcional" deixa entrar só com a senha quem
+# não cadastrou (quem cadastrou SEMPRE precisa do código). Em produção o
+# padrão é obrigatório.
+ADMIN_MFA = (os.getenv("ADMIN_MFA") or ("obrigatorio" if PRODUCAO else "opcional")).strip().lower()
+ADMIN_MFA_OBRIGATORIO = ADMIN_MFA != "opcional"
 
 # --- Fuso ----------------------------------------------------------------
 # Horário de ponta é local. O `tzdata` do requirements garante que isto

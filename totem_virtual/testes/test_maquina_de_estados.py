@@ -23,45 +23,48 @@ def test_liga_com_reles_abertos_e_faz_handshake():
     assert e["link"] == "PRONTO" and e["ui"] == "AGUARDANDO_TAG" and e["online"]
     assert all(v["existe"] and not v["rele"] and v["estado"] == "livre" for v in e["vagas"])
     assert [x["rota"] for x in e["trocas"][:2]] == ["/hora", "/handshake"]
-    assert m.lcd() == ["ChargeOps     GoodWe", "1:LIVRE   2:LIVRE", "3:LIVRE   4:LIVRE", "Aproxime a tag"]
-    assert all(len(x) == 20 and all(ord(c) < 127 for c in x) for x in e["lcd"])
+    assert all(len(x) == 16 and all(ord(c) < 127 for c in x) for x in e["lcd"]), "LCD 16x2"
+    assert m.convite() == ["ChargeOps GoodWe", "Aproxime cartao"]
+    assert m.quadro() == ["1:LIVRE 2:LIVRE", "3:LIVRE 4:LIVRE"], "a tela de espera alterna"
 
 
 def test_timeout_de_15_s_na_escolha_da_vaga_sem_chamar_o_backend():
     m = mesa_bolso()
     m.t.aproximar_tag(A)
     m.andar(0.1)
-    assert m.e()["ui"] == "ESCOLHA_VAGA" and m.lcd()[3] == "Tempo: 15 s"
+    assert m.e()["ui"] == "ESCOLHA_VAGA" and m.lcd() == ["Escolha vaga 1-4", "Tempo: 15 s"]
     m.andar(14.7)
-    assert m.e()["ui"] == "ESCOLHA_VAGA" and m.lcd()[3] == "Tempo:  1 s"
+    assert m.e()["ui"] == "ESCOLHA_VAGA" and m.lcd()[1] == "Tempo:  1 s"
     m.andar(0.3)
-    assert m.e()["ui"] == "MOSTRA_TELA" and m.lcd()[0] == "Tempo esgotado"
+    assert m.e()["ui"] == "MOSTRA_TELA" and m.lcd() == ["Tempo esgotado", "Aproxime de novo"]
     m.andar(K.AVISO_MS / 1000 + 0.1)
     assert m.e()["ui"] == "AGUARDANDO_TAG"
     assert m.t.trocas("/rfid") == [], "sem botão, nenhum POST /rfid"
 
     m.t.apertar_botao(2)                     # botão atrasado não vale mais
     m.andar(0.2)
-    assert m.t.trocas("/rfid") == [] and m.lcd()[0] == "Aproxime a tag"
+    assert m.t.trocas("/rfid") == [] and m.lcd() == ["Aproxime o", "cartao primeiro"]
 
 
 def test_botao_sem_tag_so_avisa():
     m = mesa_bolso()
     m.t.apertar_botao(3)
     m.andar(0.1)
-    assert m.lcd()[:2] == ["Aproxime a tag", "primeiro"] and m.t.trocas("/rfid") == []
+    assert m.lcd() == ["Aproxime o", "cartao primeiro"] and m.t.trocas("/rfid") == []
 
 
 def test_tag_e_botao_mandam_porta_e_uid_e_a_tela_volta_sozinha():
     m = mesa_bolso()
     troca = m.tag_na_vaga(A, 3)
     assert troca["status"] == 200 and troca["dados"]["porta"] == 3
-    assert troca["dados"]["motivo"] == "sem_recarga_preparada", "backend de hoje, sem o v2.1"
+    # Backend D1 (v2.1): a tag numa vaga livre inicia a recarga (tag-primeiro).
+    assert (troca["dados"]["motivo"], troca["dados"]["acao"]) == ("iniciada", "ligar")
     assert m.e()["ui"] == "MOSTRA_TELA"
-    assert m.lcd() == ["Vaga 3: sem recarga", "preparada", "Use o app primeiro", ""]
-    assert not m.vaga(3)["rele"], "resposta sem acao e sem comando: relé fica aberto"
+    assert m.lcd()[0] == "Vaga 3 liberada"
+    assert m.vaga(3)["rele"] and m.vaga(3)["motivo_rele"] == "rfid", "acao=ligar fecha o relé na hora"
     m.andar(K.TELA_MS / 1000 + 0.1)
-    assert m.e()["ui"] == "AGUARDANDO_TAG"
+    assert m.e()["ui"] == "AGUARDANDO_TAG", "a tela volta sozinha; a vaga segue ligada"
+    assert m.vaga(3)["rele"]
 
 
 def test_segunda_tag_troca_a_primeira_e_reinicia_o_tempo():
@@ -85,14 +88,17 @@ def test_duas_vagas_carregam_juntas_pelo_fluxo_do_app():
     m = mesa_bolso()
     m.preparar_no_app(0, 1)
     m.andar(1.5)
-    assert m.vaga(1)["aguarda_tag"] and m.lcd()[3] == "Vaga 1: aproxime tag"
+    assert m.vaga(1)["aguarda_tag"] and m.convite()[1] == "Vaga 1: aproxime"
     m.t.plugar(1, 3.0, 30)
     troca = m.tag_na_vaga(A, 1)
-    assert troca["dados"]["autorizado"] and "acao" not in troca["dados"]
+    d = troca["dados"]
+    # v2.1: "confirmada_app" é o MOTIVO; a ação é "ligar" e fecha o relé na hora.
+    assert (d["autorizado"], d["motivo"], d["acao"]) == (True, "confirmada_app", "ligar")
     assert m.lcd()[:2] == ["Vaga 1 liberada", "Recarga do app"]
-    assert not m.vaga(1)["rele"], "autorizado NÃO fecha o relé: quem fecha é a ordem do backend"
+    assert m.vaga(1)["rele"] and m.vaga(1)["motivo_rele"] == "rfid"
     m.andar(1.5)
-    assert m.vaga(1)["rele"] and m.vaga(1)["motivo_rele"] == "comando"
+    assert m.vaga(1)["rele"] and m.vaga(1)["motivo_rele"] == "rfid", \
+        "o liberar que chega depois em /v2/comandos é idempotente"
 
     m.carregar_pelo_app(1, 2, "B")
     m.andar(6)
@@ -101,7 +107,32 @@ def test_duas_vagas_carregam_juntas_pelo_fluxo_do_app():
     assert v1["backend"]["deve_liberar"] and v2["backend"]["deve_liberar"]
     assert v1["backend"]["percentual"] > 30, "o backend calcula o % a partir da energia do totem"
     assert not m.vaga(3)["rele"] and not m.vaga(4)["rele"]
-    assert m.lcd()[1].startswith("1:7.") and "2:7." in m.lcd()[1]
+    assert m.quadro()[0].startswith("1:7.") and "2:7." in m.quadro()[0]
+
+
+def test_fila_de_energia_autorizado_sem_ligar_e_liga_sozinha_depois():
+    """A demonstração de gestão de demanda, do lado do totem, contra o backend D1."""
+    import sys
+    m = mesa_bolso()
+    fake = sys.modules["config"].supabase
+    fake.t("condominios")[0]["limite_potencia_kw"] = 0.01      # menos que uma vaga (0,025 kW)
+    m.t.plugar(1, 3.0, 30)
+    d = m.tag_na_vaga(A, 1)["dados"]
+    assert (d["autorizado"], d["motivo"], d["acao"]) == (True, "aguardando_energia", "nenhuma")
+    m.andar(4)
+    v = m.vaga(1)
+    assert not v["rele"], "autorizado NÃO fecha o relé: na fila de energia ele fica aberto"
+    assert v["estado"] == "aguardando_energia" and v["estado_do_backend"]
+    assert m.quadro()[0].startswith("1:FILA")
+
+    fake.t("condominios")[0]["limite_potencia_kw"] = 60      # sobrou energia
+    import simulador
+    simulador.ciclo()                                          # o laço de 10 s do backend
+    m.andar(4)
+    v = m.vaga(1)
+    assert v["rele"] and v["motivo_rele"] == "comando" and v["sessao_id"] == d["sessao_id"], \
+        "liga sozinha, pelo liberar, na MESMA sessão"
+    assert v["estado"] == "carregando" and v["potencia_w"] > 5
 
 
 def test_energia_acumulada_bate_com_potencia_vezes_tempo():
@@ -127,9 +158,11 @@ def test_telemetria_em_lote_com_w_brutos_e_fontes():
     da_1 = [x for x in lote["leituras"] if x["porta"] == 1][-1]
     assert 7 < da_1["potencia_w"] < 8, "W brutos da bancada, sem escala 1:1000"
     assert da_1["rele_ligado"] and da_1["energia_wh"] > 0 and 4.9 < da_1["tensao_v"] < 5.1
-    assert {x["fonte"] for x in lote["fontes"]} == {"painel", "bateria"}
+    assert [x["fonte"] for x in lote["fontes"]] == ["bateria", "bateria"], \
+        "uma leitura da bateria por amostra; o painel não tem sensor (ADR-022 D2)"
     assert all(set(x) == {"fonte", "t_ms", "potencia_w", "tensao_v", "corrente_a"} for x in lote["fontes"])
-    assert all(x["potencia_w"] >= 0 and x["corrente_a"] >= 0 for x in lote["fontes"])
+    assert all(x["potencia_w"] < 0 for x in lote["fontes"]), \
+        "vaga 4 parada e sol: o painel carrega a bateria, e o sinal diz isso"
     assert lote["t_envio_ms"] >= max(x["t_ms"] for x in lote["leituras"])
     assert m.t.trocas("/telemetria")[-1]["dados"]["gravadas"] == 8
 
@@ -155,7 +188,7 @@ def test_wifi_cai_guarda_e_reenvia_em_lotes_respeitando_boot_e_seq():
     m.t.wifi(False)
     m.andar(40)
     e = m.e()
-    assert not e["online"] and m.lcd()[3] == "Sem rede: aguarde"
+    assert not e["online"] and m.convite()[1] == "Sem rede: espere"
     assert e["fila_leituras"] >= 39 * 4, "uma leitura por vaga por segundo, guardadas"
     assert m.t.trocas(None, marca) == [], "com o Wi-Fi caído não sai nada"
     assert m.vaga(1)["rele"], "a recarga continua"
@@ -207,7 +240,7 @@ def test_trava_offline_abre_os_reles_e_o_handshake_religa():
 def test_fila_sem_rede_tem_teto_e_descarta_as_mais_antigas():
     m = mesa_bolso(offline_corte_ms=10_000_000)
     m.t.wifi(False)
-    m.andar(90)
+    m.andar(125)                             # 4 leituras/s enchem em 60 s; 1 da bateria/s, em 120 s
     e = m.e()
     assert e["fila_leituras"] == K.FILA_LEITURAS_MAX and e["descartadas"] > 0
     assert e["fila_fontes"] == K.FILA_FONTES_MAX
@@ -247,8 +280,8 @@ def test_chave_errada_avisa_na_tela_e_nao_metralha_o_servidor():
     m.andar(30)
     e = m.e()
     assert e["chave_recusada"] and e["link"] == "SEM_HANDSHAKE" and e["ui"] == "INICIANDO"
-    assert m.lcd()[2] == "Chave invalida"
-    assert len(m.t.trocas("/handshake")) <= 5, "tenta de 10 em 10 s"
+    assert m.lcd() == ["ChargeOps GoodWe", "Chave invalida"]
+    assert len(m.t.trocas("/handshake")) == K.RECUSAS_PARA_BLOQUEAR, "bloqueia e espera (ADR-021)"
     assert "11" * 32 not in str(e), "a chave não aparece no retrato que vai para a página"
 
 
@@ -350,8 +383,7 @@ def test_v21_celular_cheio_vira_completa_tolerancia(monkeypatch):
     v = m.vaga(1)
     assert v["estado"] == "completa_tolerancia" and v["estado_do_backend"]
     assert 0.05 < v["potencia_w"] < 0.15 and v["rele"], "manutenção de ~0,1 W, relé segue fechado"
-    m.andar(K.TELA_MS / 1000)
-    assert m.lcd()[1] == "1:CHEIO   2:LIVRE"
+    assert m.quadro()[0] == "1:CHEIO 2:LIVRE"
 
 
 def test_v21_servidor_acha_que_carrega_e_o_rele_esta_aberto_reconcilia():
@@ -384,73 +416,84 @@ def test_v21_pausa_e_retomada_da_mesma_sessao_nao_zera_a_energia():
 
 
 # ---------------------------------------------------------------------------
-# Vaga 4: painel OU bateria
+# Vaga 4: solar OU rede, pelo relé reversor (ADR-022 D1)
 # ---------------------------------------------------------------------------
 
-def test_solar_comuta_do_painel_para_a_bateria_e_de_volta():
+def _trocas_de_fonte(m) -> list[str]:
+    return [x["texto"].rsplit(" ", 1)[-1] for x in m.e()["eventos"] if "fonte da vaga 4" in x["texto"]]
+
+
+def test_vaga_solar_comeca_pela_bateria_e_o_backend_manda_para_a_rede():
     m = mesa_v21()
-    m.t.luz(100)
+    m.app.state.garantir_minimo = True       # Modbus 10024 ligado
+    m.t.luz(0)
+    m.t.bateria(60)
     m.t.plugar(4)
     m.tag_na_vaga(A, 4)
     m.andar(2)
-    assert m.e()["solar"]["fonte"] == "painel" and m.vaga(4)["potencia_w"] > 7
-    assert m.e()["solar"]["bateria"]["potencia_w"] == 0, "nunca as duas"
-    m.andar(K.TELA_MS / 1000)
-    assert m.lcd()[2].endswith("W S")
-
-    m.t.luz(30)                              # nuvem: 3 W não seguram 7,5 W
-    m.andar(3)
     s = m.e()["solar"]
-    assert s["fonte"] == "bateria" and s["painel"]["potencia_w"] == 0 and s["bateria"]["potencia_w"] > 7
-    assert m.vaga(4)["potencia_w"] > 7 and m.lcd()[2].endswith("W B")
+    assert s["fonte"] == "solar" and m.vaga(4)["potencia_w"] > 7
+    assert s["bateria"]["potencia_w"] > 7, "a 18650 fornece a vaga (sinal positivo)"
+    assert m.quadro()[1].endswith("S"), "S = vaga 4 na solar"
 
-    m.t.luz(100)
-    m.andar(2)
-    assert m.e()["solar"]["fonte"] == "painel"
-    trocas = [x["texto"] for x in m.e()["eventos"] if "fonte da vaga 4" in x["texto"]]
-    assert trocas == ["fonte da vaga 4 -> painel", "fonte da vaga 4 -> bateria", "fonte da vaga 4 -> painel"]
+    m.t.bateria(15)                          # abaixo do 10030 (20%), descarregando
+    m.andar(5)
+    s = m.e()["solar"]
+    assert s["fonte_backend"] == "rede" and s["fonte"] == "rede"
+    assert m.vaga(4)["rele"] and m.vaga(4)["potencia_w"] > 7, "segue carregando, agora pela rede"
+    assert s["bateria"]["potencia_w"] == 0, "nunca as duas: a bateria parou de fornecer"
+    assert m.quadro()[1].endswith("R")
+
+    m.t.bateria(60)                          # bateria boa: o backend volta a pedir solar
+    m.andar(10)
+    assert m.e()["solar"]["fonte_backend"] == "solar" and m.e()["solar"]["fonte"] == "rede", \
+        "forçada para a rede, segura FONTE_MIN_MS antes de voltar (sem vai-e-volta no relé)"
+    m.andar(K.FONTE_MIN_MS / 1000)
+    assert m.e()["solar"]["fonte"] == "solar"
+    assert _trocas_de_fonte(m) == ["solar", "rede", "solar"]
 
 
-def test_solar_troca_de_fonte_passa_por_nenhuma():
-    m = mesa_v21()
+def test_backend_pausa_a_vaga_solar_e_retoma_a_mesma_sessao():
+    m = mesa_v21()                           # 10024 desligado: bateria baixa = pausa
+    m.t.luz(0)
+    m.t.bateria(15)
+    m.t.plugar(4)
+    sessao = m.tag_na_vaga(A, 4)["dados"]["sessao_id"]
+    m.andar(6)
+    v = m.vaga(4)
+    assert not v["rele"] and v["estado"] == "pausada" and v["sessao_id"] == sessao
+    assert m.e()["solar"]["fonte"] == "rede", "relé aberto: reversor desligado, o painel carrega a 18650"
+    assert m.quadro()[1].endswith("4:PAUSA")
+    energia = v["energia_wh"]
+
+    m.t.bateria(60)
+    m.andar(6)
+    v = m.vaga(4)
+    assert v["rele"] and v["estado"] == "carregando" and v["sessao_id"] == sessao
+    assert m.e()["solar"]["fonte"] == "solar", "retomada sem atraso: a rede não tinha sido forçada"
+    assert v["energia_wh"] >= energia, "a mesma sessão não zera a energia"
+
+
+def test_bateria_baixa_vai_para_a_rede_mesmo_offline():
+    m = mesa_v21(offline_corte_ms=10_000_000)
+    m.t.luz(0)
+    m.t.bateria(60)
     m.t.plugar(4)
     m.tag_na_vaga(A, 4)
     m.andar(2)
-    m.t.luz(0)
-    vistas = []
-    for _ in range(60):
-        m.andar(0.05)
-        vistas.append(m.e()["solar"]["fonte"])
-    limpo = [f for i, f in enumerate(vistas) if i == 0 or f != vistas[i - 1]]
-    assert limpo == ["painel", "nenhuma", "bateria"], "abre uma antes de fechar a outra"
-    assert vistas.count("nenhuma") >= K.TROCA_FONTE_MS // 50
-
-
-def test_bateria_solar_baixa_corta_reporta_e_se_recupera_sozinha():
-    m = mesa_v21()
-    m.t.luz(0)
+    assert m.e()["solar"]["fonte"] == "solar"
+    m.t.wifi(False)                          # sem backend: a proteção da 18650 é local
     m.t.bateria(10.3)
-    m.t.plugar(4)
-    m.tag_na_vaga(A, 4)
-    m.andar(2)
-    assert m.e()["solar"]["fonte"] == "bateria"
     m.andar(40)
     s = m.e()["solar"]
-    assert s["fonte"] == "nenhuma" and not s["bateria_ok"], "protege a 18650"
-    assert m.vaga(4)["potencia_w"] == 0 and m.vaga(4)["rele"]
-    assert m.app.state.fontes["bateria"]["tensao_v"] < 3.6, "o backend recebeu a bateria baixa"
-    assert m.vaga(4)["estado"] == "pausada", "decisão do backend, a partir das fontes"
-    m.andar(K.TELA_MS / 1000)
-    assert m.lcd()[2].endswith("4:PAUSA"), "o LCD mostra o estado que o backend informou"
+    assert s["fonte"] == "rede" and not s["bateria_ok"], "abaixo de 3,30 V a 18650 sai da vaga"
+    assert m.vaga(4)["rele"] and m.vaga(4)["potencia_w"] > 7, "o celular segue carregando pela rede"
 
-    m.andar(30)
-    assert m.e()["solar"]["fonte"] == "nenhuma", "sem luz não volta a ligar e desligar"
-
-    m.t.luz(100)
-    m.andar(3)
-    assert m.e()["solar"]["fonte"] == "painel" and m.vaga(4)["potencia_w"] > 7
-    m.andar(3)
-    assert m.vaga(4)["estado"] == "carregando"
+    m.t.bateria(60)                          # bateria trocada
+    m.andar(5)
+    assert m.e()["solar"]["bateria_ok"] and m.e()["solar"]["fonte"] == "rede"
+    m.andar(K.FONTE_MIN_MS / 1000)
+    assert m.e()["solar"]["fonte"] == "solar"
 
 
 def test_vaga_4_parada_o_painel_carrega_a_bateria():
@@ -458,5 +501,6 @@ def test_vaga_4_parada_o_painel_carrega_a_bateria():
     m.t.bateria(50)
     m.andar(120)
     s = m.e()["solar"]
-    assert s["fonte"] == "nenhuma" and s["bateria_soc"] > 50.5
-    assert s["painel"]["potencia_w"] > 4 and s["bateria"]["potencia_w"] == 0
+    assert s["fonte"] == "rede", "sem recarga na vaga 4, a bobina do reversor fica desligada"
+    assert s["bateria_soc"] > 50.3, "1 W do painel por 2 min, pelo TP4056"
+    assert s["bateria"]["potencia_w"] < 0, "carregando: sinal negativo"

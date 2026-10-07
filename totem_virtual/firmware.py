@@ -36,7 +36,7 @@ from collections import deque
 
 from . import VERSAO
 from . import config as K
-from .lcd import quebrar, tela_valida
+from .lcd import pagina, paginas, quebrar, reflow, tela_valida
 
 # Interface
 INICIANDO, AGUARDANDO_TAG, ESCOLHA_VAGA, MOSTRA_TELA = \
@@ -46,33 +46,51 @@ SEM_HORA, SEM_HANDSHAKE, PRONTO = "SEM_HORA", "SEM_HANDSHAKE", "PRONTO"
 
 ESTADOS_DA_VAGA = ("livre", "aguardando_energia", "carregando", "pausada",
                    "completa_tolerancia", "completa_taxa")
-ROTULO = {"livre": "LIVRE", "aguardando_energia": "ESPERA", "pausada": "PAUSA",
+ROTULO = {"livre": "LIVRE", "aguardando_energia": "FILA", "pausada": "PAUSA",
           "completa_tolerancia": "CHEIO", "completa_taxa": "TAXA"}
 
 LIGAR = ("ligar", "liberar")           # v2.1 e o nome de hoje (ADR-015)
 DESLIGAR = ("desligar", "bloquear")
 
 # Tela montada no totem quando a resposta não traz "tela". {n} = número da vaga.
-# Cobre a lista fechada do contrato e os motivos do backend de hoje.
+# Cobre a lista fechada do contrato e os motivos legados. Cada linha cabe em 16
+# colunas (LCD 16x2, ADR-022); mais de 2 linhas viram 2 páginas.
 TELA_DO_MOTIVO = {
     "iniciada":                    ["Vaga {n} liberada", "Boa recarga!"],
-    "encerrada":                   ["Vaga {n} encerrada", "Retire o celular"],
+    "encerrada":                   ["Vaga {n} encerrou", "Retire o celular"],
     "confirmada_app":              ["Vaga {n} liberada", "Recarga do app"],
-    "aguardando_energia":          ["Vaga {n} na espera", "Sem energia agora", "Liga sozinha depois"],
-    "vaga_ocupada":                ["Vaga {n} ocupada", "Escolha outra vaga"],
-    "ja_carregando_em_outra_vaga": ["Voce ja esta", "carregando em", "outra vaga"],
-    "saldo_insuficiente":          ["Saldo insuficiente", "Recarregue no app"],
+    "aguardando_energia":          ["Vaga {n} na fila", "Limite atingido", "Liga sozinha", "quando liberar"],
+    "vaga_ocupada":                ["Vaga {n} ocupada", "Escolha outra"],
+    "ja_carregando_em_outra_vaga": ["Voce ja carrega", "em outra vaga"],
+    "saldo_insuficiente":          ["Sem saldo", "Adicione no app"],
     "taxa_pendente":               ["Taxa pendente", "Quite no app"],
-    "cartao_nao_cadastrado":       ["Tag nao cadastrada", "Cadastre no app"],
+    "cartao_nao_cadastrado":       ["Tag desconhecida", "Cadastre no app"],
     "cartao_de_outro_usuario":     ["Tag de outro", "morador"],
     "cartao_de_outro_condominio":  ["Tag de outro", "condominio"],
     "sem_veiculo":                 ["Sem veiculo", "Cadastre no app"],
     "uid_invalido":                ["Leitura falhou", "Aproxime de novo"],
-    "sem_recarga_preparada":       ["Vaga {n}: sem recarga", "preparada", "Use o app primeiro"],
-    "limite_de_potencia":          ["Sem energia agora", "Tente mais tarde"],
+    "sem_recarga_preparada":       ["Sem recarga", "preparada no app"],
+    "limite_de_potencia":          ["Sem energia", "Tente mais tarde"],
     "espera_encerrada":            ["Espera encerrada", "Prepare de novo"],
 }
-TELA_SEM_CONEXAO = ["Sem conexao", "Tente de novo", "em instantes"]
+TELA_SEM_CONEXAO = ["Sem conexao", "Tente de novo"]
+
+# Recusa de autenticação (ADR-021): 401 que insistir não resolve.
+RECUSAS = ("assinatura_invalida", "fora_da_janela")
+TELA_DA_RECUSA = {"assinatura_invalida": "Chave invalida", "fora_da_janela": "Relogio servidor"}
+DIAGNOSTICO = {
+    "assinatura_invalida": (
+        "handshake recusado (401 assinatura_invalida) {n} vezes seguidas: a chave do "
+        "totem_virtual/.env nao bate com a DEVICE_MASTER_KEY do backend (ou o DEVICE_ID nao "
+        "existe no banco que o backend usa). Rode backend/preparar_totem.py de novo e "
+        "reinicie o totem. Nova tentativa a cada {s} s."),
+    "fora_da_janela": (
+        "handshake recusado (401 fora_da_janela) {n} vezes seguidas, mesmo logo depois de "
+        "acertar a hora pelo /hora: o relogio do computador do backend discorda do relogio "
+        "do banco (Supabase) em mais que a janela anti-replay. Sincronize o relogio do "
+        "Windows (Configuracoes > Hora e idioma > Sincronizar agora, ou 'w32tm /resync' "
+        "como administrador) e reinicie o backend. Nova tentativa a cada {s} s."),
+}
 
 
 class Vaga:
@@ -113,7 +131,7 @@ class Firmware:
         agora = self.hal.millis()
         for v in self.vagas.values():
             self.hal.rele(v.porta, False)          # ao ligar, todo relé ABERTO
-        self.hal.selecionar_fonte("nenhuma")
+        self.hal.selecionar_fonte("rede")         # reversor da vaga 4 desligado
 
         self.ui, self.t_ui, self.duracao_tela = INICIANDO, agora, 0
         self.uid, self.tela = None, []
@@ -125,6 +143,8 @@ class Firmware:
         self.offline_desde = None
         self.wifi_estava_ok = True
         self.chave_recusada = False
+        self.recusa, self.recusas_seguidas = None, 0   # último 401 de autenticação
+        self.diagnostico = None                        # texto acionável quando bloqueia
         self.cortou_offline = False
         self.t_reconciliou = -60_000
 
@@ -134,7 +154,8 @@ class Firmware:
         self.drenando = False
         self.lotes_enviados = self.lotes_descartados = 0
 
-        self.fonte_alvo, self.t_troca = "nenhuma", agora
+        self.fonte, self.t_troca, self.t_forcada = "rede", agora, None
+        self.fonte_backend = None                  # "solar" | "rede" (porta solar na telemetria)
         self.queda_desde = None
         self.bateria_ok = True
         self._evento("placa ligou: reles abertos")
@@ -170,23 +191,48 @@ class Firmware:
         self.offline_desde = None
         self.espera_ms = K.RETENTATIVA_MIN_MS
         self.chave_recusada = False
+        if self.diagnostico:
+            self._evento("servidor voltou a aceitar a placa")
+        self.recusa, self.recusas_seguidas, self.diagnostico = None, 0, None
+
+    def _esperar_mais(self, agora: int) -> None:
+        self.proxima_tentativa = agora + self.espera_ms
+        self.espera_ms = min(K.RETENTATIVA_MAX_MS, self.espera_ms * 2)
 
     def _falha(self, agora: int) -> None:
         if self.offline_desde is None:
             self.offline_desde = agora
             self._evento("sem resposta do servidor")
-        self.proxima_tentativa = agora + self.espera_ms
-        self.espera_ms = min(K.RETENTATIVA_MAX_MS, self.espera_ms * 2)
+        self._esperar_mais(agora)
+
+    def _recusado(self, codigo: str, agora: int) -> None:
+        """401 de autenticação (ADR-021). Insistir rápido não resolve."""
+        # Servidor que não aceita a placa = servidor que não acompanha a recarga:
+        # a trava offline também vale aqui (D2).
+        if self.offline_desde is None:
+            self.offline_desde = agora
+        self.recusas_seguidas = self.recusas_seguidas + 1 if codigo == self.recusa else 1
+        self.recusa = codigo
+        self.chave_recusada = codigo == "assinatura_invalida"
+        if codigo == "fora_da_janela":
+            self.link = SEM_HORA                   # o relógio da placa pode ter derivado
+        if self.recusas_seguidas < K.RECUSAS_PARA_BLOQUEAR:
+            self._evento(f"recusado ({codigo}): tentativa {self.recusas_seguidas}")
+            self._esperar_mais(agora)
+            return
+        self.proxima_tentativa = agora + K.BLOQUEIO_MS
+        if self.recusas_seguidas == K.RECUSAS_PARA_BLOQUEAR:
+            self.diagnostico = DIAGNOSTICO[codigo].format(n=self.recusas_seguidas,
+                                                          s=K.BLOQUEIO_MS // 1000)
+            self._evento(f"BLOQUEADO ({codigo}): {self.diagnostico}")
 
     def _tratar(self, r, agora: int) -> bool:
         """Efeito colateral comum de toda resposta. True = deu 200."""
         if not r.chegou:
             self._falha(agora)
             return False
-        if r.codigo == "assinatura_invalida":
-            # Chave errada ou placa desconhecida: insistir rápido não resolve.
-            self.chave_recusada = True
-            self.proxima_tentativa = agora + K.RETENTATIVA_MAX_MS
+        if r.status == 401 and r.codigo in RECUSAS:
+            self._recusado(r.codigo, agora)
             return False
         self._sucesso()
         if r.status == 200:
@@ -197,9 +243,6 @@ class Firmware:
             self.enlace.novo_boot()                # numeração fora de sincronia
             self.link = SEM_HANDSHAKE
             self._evento("replay: boot novo e handshake")
-        elif r.codigo == "fora_da_janela":
-            self.link = SEM_HORA
-            self._evento("relogio fora da janela: acertando a hora")
         return False
 
     def _rede(self, agora: int) -> None:
@@ -224,7 +267,8 @@ class Firmware:
                 self._falha(agora)
                 return
             self.link = PRONTO if self.handshake_feito else SEM_HANDSHAKE
-            if self.link == PRONTO:
+            # /hora é pública: responder não prova que o servidor aceita a placa.
+            if self.link == PRONTO and self.recusa is None:
                 self._sucesso()
             return
 
@@ -313,7 +357,10 @@ class Firmware:
     # ===================================================================
 
     def _mostrar(self, linhas: list, agora: int, duracao_ms: int = K.TELA_MS) -> None:
-        self.tela, self.ui, self.t_ui, self.duracao_tela = linhas, MOSTRA_TELA, agora, duracao_ms
+        """Re-quebra em 16 colunas e pagina de 2 em 2 linhas (ADR-022 D3)."""
+        self.tela = reflow(linhas)
+        self.ui, self.t_ui = MOSTRA_TELA, agora
+        self.duracao_tela = max(duracao_ms, paginas(self.tela) * K.PAGINA_MS)
 
     def _interface(self, agora: int) -> None:
         tag, botao = self.hal.tag_lida(), self.hal.botao()
@@ -333,9 +380,9 @@ class Firmware:
             elif agora - self.t_ui >= K.TIMEOUT_ESCOLHA_MS:
                 self.uid = None
                 self._evento("timeout na escolha da vaga")
-                self._mostrar(["Tempo esgotado", "Aproxime a tag", "de novo"], agora, K.AVISO_MS)
+                self._mostrar(["Tempo esgotado", "Aproxime de novo"], agora, K.AVISO_MS)
         elif botao and self.ui == AGUARDANDO_TAG:
-            self._mostrar(["Aproxime a tag", "primeiro"], agora, K.AVISO_MS)
+            self._mostrar(["Aproxime o", "cartao primeiro"], agora, K.AVISO_MS)
         elif self.ui == MOSTRA_TELA and agora - self.t_ui >= self.duracao_tela:
             self.ui, self.t_ui = AGUARDANDO_TAG, agora
 
@@ -371,7 +418,7 @@ class Firmware:
             motivo = d.get("motivo") or ("confirmada_app" if d.get("autorizado") else "")
             modelo = TELA_DO_MOTIVO.get(motivo)
             linhas = [x.format(n=porta) for x in modelo] if modelo else \
-                quebrar(d.get("mensagem") or ("Liberado" if d.get("autorizado") else "Nao autorizado"))
+                quebrar(d.get("mensagem") or ("Liberado" if d.get("autorizado") else "Nao autorizado"))[:4]
         self._mostrar(linhas, agora)
 
     # ===================================================================
@@ -403,64 +450,52 @@ class Firmware:
                 "energia_wh": round(v.energia_wh, 4), "tensao_v": v.medida["tensao_v"],
                 "corrente_a": v.medida["corrente_a"], "rele_ligado": v.rele})
         if self.vagas[K.PORTA_SOLAR].existe:
-            for nome in ("painel", "bateria"):
-                m = self.hal.ler_fonte(nome)
-                # Potência FORNECIDA pela fonte, sempre >= 0 (ADR-020 P3).
-                self.fila_fontes.append({"fonte": nome, "t_ms": agora, "potencia_w": m["potencia_w"],
-                                         "tensao_v": m["tensao_v"], "corrente_a": m["corrente_a"]})
+            # INA219 em série com a 18650 (ADR-022 D2): COM SINAL, + descarregando,
+            # - carregando. O painel não tem sensor: não vai "painel" no lote.
+            m = self.hal.ler_bateria()
+            self.fila_fontes.append({"fonte": "bateria", "t_ms": agora, "potencia_w": m["potencia_w"],
+                                     "tensao_v": m["tensao_v"], "corrente_a": m["corrente_a"]})
 
     # ===================================================================
-    # Vaga 4: painel OU bateria, nunca os dois
+    # Vaga 4: solar OU rede, pelo relé reversor (ADR-022 D1)
     # ===================================================================
 
-    def _trocar_fonte(self, alvo: str, agora: int) -> None:
-        if alvo == self.fonte_alvo:
+    def _virar(self, nova: str, agora: int, forcada: bool) -> None:
+        if nova == self.fonte:
             return
-        self.hal.selecionar_fonte("nenhuma")       # abre antes de fechar a outra
-        self.fonte_alvo, self.t_troca, self.queda_desde = alvo, agora, None
-        self._evento(f"fonte da vaga 4 -> {alvo}")
+        self.hal.selecionar_fonte(nova)            # contato reversor: nunca as duas
+        self.fonte, self.t_troca, self.queda_desde = nova, agora, None
+        self.t_forcada = agora if forcada else None
+        self._evento(f"fonte da vaga 4 -> {nova}")
 
     def _fonte_solar(self, agora: int) -> None:
-        v = self.vagas[K.PORTA_SOLAR]
-        if self.hal.fonte_selecionada() != self.fonte_alvo:
-            if agora - self.t_troca >= K.TROCA_FONTE_MS:
-                self.hal.selecionar_fonte(self.fonte_alvo)
-                self.t_troca = agora               # dá tempo de a medida estabilizar
-            return
-        if agora - self.t_troca < K.TROCA_FONTE_MS + K.MEDICAO_MS:
-            return
-        if not v.rele:
-            self._trocar_fonte("nenhuma", agora)   # vaga parada: o painel carrega a bateria
-            return
-
-        v_painel = self.hal.ler_fonte("painel")["tensao_v"]
-        v_bateria = self.hal.ler_fonte("bateria")["tensao_v"]
-        if not self.bateria_ok and v_bateria >= K.V_BATERIA_VOLTA:
+        if agora - self.t_troca < K.TROCA_FONTE_MS:
+            return                                 # medida estabilizando
+        v_bateria = self.hal.ler_bateria()["tensao_v"]
+        if not self.bateria_ok and self.fonte == "rede" and v_bateria >= K.V_BATERIA_VOLTA:
             self.bateria_ok = True
+            self._evento("bateria solar recuperada")
+        if not self.vagas[K.PORTA_SOLAR].rele:
+            self._virar("rede", agora, forcada=False)   # sem carga: o painel carrega a 18650
+            return
 
-        def durou(condicao: bool) -> bool:
-            if not condicao:
-                self.queda_desde = None
-                return False
+        if self.fonte == "solar" and v_bateria < K.V_BATERIA_CORTE:
             if self.queda_desde is None:
                 self.queda_desde = agora
-            return agora - self.queda_desde >= K.QUEDA_MS
-
-        if self.fonte_alvo == "painel":
-            if durou(v.medida["tensao_v"] < K.V_BARRA_MINIMA):
-                self._trocar_fonte("bateria" if self.bateria_ok else "nenhuma", agora)
-        elif self.fonte_alvo == "bateria":
-            if v_painel >= K.V_PAINEL_ENTRA:
-                self._trocar_fonte("painel", agora)
-            elif durou(v_bateria < K.V_BATERIA_CORTE):
+            if agora - self.queda_desde >= K.QUEDA_MS:  # proteção local: vale offline
                 self.bateria_ok = False
-                self._evento("bateria solar baixa: fonte cortada")
-                self._trocar_fonte("nenhuma", agora)
-        else:
-            if v_painel >= K.V_PAINEL_ENTRA:
-                self._trocar_fonte("painel", agora)
-            elif self.bateria_ok:
-                self._trocar_fonte("bateria", agora)
+                self._evento("bateria solar baixa: vaga 4 para a rede")
+                self._virar("rede", agora, forcada=True)
+            return
+        self.queda_desde = None
+
+        if self.fonte_backend == "rede" or not self.bateria_ok:
+            self._virar("rede", agora, forcada=True)
+            return
+        if self.fonte == "rede" and self.t_forcada is not None and \
+                agora - self.t_forcada < K.FONTE_MIN_MS:
+            return                                 # sem vai-e-volta no relé
+        self._virar("solar", agora, forcada=False)
 
     # ===================================================================
     # Telemetria em lote
@@ -518,6 +553,8 @@ class Firmware:
         v.ultima_resposta = p
         if p.get("estado") in ESTADOS_DA_VAGA:
             self._estado(v, p["estado"], agora)
+        if v.porta == K.PORTA_SOLAR and p.get("fonte") in ("solar", "rede"):
+            self.fonte_backend = p["fonte"]
         if tela_valida(p.get("tela")) and p["tela"] != v.tela_backend:
             v.tela_backend = p["tela"]
             if self.ui == AGUARDANDO_TAG:
@@ -600,34 +637,35 @@ class Firmware:
     # ===================================================================
 
     def _rotulo(self, v: Vaga) -> str:
+        """Até 5 colunas: 4 vagas cabem em 2 linhas de 16."""
         if not v.existe:
             return "--"
         if v.rele and v.estado == "carregando":
+            w = v.medida["potencia_w"]
+            texto = f"{w:.1f}W" if w < 9.95 else f"{w:.0f}W"
             if v.porta == K.PORTA_SOLAR:
-                fonte = self.hal.fonte_selecionada()
-                if fonte == "nenhuma":
-                    return "S/FONTE"
-                return f"{v.medida['potencia_w']:.1f}W {'S' if fonte == 'painel' else 'B'}"
-            return f"{v.medida['potencia_w']:.1f}W"
+                texto += "S" if self.fonte == "solar" else "R"
+            return texto
         return ROTULO.get(v.estado, "CARGA")
 
     def _desenhar(self, agora: int) -> None:
         if self.ui == MOSTRA_TELA:
-            linhas = self.tela
+            linhas = pagina(self.tela, (agora - self.t_ui) // K.PAGINA_MS)
         elif self.ui == ESCOLHA_VAGA:
             resta = max(0, (K.TIMEOUT_ESCOLHA_MS - (agora - self.t_ui) + 999) // 1000)
-            linhas = ["Tag lida", "Escolha a vaga:", "botoes 1 2 3 4", f"Tempo: {resta:>2} s"]
+            linhas = ["Escolha vaga 1-4", f"Tempo: {resta:>2} s"]
         elif self.ui == INICIANDO:
-            passo = "Chave invalida" if self.chave_recusada else \
+            passo = TELA_DA_RECUSA[self.recusa] if self.recusa else \
                 "Sem Wi-Fi" if not self.hal.wifi_ok() else \
-                {SEM_HORA: "Acertando a hora", SEM_HANDSHAKE: "Falando c/ servidor"}.get(self.link, "")
-            linhas = ["ChargeOps     GoodWe", "Iniciando...", passo]
+                {SEM_HORA: "Acertando hora", SEM_HANDSHAKE: "Conectando..."}.get(self.link, "")
+            linhas = ["ChargeOps GoodWe", passo]
+        elif (agora // K.ALTERNA_MS) % 2 == 0:
+            pedido = next((v for v in self.vagas.values() if v.pedido_ate_ms is not None), None)
+            aviso = TELA_DA_RECUSA[self.recusa] if self.recusa else \
+                "Sem rede: espere" if not self.online() else \
+                f"Vaga {pedido.porta}: aproxime" if pedido else "Aproxime cartao"
+            linhas = ["ChargeOps GoodWe", aviso]
         else:
             r = {p: self._rotulo(v) for p, v in self.vagas.items()}
-            pedido = next((v for v in self.vagas.values() if v.pedido_ate_ms is not None), None)
-            rodape = "Chave invalida" if self.chave_recusada else \
-                "Sem rede: aguarde" if not self.online() else \
-                f"Vaga {pedido.porta}: aproxime tag" if pedido else "Aproxime a tag"
-            linhas = ["ChargeOps     GoodWe", f"1:{r[1]:<7} 2:{r[2]:<7}",
-                      f"3:{r[3]:<7} 4:{r[4]:<7}", rodape]
+            linhas = [f"1:{r[1]:<5} 2:{r[2]:<5}", f"3:{r[3]:<5} 4:{r[4]:<5}"]
         self.hal.lcd_escrever(linhas)

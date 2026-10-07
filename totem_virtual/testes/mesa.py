@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import servidor_v21
 from totem_virtual import backend_de_bolso
+from totem_virtual import config as K
 from totem_virtual.bancada import RelogioManual
 from totem_virtual.config import Config
 from totem_virtual.totem import TotemVirtual
@@ -34,6 +35,23 @@ class Mesa:
 
     def lcd(self) -> list[str]:
         return [x.rstrip() for x in self.e()["lcd"]]
+
+    def _espera(self, pagina: int) -> list[str]:
+        """Tela de espera do LCD 16x2: anda até a página pedida (alterna a cada ALTERNA_MS)."""
+        for _ in range(2 * K.ALTERNA_MS // 50 + 2):
+            e = self.e()
+            if e["ui"] == "AGUARDANDO_TAG" and (e["millis"] // K.ALTERNA_MS) % 2 == pagina:
+                return self.lcd()
+            self.andar(0.05)
+        raise AssertionError(f"a tela de espera não chegou à página {pagina}: {self.lcd()}")
+
+    def convite(self) -> list[str]:
+        """"ChargeOps GoodWe" / aviso da vez."""
+        return self._espera(0)
+
+    def quadro(self) -> list[str]:
+        """As 4 vagas em 2 linhas: "1:LIVRE 2:7.4W" / "3:FILA  4:7.4WS"."""
+        return self._espera(1)
 
     def tag_na_vaga(self, uid: str, porta: int) -> dict:
         marca = self.t.marca()

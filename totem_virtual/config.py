@@ -26,6 +26,8 @@ TROCA_FONTE_MS = 200             # abre uma fonte antes de fechar a outra
 QUEDA_MS = 1_000                 # tensão baixa precisa durar isto para valer
 RETENTATIVA_MIN_MS = 1_000       # espera entre tentativas de rede (dobra até o teto)
 RETENTATIVA_MAX_MS = 10_000
+RECUSAS_PARA_BLOQUEAR = 3        # 401 seguidos do mesmo tipo: para de insistir (ADR-021)
+BLOQUEIO_MS = 60_000             # e só tenta de novo depois disto
 
 # --- Limites do protocolo v2 (ADR-015 D4) ------------------------------------
 MAX_LEITURAS_LOTE = 30
@@ -34,10 +36,13 @@ CORPO_MAX_BYTES = 7_000          # o servidor recusa acima de 8 KB; margem para 
 FILA_LEITURAS_MAX = 240          # o que cabe guardar sem rede (RAM do ESP32)
 FILA_FONTES_MAX = 120
 
-# --- Fontes da vaga 4: limiares a CALIBRAR na bancada real -------------------
+# --- Tela 16x2 (ADR-022 D3) ---------------------------------------------------
+PAGINA_MS = 2_000                # uma página de 2 linhas
+ALTERNA_MS = 3_000               # tela de espera: convite <-> quadro das vagas
+
+# --- Fonte da vaga 4 (reversor solar/rede): limiares a CALIBRAR na bancada ----
 PORTA_SOLAR = 4
-V_PAINEL_ENTRA = 5.60            # painel assume a vaga a partir desta tensão
-V_BARRA_MINIMA = 4.75            # abaixo disto por QUEDA_MS, o painel não aguenta
+FONTE_MIN_MS = 30_000            # forçada para a rede, fica pelo menos isto antes de voltar
 V_BATERIA_CORTE = 3.30           # protege a 18650
 V_BATERIA_VOLTA = 3.60
 

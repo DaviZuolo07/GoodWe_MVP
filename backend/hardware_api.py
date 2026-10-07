@@ -80,6 +80,7 @@ from fisica import (custo_da_sessao, energia_bruta_wh, energia_escalada_kwh, min
                     potencia_escalada_kw, soc_pela_energia, soc_pela_tensao_18650)
 from identidade import gestor_logado
 from seguranca import assinatura_v2_confere, chave_dispositivo, hash_token_dispositivo, \
+    ip_do_cliente, \
     protocolo_v2_configurado
 
 router = APIRouter(prefix="/hardware", tags=["hardware"])
@@ -680,7 +681,7 @@ def _assinada(consumir: bool, handshake: bool = False):
         info = {"id": x_device_id, "sig": x_sig, "metodo": request.method,
                 "caminho": request.url.path, "boot": _cabecalho_int(x_boot),
                 "seq": _cabecalho_int(x_seq), "ts": _cabecalho_int(x_ts),
-                "corpo": corpo, "ip": request.client.host if request.client else None}
+                "corpo": corpo, "ip": ip_do_cliente(request)}
 
         def sincrono() -> dict:
             d = {**_conferir_assinatura(info), "_ip": info["ip"], "_boot": info["boot"],
@@ -793,6 +794,12 @@ def receber_telemetria_v2(payload: TelemetriaV2Payload, d: dict = Depends(_assin
 # Diagnóstico (só gestor)
 # ---------------------------------------------------------------------------
 
+# As rotas de diagnóstico do gestor NÃO ficam no `router` acima: ele vai para
+# a API pública (a placa precisa alcançar). Estas vão no `router_admin`, que só
+# a API administrativa (main_admin.py) monta - ADR-023.
+router_admin = APIRouter(prefix="/hardware", tags=["hardware (gestor)"])
+
+
 def _ponto_do_gestor(carregador_id: str, gestor: dict) -> dict:
     """Gestor só enxerga (e cutuca) equipamento do PRÓPRIO condomínio."""
     c = recarga.carregador(carregador_id)
@@ -801,7 +808,7 @@ def _ponto_do_gestor(carregador_id: str, gestor: dict) -> dict:
     return c
 
 
-@router.get("/status/{carregador_id}")
+@router_admin.get("/status/{carregador_id}")
 def status_dispositivo(carregador_id: str, gestor: dict = Depends(gestor_logado)):
     _ponto_do_gestor(carregador_id, gestor)
     d = dispositivos.dispositivo_do_carregador(carregador_id)
@@ -822,7 +829,7 @@ def status_dispositivo(carregador_id: str, gestor: dict = Depends(gestor_logado)
     }
 
 
-@router.post("/ping/{carregador_id}")
+@router_admin.post("/ping/{carregador_id}")
 def ping(carregador_id: str, gestor: dict = Depends(gestor_logado)):
     """Se o LED da porta piscar 3 vezes, a ponta inteira funciona."""
     _ponto_do_gestor(carregador_id, gestor)

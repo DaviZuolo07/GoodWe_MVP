@@ -24,9 +24,11 @@ fake = ambiente.usar_supabase_falso()
 from fastapi.testclient import TestClient          # noqa: E402
 
 import main                                        # noqa: E402
+import main_admin                               # noqa: E402
 from seguranca import gerar_hash_senha, hash_token_dispositivo  # noqa: E402
 
 CLIENTE = TestClient(main.app)
+ADMIN = TestClient(main_admin.app)
 TOKEN_ESP = "gw_dev_token_de_teste"
 COND = "c0000000-0000-0000-0000-000000000002"
 PONTO = "b0000000-0000-0000-0000-000000000001"
@@ -93,13 +95,20 @@ def entrar(nome):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
+def entrar_gestor(nome):
+    """O gestor entra pela API ADMINISTRATIVA (ADR-023): outro app, outro token."""
+    r = ADMIN.post("/admin/login", json={"nome": nome, "senha": SENHA})
+    assert r.status_code == 200 and r.json().get("success"), r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
 def esp(metodo, caminho, corpo=None):
     return CLIENTE.request(metodo, caminho, json=corpo, headers={"X-Device-Token": TOKEN_ESP})
 
 
 def main_teste():
     semear()
-    gus, outro, sindico = entrar("Gus Bancada"), entrar("Outro Morador"), entrar("Sindico Portal")
+    gus, outro, sindico = entrar("Gus Bancada"), entrar("Outro Morador"), entrar_gestor("Sindico Portal")
 
     print("\n1. Segurança da identidade (Bloco 2)")
     checar(CLIENTE.get("/me").status_code == 401, "sem token, /me recusa")
@@ -109,8 +118,14 @@ def main_teste():
     checar(r.status_code == 409, "cartão pessoal de outro morador não pode ser roubado", r.text)
     r = CLIENTE.post("/me/cartao", json={"rfid_uid": CARTAO_BANCADA}, headers=gus)
     checar(r.status_code == 409, "cartão compartilhado não vira cartão pessoal de ninguém", r.text)
-    checar(CLIENTE.get("/gestor/painel", headers=gus).status_code == 403,
-           "morador não abre o painel do gestor")
+    checar(CLIENTE.get("/gestor/painel", headers=gus).status_code == 404,
+           "a API pública não tem painel do gestor")
+    checar(ADMIN.get("/gestor/painel", headers=gus).status_code == 401,
+           "token de morador não vale na API administrativa")
+    checar(CLIENTE.get("/me", headers=sindico).status_code == 401,
+           "token de gestor não vale na API pública")
+    checar(CLIENTE.post("/login", json={"nome": "Sindico Portal", "senha": SENHA}).status_code == 401,
+           "conta de gestor não entra pelo app do morador")
 
     print("\n2. Handshake do ESP32")
     r = esp("POST", "/hardware/handshake", {"mac": "AA:BB", "ip": "192.168.0.50", "firmware": "2.0.0"})
@@ -248,25 +263,25 @@ def main_teste():
            "o dono cancela")
 
     print("\n9. Painel do gestor (Bloco 3)")
-    r = CLIENTE.get("/gestor/painel", headers=sindico)
+    r = ADMIN.get("/gestor/painel", headers=sindico)
     painel = r.json()
     checar(r.status_code == 200 and painel["condominio"]["limite_potencia_kw"] == 60, "painel abre", r.text)
     checar(painel["hoje"]["recargas"] == 1 and painel["hoje"]["faturamento"] > 0,
            f"hoje: {painel['hoje']['recargas']} recarga, R$ {painel['hoje']['faturamento']}")
     checar(painel["agora"]["limite_kw"] > 0 and "folga_kw" in painel["agora"], "estado de demanda agora")
-    r = CLIENTE.patch("/gestor/condominio", json={"limite_potencia_kw": 30}, headers=sindico)
+    r = ADMIN.patch("/gestor/condominio", json={"limite_potencia_kw": 30}, headers=sindico)
     checar(r.status_code == 200, "gestor muda o limite de potência", r.text)
-    checar(CLIENTE.patch("/gestor/condominio", json={"limite_potencia_kw": 30},
-                         headers=gus).status_code == 403, "morador não muda o limite")
-    checar(CLIENTE.patch("/gestor/condominio", json={"ponta_inicio": "25:99"},
+    checar(ADMIN.patch("/gestor/condominio", json={"limite_potencia_kw": 30},
+                         headers=gus).status_code == 401, "morador não muda o limite")
+    checar(ADMIN.patch("/gestor/condominio", json={"ponta_inicio": "25:99"},
                          headers=sindico).status_code == 422, "horário de ponta inválido é recusado")
     checar("valor" in painel and "premissas" in painel["valor"] and "demanda" in painel,
            "painel traz valor (receita x custo) e indicadores de demanda")
-    cen = CLIENTE.post("/gestor/simular-demanda", json={"carros": 6, "potencia_carro_kw": 7.4},
+    cen = ADMIN.post("/gestor/simular-demanda", json={"carros": 6, "potencia_carro_kw": 7.4},
                        headers=sindico)
     checar(cen.status_code == 200 and cen.json()["pico_sem_gestao_kw"] == 44.4,
            f"simulação: 6 carros = 44,4 kW sem gestão, {cen.json().get('kw_por_carro')} kW cada com gestão")
-    checar(CLIENTE.post("/gestor/simular-demanda", json={"carros": 6}, headers=gus).status_code == 403,
+    checar(ADMIN.post("/gestor/simular-demanda", json={"carros": 6}, headers=gus).status_code == 401,
            "morador não acessa a simulação do síndico")
 
     print("\n10. O MESMO cartão, outro morador, outra carteira")

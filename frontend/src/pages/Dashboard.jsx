@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { supabase, canal as novoCanal } from '../supabaseClient.js'
 import { CONDOMINIO_PADRAO } from '../config.js'
 import { get, post } from '../lib/api.js'
 import { brl, energia, potencia } from '../lib/formato.js'
 import MonitorRecarga from '../components/MonitorRecarga.jsx'
-import GestorPage from './GestorPage.jsx'
-import ComoFuncionaPage from './ComoFuncionaPage.jsx'
-import Sidebar, { NavCompacta } from '../components/Sidebar.jsx'
+import Sidebar, { NavInferior } from '../components/Sidebar.jsx'
+import FluxoEnergia from '../components/FluxoEnergia.jsx'
 import TopStats from '../components/TopStats.jsx'
 import ChargerCard from '../components/ChargerCard.jsx'
 import PagamentoModal from '../components/PagamentoModal.jsx'
@@ -14,12 +14,16 @@ import ConfirmarStopModal from '../components/ConfirmarStopModal.jsx'
 import ChatPanel, { BotaoChat } from '../components/ChatPanel.jsx'
 import CondominioSelect, { useCondominios } from '../components/CondominioSelect.jsx'
 import FilaPanel from '../components/FilaPanel.jsx'
-import VeiculosPage from './VeiculosPage.jsx'
-import CarteiraPage from './CarteiraPage.jsx'
-import HistoricoPage from './HistoricoPage.jsx'
-import NotificacoesPage from './NotificacoesPage.jsx'
-import ConfiguracoesPage from './ConfiguracoesPage.jsx'
-import SuportePage from './SuportePage.jsx'
+
+// Páginas secundárias entram sob demanda: quem abre o app no celular baixa
+// primeiro só o painel de carregadores.
+const ComoFuncionaPage = lazy(() => import('./ComoFuncionaPage.jsx'))
+const VeiculosPage = lazy(() => import('./VeiculosPage.jsx'))
+const CarteiraPage = lazy(() => import('./CarteiraPage.jsx'))
+const HistoricoPage = lazy(() => import('./HistoricoPage.jsx'))
+const NotificacoesPage = lazy(() => import('./NotificacoesPage.jsx'))
+const ConfiguracoesPage = lazy(() => import('./ConfiguracoesPage.jsx'))
+const SuportePage = lazy(() => import('./SuportePage.jsx'))
 
 const STATUS = {
   disponivel: { label: 'Disponível', cor: 'text-live', ponto: 'bg-live', borda: 'border-live/30', fundo: 'bg-live/10' },
@@ -247,6 +251,17 @@ function EsqueletoCard() {
 function Dashboard({ sessao: sessaoInicial, onLogout }) {
   const [sessao, setSessao] = useState(sessaoInicial)
   const [pagina, setPagina] = useState('inicio')
+  // Troca de página com transição nativa onde o navegador oferece; nos outros,
+  // a troca é imediata (e quem pediu menos movimento não vê animação).
+  const irPara = useCallback((destino) => {
+    const semMovimento = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    if (document.startViewTransition && !semMovimento) {
+      document.startViewTransition(() => flushSync(() => setPagina(destino)))
+    } else {
+      setPagina(destino)
+    }
+    window.scrollTo({ top: 0 })
+  }, [])
 
   const [condominio, setCondominio] = useState(null)
   const [chargers, setChargers] = useState([])
@@ -264,7 +279,17 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
   const [naoLidas, setNaoLidas] = useState(0)
   const [erroAcao, setErroAcao] = useState('')
   const debounce = useRef(null)
-  const ehGestor = sessaoInicial.usuario?.tipo_usuario === 'gestor'
+  // No celular o detalhe do ponto fica abaixo da lista: ao tocar num
+  // carregador, a tela desce até ele (no desktop ele abre na coluna lateral).
+  const detalheRef = useRef(null)
+  const idSelecionado = selectedCharger?.id
+  useEffect(() => {
+    if (!idSelecionado || window.matchMedia('(min-width: 80rem)').matches) return
+    const suave = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const id = requestAnimationFrame(() =>
+      detalheRef.current?.scrollIntoView({ behavior: suave ? 'smooth' : 'auto', block: 'start' }))
+    return () => cancelAnimationFrame(id)
+  }, [idSelecionado])
 
   // Local ativo: começa no condomínio do usuário e pode ser trocado no topo.
   // Trocar aqui recarrega carregadores, sessões e fila daquele local.
@@ -436,9 +461,8 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
     <div className="ambient flex min-h-screen bg-void font-display text-ink">
       <Sidebar
         sessao={sessao}
-        ehGestor={ehGestor}
         paginaAtiva={pagina}
-        onNavigate={setPagina}
+        onNavigate={irPara}
         onLogout={onLogout}
         onAbrirChat={() => setChatAberto(true)}
         naoLidas={naoLidas}
@@ -447,8 +471,8 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* ---------------- Barra superior ---------------- */}
         <header className="topbar sticky top-0 z-30 border-b border-line bg-void/70 backdrop-blur-xl">
-          <div className="flex items-center justify-between gap-6 px-5 py-4 lg:px-9">
-            <div className="min-w-0">
+          <div className="flex items-center justify-between gap-4 px-4 py-3 sm:px-5 sm:py-4 lg:gap-6 lg:px-9">
+            <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 {condominios.length > 0 ? (
                   <CondominioSelect
@@ -496,16 +520,11 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
               <Relogio />
             </div>
           </div>
-
-          {/* Navegação compacta abaixo de lg, onde a sidebar não aparece */}
-          <div className="px-5 pb-3 lg:hidden">
-            <NavCompacta paginaAtiva={pagina} onNavigate={setPagina} ehGestor={ehGestor} />
-          </div>
         </header>
 
         {/* ---------------- Conteúdo + coluna de detalhe ---------------- */}
         <div className="flex min-w-0 flex-1">
-          <main className="min-w-0 flex-1 px-5 py-7 lg:px-9 lg:py-9">
+          <main className="com-barra-inferior vt-conteudo min-w-0 flex-1 px-4 pt-5 sm:px-5 lg:px-9 lg:pt-9">
             <div className="mx-auto w-full max-w-[1360px]">
               {erroAcao && (
                 <div className="mb-5 flex items-center justify-between gap-3 rounded-chip border border-flux/40
@@ -514,6 +533,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                   <button onClick={() => setErroAcao('')} className="text-flux/70 hover:text-flux">✕</button>
                 </div>
               )}
+              <Suspense fallback={<div className="skeleton h-40 rounded-panel" />}>
               {pagina === 'veiculos' && (
                 <VeiculosPage veiculos={veiculos} onVeiculoAdicionado={atualizarSaldo} />
               )}
@@ -543,12 +563,17 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
 
               {pagina === 'suporte' && <SuportePage onAbrirChat={() => setChatAberto(true)} />}
 
-              {pagina === 'gestao' && <GestorPage />}
-
               {pagina === 'como-funciona' && <ComoFuncionaPage condominio={condominio} />}
+              </Suspense>
 
               {pagina === 'inicio' && (
                 <>
+                  <FluxoEnergia
+                    chargers={chargers}
+                    sessions={sessions}
+                    condominio={condominio}
+                    selecionadoId={chargerSelecionado?.id}
+                  />
                   <TopStats
                     chargers={chargers}
                     sessoesHoje={sessoesHoje}
@@ -606,7 +631,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
 
                   {/* Abaixo de xl não existe coluna lateral: o painel entra no fluxo */}
                   {chargerSelecionado && (
-                    <div className="mt-6 xl:hidden">
+                    <div ref={detalheRef} className="mt-6 scroll-mt-28 xl:hidden">
                       {painel}
                       {chargerSelecionado.status === 'em_uso' && (
                         <div className="mt-6">
@@ -639,6 +664,14 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
         </div>
       </div>
 
+      <NavInferior
+        paginaAtiva={pagina}
+        onNavigate={irPara}
+        onAbrirChat={() => setChatAberto(true)}
+        onLogout={onLogout}
+        naoLidas={naoLidas}
+      />
+
       {/* ---------------- Assistente ---------------- */}
       <BotaoChat onClick={() => setChatAberto(true)} escondido={chatAberto} />
       <ChatPanel
@@ -664,7 +697,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
           }}
           onIrParaCarteira={() => {
             setModalPagamentoAberto(false)
-            setPagina('carteira')
+            irPara('carteira')
           }}
         />
       )}

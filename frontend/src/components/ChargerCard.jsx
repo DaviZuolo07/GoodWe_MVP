@@ -25,6 +25,7 @@ function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
       className={`sweep group relative w-full overflow-hidden rounded-panel border bg-panel p-5 text-left
         transition duration-200 ease-out will-change-transform
         hover:-translate-y-1 hover:bg-raise/50 hover:shadow-lift active:scale-[0.995]
+        ${emUso && sessao ? 'carregando-borda' : ''}
         ${selecionado ? 'border-flux/70 shadow-flux' : `border-line ${st.borda}`}`}
     >
       {selecionado && <span className="bus" aria-hidden="true" />}

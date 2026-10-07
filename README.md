@@ -132,6 +132,28 @@ O terminal mostra dois endereços. O segundo (`http://192.168.x.x:5173`)
 funciona no celular, no mesmo WiFi — sem editar nada, porque o app deduz a URL
 da API do endereço que abriu a página.
 
+### Passo 4b — painel do gestor (outro aplicativo, ADR-023)
+
+O painel não faz parte do app do morador: tem pasta, endereço, API e login
+próprios. Dois terminais:
+
+```bash
+cd backend
+uvicorn main_admin:app --reload --host 127.0.0.1 --port 8001
+```
+
+```bash
+cd admin
+npm install
+npm run dev                   # http://127.0.0.1:5174
+```
+
+Antes da primeira vez: rode `db/18_painel_admin.sql` no Supabase. Para o
+segundo fator (obrigatório publicado, opcional na bancada):
+`python provisionar.py chave-mfa` e
+`python provisionar.py gestor-mfa --nome "Nome do Gestor"`.
+Conta de gestor não entra pelo app do morador. Publicar: `docs/DEPLOY.md`.
+
 ### Passo 5 — conferir a segurança
 
 ```bash

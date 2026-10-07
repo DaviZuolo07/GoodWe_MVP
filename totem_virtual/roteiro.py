@@ -134,11 +134,25 @@ class Roteiro:
     # Cenários que valem com qualquer backend
     # ===================================================================
 
+    def _por_que_nao_conectou(self) -> str:
+        """Distingue 'não respondeu' de 'respondeu e recusou' (ADR-021 D3)."""
+        e = self.t.estado()
+        if e["diagnostico"]:
+            return f"backend RESPONDEU e recusou a autenticação. {e['diagnostico']}"
+        respostas = [x for x in self.t.trocas("/handshake") if x["status"] is not None]
+        if respostas:
+            ultima = respostas[-1]
+            return (f"backend respondeu ao handshake {len(respostas)} vez(es), a última com "
+                    f"{ultima['status']} {ultima['resumo']}")
+        if any(x["status"] == 200 for x in self.t.trocas("/hora")):
+            return "o /hora respondeu, mas o handshake não voltou em 15 s (backend travado?)"
+        return "backend não respondeu em 15 s (está rodando? BACKEND_URL certo?)"
+
     def conexao(self):
-        if not self.esperar(lambda: self.t.estado()["link"] == "PRONTO", 15):
-            e = self.t.estado()
-            motivo = "chave recusada (confira DEVICE_ID e DEVICE_KEY_HEX)" if e["chave_recusada"] \
-                else "backend não respondeu em 15 s (está rodando? BACKEND_URL certo?)"
+        pronto = lambda: self.t.estado()["link"] == "PRONTO"  # noqa: E731
+        self.esperar(lambda: pronto() or bool(self.t.estado()["diagnostico"]), 15)
+        if not pronto():
+            motivo = self._por_que_nao_conectou()
             self.resultados.append(("conexao", FALHOU, motivo))
             self.saida(f"  {FALHOU:<18} {'conexao':<26} {motivo}")
             raise Abortar(motivo)
@@ -469,31 +483,42 @@ class Roteiro:
         d = (troca or {}).get("dados") or {}
         if d.get("acao") != "ligar":
             return FALHOU, f"esperava ligar na vaga 4; veio {troca and troca['resumo']}"
-        if not self.esperar(lambda: self.t.estado()["solar"]["fonte"] == "bateria"
-                            and self.vaga(4)["potencia_w"] > 5, 5):
-            return FALHOU, "sem luz, a vaga 4 não passou a ser alimentada pela bateria"
+        solar = lambda: self.t.estado()["solar"]  # noqa: E731
+        if not self.esperar(lambda: solar()["fonte"] == "solar" and self.vaga(4)["potencia_w"] > 5, 5):
+            return FALHOU, "a vaga 4 não começou pela bateria solar"
         marca = self.t.marca()
-        if not self.esperar(lambda: self.t.estado()["solar"]["fonte"] == "nenhuma", 90):
-            return FALHOU, "a bateria baixa não foi cortada"
 
-        def lote_com_bateria_baixa():
-            for x in self.telemetrias(marca):
-                if x["status"] == 200 and x.get("fontes"):
-                    return True
-            return False
-        if not self.esperar(lote_com_bateria_baixa, self.cfg.envio_ms / 1000 * 2 + 3):
-            return FALHOU, "o backend não recebeu as fontes depois do corte"
-        soc = self.t.estado()["solar"]["bateria_soc"]
-        self.t.luz(100)
-        time.sleep(1.5)
-        if self.vaga(4)["rele"]:
-            if not self.esperar(lambda: self.t.estado()["solar"]["fonte"] == "painel"
-                                and self.vaga(4)["potencia_w"] > 5, 8):
-                return FALHOU, "a luz voltou e a vaga 4 não retomou pelo painel"
-            fim = "com a luz de volta, retomou pelo painel"
+        # Três saídas legítimas (ADR-018 D6 + ADR-022 D1): o backend pausa a vaga,
+        # o backend manda a vaga para a rede, ou a proteção local corta a bateria.
+        def saiu_da_bateria():
+            v = self.vaga(4)
+            return (not v["rele"] and v["estado"] == "pausada") or solar()["fonte"] == "rede"
+        if not self.esperar(saiu_da_bateria, 90):
+            return FALHOU, "a bateria baixa seguiu alimentando a vaga 4"
+        v, s = self.vaga(4), solar()
+        if not v["rele"]:
+            como = "backend pausou a vaga (10024 desligado)"
+        elif s["fonte_backend"] == "rede":
+            como = "backend mandou a vaga para a rede (10024 ligado)"
         else:
-            fim = "o backend liberou a vaga enquanto estava sem fonte"
-        return PASSOU, f"bateria cortada a {soc:.0f}% (simulado), fontes reportadas; {fim}"
+            como = "proteção local cortou a bateria e a vaga seguiu pela rede"
+        if v["rele"] and not self.esperar(lambda: self.vaga(4)["potencia_w"] > 5, 3):
+            return FALHOU, "a vaga 4 foi para a rede e parou de carregar"
+
+        def lote_com_bateria():
+            return any(x["status"] == 200 and x.get("fontes") for x in self.telemetrias(marca))
+        if not self.esperar(lote_com_bateria, self.cfg.envio_ms / 1000 * 2 + 3):
+            return FALHOU, "o backend não recebeu a bateria depois da troca"
+        soc = s["bateria_soc"]
+
+        # Bateria trocada por uma carregada (o painel de 1 W levaria horas).
+        self.t.luz(100)
+        self.t.bateria(60)
+        volta = K.FONTE_MIN_MS / 1000 + self.cfg.envio_ms / 1000 * 2 + 5
+        if not self.esperar(lambda: self.vaga(4)["rele"] and solar()["fonte"] == "solar"
+                            and self.vaga(4)["potencia_w"] > 5, volta):
+            return FALHOU, f"com a bateria boa, a vaga 4 não voltou à solar em {volta:.0f} s"
+        return PASSOU, f"bateria a {soc:.0f}% (simulado): {como}; com a bateria boa, voltou à solar"
 
     # ===================================================================
     # A sequência

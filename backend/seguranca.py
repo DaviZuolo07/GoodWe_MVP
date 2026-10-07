@@ -28,11 +28,14 @@ o Realtime verificam a assinatura, leem `sub` como auth.uid() e aplicam as
 políticas de RLS em nome do morador. A chave privada NUNCA sai do backend.
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import struct
 import threading
 import time
 from collections import defaultdict, deque
@@ -42,7 +45,7 @@ import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from dotenv import load_dotenv
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from jwt.algorithms import ECAlgorithm
 
 # O main.py importa módulos que importam este ANTES de chamar load_dotenv().
@@ -177,6 +180,182 @@ def usuario_atual(authorization: str = Header(None)) -> str:
                             headers={"WWW-Authenticate": "Bearer"})
     except jwt.InvalidTokenError:
         raise erro
+
+
+# ===========================================================================
+# 2b. TOKEN ADMINISTRATIVO (painel do gestor) - ADR-023
+# ===========================================================================
+# O painel do gestor é OUTRO aplicativo, com OUTRA API e OUTRO token. A
+# audiência é o que separa os dois mundos:
+#
+#   token do morador   aud = "authenticated"     aceito só na API pública
+#   token do gestor    aud = "chargeops-admin"   aceito só na API administrativa
+#
+# `jwt.decode(..., audience=...)` recusa o token do lado errado. Um morador
+# que copie o próprio token para a API administrativa recebe 401, e o token
+# do gestor não abre nada na API pública nem no Supabase (não leva `role`).
+# Opcionalmente a assinatura usa uma chave SEPARADA (ADMIN_JWT_PRIVATE_JWK):
+# aí nem vazando a chave dos moradores se forja um token de gestor.
+
+AUDIENCIA_ADMIN = "chargeops-admin"
+TTL_ADMIN_MIN = int(os.getenv("ADMIN_JWT_TTL_MIN", "30"))
+
+
+def _jwk_privada(bruto: str, nome: str):
+    jwk = json.loads(bruto)
+    if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256" or "d" not in jwk:
+        raise RuntimeError(f"{nome} precisa ser uma chave PRIVADA EC P-256.")
+    privada = ECAlgorithm.from_jwk(json.dumps(jwk))
+    return jwk["kid"], privada, privada.public_key()
+
+
+@lru_cache(maxsize=1)
+def _chaves_admin():
+    bruto = os.getenv("ADMIN_JWT_PRIVATE_JWK")
+    if bruto:
+        return _jwk_privada(bruto, "ADMIN_JWT_PRIVATE_JWK")
+    return _chaves()
+
+
+def emitir_token_admin(usuario_id: str, mfa: bool) -> dict:
+    kid, privada, _ = _chaves_admin()
+    agora = int(time.time())
+    expira = agora + TTL_ADMIN_MIN * 60
+    token = jwt.encode(
+        {
+            "sub": str(usuario_id),
+            "aud": AUDIENCIA_ADMIN,
+            "papel": "gestor",
+            # Como a pessoa provou quem é (RFC 8176): senha, e código do app.
+            "amr": ["pwd", "otp"] if mfa else ["pwd"],
+            "iat": agora,
+            "exp": expira,
+        },
+        privada,
+        algorithm=ALGORITMO,
+        headers={"kid": kid},
+    )
+    return {"token": token, "expira_em": expira}
+
+
+def validar_token_admin(token: str) -> dict:
+    """Devolve as claims do token administrativo, ou levanta jwt.InvalidTokenError."""
+    _, _, publica = _chaves_admin()
+    dados = jwt.decode(
+        token,
+        publica,
+        algorithms=[ALGORITMO],
+        audience=AUDIENCIA_ADMIN,
+        options={"require": ["sub", "exp", "iat", "aud"]},
+    )
+    if dados.get("papel") != "gestor":
+        raise jwt.InvalidTokenError("papel")
+    return dados
+
+
+def admin_atual(authorization: str = Header(None)) -> dict:
+    """Dependência da API administrativa: só aceita o token administrativo."""
+    erro = HTTPException(status_code=401, detail="Sessão inválida. Entre novamente.",
+                         headers={"WWW-Authenticate": "Bearer"})
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise erro
+    try:
+        return validar_token_admin(authorization[7:].strip())
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Sessão expirada. Entre novamente.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    except jwt.InvalidTokenError:
+        raise erro
+
+
+# --- Segundo fator: TOTP (RFC 6238), o código de 6 dígitos do app autenticador
+# Só biblioteca padrão: HMAC-SHA1, passo de 30 s - o que Google Authenticator,
+# Microsoft Authenticator, Authy e 1Password esperam.
+
+TOTP_PASSO_S = 30
+TOTP_DIGITOS = 6
+
+
+def gerar_segredo_totp() -> str:
+    """160 bits em base32, sem '=' (formato que os apps aceitam colar)."""
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def _totp_no_passo(segredo_b32: str, passo: int) -> str:
+    limpo = segredo_b32.strip().replace(" ", "").upper()
+    chave = base64.b32decode(limpo + "=" * (-len(limpo) % 8))
+    mac = hmac.new(chave, struct.pack(">Q", passo), hashlib.sha1).digest()
+    desloc = mac[-1] & 0x0F
+    numero = struct.unpack(">I", mac[desloc:desloc + 4])[0] & 0x7FFFFFFF
+    return str(numero % 10 ** TOTP_DIGITOS).zfill(TOTP_DIGITOS)
+
+
+def codigo_totp(segredo_b32: str, quando: float | None = None) -> str:
+    """O código que o app mostra agora. Usado pelos testes e pelo provisionar."""
+    return _totp_no_passo(segredo_b32, int((quando if quando is not None else time.time())
+                                           // TOTP_PASSO_S))
+
+
+def conferir_totp(segredo_b32: str, codigo: str, ultimo_passo: int | None = None,
+                  quando: float | None = None) -> int | None:
+    """
+    Devolve o PASSO que casou (para gravar e impedir reuso), ou None.
+
+    Aceita o passo atual e um vizinho de cada lado (relógio do celular até
+    30 s fora). `ultimo_passo` é o último código já usado: o mesmo código não
+    vale duas vezes, então quem olhou a tela por cima do ombro não entra.
+    """
+    codigo = re.sub(r"\s", "", codigo or "")
+    if not (codigo.isdigit() and len(codigo) == TOTP_DIGITOS):
+        return None
+    atual = int((quando if quando is not None else time.time()) // TOTP_PASSO_S)
+    achado = None
+    for passo in (atual - 1, atual, atual + 1):
+        try:
+            esperado = _totp_no_passo(segredo_b32, passo)
+        except (ValueError, TypeError):
+            return None
+        # Sem `break`: compara os três sempre, em tempo constante.
+        if hmac.compare_digest(esperado, codigo) and (ultimo_passo is None or passo > ultimo_passo):
+            achado = passo if achado is None else achado
+    return achado
+
+
+def uri_totp(segredo_b32: str, conta: str, emissor: str = "GoodWe ChargeOps ADM") -> str:
+    """O endereço otpauth:// que vira QR code no app autenticador."""
+    from urllib.parse import quote
+    return (f"otpauth://totp/{quote(emissor)}:{quote(conta)}?secret={segredo_b32}"
+            f"&issuer={quote(emissor)}&algorithm=SHA1&digits={TOTP_DIGITOS}&period={TOTP_PASSO_S}")
+
+
+# O segredo do TOTP precisa ser legível pelo servidor (não dá para guardar só
+# o hash, como a senha). Por isso vai CIFRADO para o banco, com uma chave que
+# mora só no ambiente: vazou só o banco, ninguém gera código.
+
+@lru_cache(maxsize=1)
+def _cofre_mfa():
+    from cryptography.fernet import Fernet
+    bruto = (os.getenv("ADMIN_MFA_KEY") or "").strip()
+    if len(bruto) < 32:
+        raise RuntimeError("ADMIN_MFA_KEY não definida (mínimo 32 caracteres). Gere com: "
+                           "python provisionar.py chave-mfa")
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(bruto.encode("utf-8")).digest()))
+
+
+def mfa_configurado() -> bool:
+    try:
+        _cofre_mfa()
+        return True
+    except RuntimeError:
+        return False
+
+
+def cifrar_segredo_mfa(segredo_b32: str) -> str:
+    return _cofre_mfa().encrypt(segredo_b32.encode("ascii")).decode("ascii")
+
+
+def decifrar_segredo_mfa(cifrado: str) -> str:
+    return _cofre_mfa().decrypt(cifrado.encode("ascii")).decode("ascii")
 
 
 # ===========================================================================
@@ -331,9 +510,44 @@ limitador_por_ip = LimitadorTentativas(maximo=20, janela_s=300)
 # de contas e cada uma ganha o crédito inicial.
 limitador_cadastro = LimitadorTentativas(maximo=5, janela_s=600)
 
+# Painel do gestor: mais apertado que o do morador. 5 erros por nome em 15 min
+# e 10 por IP - quem administra não erra a senha vinte vezes.
+limitador_admin_nome = LimitadorTentativas(maximo=5, janela_s=900)
+limitador_admin_ip = LimitadorTentativas(maximo=10, janela_s=900)
+
 # Chatbot: 20 mensagens por minuto por morador. Cada mensagem pode virar
 # chamada paga ao modelo na nuvem - sem teto, um laço esgota a cota da demo.
 limitador_chat = LimitadorTentativas(maximo=20, janela_s=60)
+
+
+# ===========================================================================
+# 4b. IP DE QUEM CHAMA (atrás de proxy)
+# ===========================================================================
+# Publicado, o backend fica atrás do proxy da hospedagem: `request.client.host`
+# passa a ser o IP do PROXY, igual para todo mundo. O limite por IP viraria um
+# limite global - 20 senhas erradas de qualquer pessoa trancariam o login de
+# todos. O IP real vem em X-Forwarded-For, mas esse cabeçalho é texto livre:
+# só vale a parte que os NOSSOS proxies escreveram. Cada proxy acrescenta o IP
+# de quem falou com ele no FIM da lista; com N proxies confiáveis, o cliente
+# é o N-ésimo a partir do fim. O que estiver antes foi o cliente que mandou e
+# pode ser mentira.
+#
+# PROXIES_CONFIAVEIS=0 (padrão, rede local): ignora o cabeçalho.
+# PROXIES_CONFIAVEIS=1: Render, Railway, Fly, um Nginx/Caddy na frente.
+
+PROXIES_CONFIAVEIS = max(0, int(os.getenv("PROXIES_CONFIAVEIS", "0") or 0))
+
+
+def ip_do_cliente(request: Request, proxies: int | None = None) -> str:
+    direto = request.client.host if request.client else "desconhecido"
+    n = PROXIES_CONFIAVEIS if proxies is None else proxies
+    if n <= 0:
+        return direto
+    partes = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",")
+              if p.strip()]
+    if len(partes) < n:
+        return direto
+    return partes[-n][:64]
 
 
 # ===========================================================================
@@ -362,3 +576,4 @@ def verificar_configuracao(chave_supabase: str) -> None:
                 "(Settings -> API Keys). Com a anon, o RLS devolve tudo vazio."
             )
     _chaves()  # falha agora, e não no primeiro login, se a JWK estiver errada
+    _chaves_admin()

@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import CondominioSelect, { useCondominios } from '../components/CondominioSelect.jsx'
 import { CONDOMINIO_PADRAO } from '../config.js'
-import { post } from '../lib/api.js'
+import { get, post } from '../lib/api.js'
+import HeroFluxo from '../components/HeroFluxo.jsx'
 
 /** Presets do cadastro: carro elétrico ou o celular da bancada do ESP32. */
 const PRESETS = {
@@ -30,6 +31,17 @@ function Login({ onLoginSuccess, aviso }) {
   const [capacidadeBateria, setCapacidadeBateria] = useState(40)
   const [potenciaCarro, setPotenciaCarro] = useState(7.4)
   const [veiculoTipo, setVeiculoTipo] = useState('carro')
+  // Código de convite: o servidor diz se o cadastro exige (evento publicado).
+  const [exigeCodigo, setExigeCodigo] = useState(false)
+  const [codigoConvite, setCodigoConvite] = useState('')
+
+  useEffect(() => {
+    let vivo = true
+    get('/config-publica')
+      .then((c) => { if (vivo) setExigeCodigo(Boolean(c?.cadastro_exige_codigo)) })
+      .catch(() => { /* servidor antigo ou fora do ar: o cadastro segue sem o campo */ })
+    return () => { vivo = false }
+  }, [])
 
   async function handleLogin(e) {
     e.preventDefault()
@@ -66,6 +78,7 @@ function Login({ onLoginSuccess, aviso }) {
         veiculo_tipo: veiculoTipo,
         capacidade_bateria_kwh: Number(capacidadeBateria),
         potencia_carro_kw: Number(potenciaCarro),
+        codigo_convite: exigeCodigo ? codigoConvite.trim() : undefined,
       }))
     } catch (e) {
       setErro(e.message)
@@ -81,16 +94,15 @@ function Login({ onLoginSuccess, aviso }) {
   return (
     <div className="carbono grid min-h-screen bg-void font-display text-ink lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
       {/* Painel de marca — só visual, não participa do formulário */}
-      <aside className="chevrons relative hidden overflow-hidden border-r border-line lg:flex lg:flex-col lg:justify-between lg:p-12"
+      <aside className="relative hidden overflow-hidden border-r border-line lg:flex lg:flex-col lg:justify-between lg:p-12"
              aria-hidden="true">
-        {/* Véu escuro da esquerda para a direita: o texto fica sobre o carbono
-            liso e os chevrons aparecem só na metade que aponta para o formulário */}
-        <div className="pointer-events-none absolute inset-0 bg-linear-to-r from-void via-void/90 via-45% to-transparent" />
-        <div className="relative">
+        <div className="piso pointer-events-none absolute inset-0" />
+        <div className="entra relative" style={{ '--i': 0 }}>
           <p className="text-[2.25rem] marca font-bold leading-none tracking-[0.08em] text-flux">GOODWE</p>
           <p className="mt-3 text-sm tracking-wide text-mute">ChargeOps AI Assistant</p>
         </div>
-        <div className="relative max-w-sm">
+        <HeroFluxo className="relative mx-auto my-6 w-full max-w-[640px]" />
+        <div className="entra relative max-w-md" style={{ '--i': 6 }}>
           <p className="text-3xl font-semibold leading-tight tracking-tight text-ink">
             Recarga de veículos elétricos no condomínio, sem desarmar o quadro.
           </p>
@@ -98,13 +110,14 @@ function Login({ onLoginSuccess, aviso }) {
             Gestão de demanda em tempo real, cobrança pelo kWh medido e um assistente que explica cada recarga.
           </p>
         </div>
-        <p className="eyebrow relative">Smart Energy Innovator</p>
       </aside>
 
-      <div className="flex items-center justify-center p-4 sm:p-8">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-panel/80 p-8 shadow-lift backdrop-blur-xl">
-        <p className="mb-6 text-[1.5rem] marca font-bold leading-none tracking-[0.08em] text-flux lg:hidden">GOODWE</p>
-        <h1 className="text-2xl font-bold text-flux mb-1">GoodWe ChargeOps AI</h1>
+      <div className="flex flex-col items-center justify-center p-4 sm:p-8">
+      {/* No celular o diagrama vem em cima do formulário, pequeno */}
+      <HeroFluxo className="mb-2 w-full max-w-[340px] lg:hidden" />
+      <div className="w-full max-w-md rounded-2xl border border-line bg-panel/80 p-6 shadow-lift backdrop-blur-xl sm:p-8">
+        <p className="mb-5 text-[1.5rem] marca font-bold leading-none tracking-[0.08em] text-flux lg:hidden">GOODWE</p>
+        <h1 className="mb-1 text-2xl font-bold text-ink">ChargeOps</h1>
         <p className="text-mute mb-6">
           {modo === 'login' ? 'Entrar na sua conta' : 'Criar seu cadastro'}
         </p>
@@ -158,7 +171,7 @@ function Login({ onLoginSuccess, aviso }) {
               className="w-full text-sm text-mute hover:text-ink pt-2"
               onClick={() => { setErro(''); setModo('cadastro') }}
             >
-              Sou novo aqui — Cadastrar-se
+              Criar minha conta
             </button>
           </form>
         ) : (
@@ -180,6 +193,15 @@ function Login({ onLoginSuccess, aviso }) {
                 required
               />
             </div>
+
+            {exigeCodigo && (
+              <div>
+                <label className={labelClass}>Código de convite</label>
+                <input className={inputClass} value={codigoConvite} onChange={(e) => setCodigoConvite(e.target.value)}
+                       placeholder="Informado no estande" autoComplete="off" autoCapitalize="characters"
+                       maxLength={64} required />
+              </div>
+            )}
 
             <div>
               <label className={labelClass}>Condomínio</label>
@@ -255,9 +277,9 @@ function Login({ onLoginSuccess, aviso }) {
             <button
               type="submit"
               disabled={carregando}
-              className="w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2 font-medium transition mt-2"
+              className="brilho-flux w-full bg-flux hover:bg-flare disabled:opacity-50 rounded-lg py-2.5 font-medium text-white transition mt-2"
             >
-              {carregando ? 'Cadastrando...' : 'Cadastrar-se e entrar'}
+              {carregando ? 'Criando conta...' : 'Criar conta e entrar'}
             </button>
             <button
               type="button"

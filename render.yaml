@@ -1,0 +1,48 @@
+# Blueprint do Render (render.com): cria os DOIS serviços do backend de uma vez.
+# Opcional - qualquer hospedagem que rode Docker serve (Railway, Fly.io, VPS).
+# Os valores marcados "sync: false" são segredos: o Render pede no painel e
+# eles nunca ficam neste arquivo. Passo a passo em docs/DEPLOY.md.
+services:
+  - type: web
+    name: chargeops-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: starter            # SEMPRE LIGADO. O plano grátis dorme e congela as recargas.
+    numInstances: 1          # um processo só (simulador e limitadores em memória)
+    healthCheckPath: /
+    envVars:
+      - { key: AMBIENTE, value: producao }
+      - { key: SERVICO, value: publico }
+      - { key: PROXIES_CONFIAVEIS, value: "1" }
+      - { key: MODO_DEMO, value: "0" }
+      - { key: FUSO_HORARIO, value: America/Sao_Paulo }
+      - { key: CHAT_MODO, value: regras }
+      - { key: SUPABASE_URL, sync: false }
+      - { key: SUPABASE_KEY, sync: false }
+      - { key: JWT_PRIVATE_JWK, sync: false }
+      - { key: DEVICE_MASTER_KEY, sync: false }
+      - { key: FRONTEND_ORIGINS, sync: false }      # https://<app-do-morador>
+      - { key: CODIGO_CADASTRO, sync: false }
+      - { key: OLLAMA_API_KEY, sync: false }
+
+  - type: web
+    name: chargeops-admin-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: starter
+    numInstances: 1
+    healthCheckPath: /
+    envVars:
+      - { key: AMBIENTE, value: producao }
+      - { key: SERVICO, value: admin }
+      - { key: PROXIES_CONFIAVEIS, value: "1" }
+      - { key: ADMIN_MFA, value: obrigatorio }
+      - { key: ADMIN_JWT_TTL_MIN, value: "30" }
+      - { key: FUSO_HORARIO, value: America/Sao_Paulo }
+      - { key: SUPABASE_URL, sync: false }
+      - { key: SUPABASE_KEY, sync: false }
+      - { key: JWT_PRIVATE_JWK, sync: false }
+      - { key: ADMIN_MFA_KEY, sync: false }
+      - { key: ADMIN_ORIGINS, sync: false }         # https://<painel-do-gestor>

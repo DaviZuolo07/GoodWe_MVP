@@ -15,6 +15,7 @@ Segurança (ADR-020 D7):
 
 import json
 import secrets
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .config import PASTA
@@ -126,8 +127,12 @@ def criar_servidor(totem: TotemVirtual, porta: int, tags: dict | None = None) ->
     return servidor
 
 
+def _avisar_no_terminal(texto: str) -> None:
+    print(f"\n[totem] {texto}\n", file=sys.stderr, flush=True)
+
+
 def servir(cfg, http=None, base: str | None = None, porta: int = 8765) -> int:
-    totem = TotemVirtual(cfg, http=http, base=base)
+    totem = TotemVirtual(cfg, http=http, base=base, avisar=_avisar_no_terminal)
     totem.iniciar()
     servidor = criar_servidor(totem, porta, cfg.tags)
     print(f"\nTotem virtual no ar:  http://{ENDERECO}:{porta}")

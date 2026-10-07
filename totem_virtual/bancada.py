@@ -2,9 +2,10 @@
 bancada.py - O "hardware" do totem, de mentira.
 ===============================================
 
-Hardware alvo (contrato): 1 ESP32, 1 LCD 20x4, 1 leitor RFID, 4 botões e
-4 vagas com relé + INA219. A vaga 4 é solar: painel OU bateria 18650, com
-uma chave de fonte que nunca liga as duas ao mesmo tempo.
+Hardware alvo (ADR-022): 1 ESP32, 1 LCD 16x2, 1 leitor RFID, 4 botões,
+4 vagas com relé + INA219 e 1 INA219 em série com a bateria solar. A vaga 4
+é solar: um relé reversor escolhe a bateria (painel -> TP4056 -> 18650 ->
+MT3608) OU a rede (barramento de 5 V). O contato nunca liga as duas.
 
 Este arquivo tem duas faces:
 
@@ -27,7 +28,7 @@ from .lcd import Lcd
 
 PORTAS = (1, 2, 3, 4)
 PORTA_SOLAR = 4
-FONTES = ("painel", "bateria", "nenhuma")
+FONTES = ("rede", "solar")          # posições do relé reversor da vaga 4
 
 
 class Relogio:
@@ -54,8 +55,9 @@ class Bancada:
         self._ligou_em = self.relogio.agora_s()
         self._reles = {p: False for p in PORTAS}
         self._medidas = {p: (0.0, 0.0) for p in PORTAS}              # (V, A) reais
-        self._fontes = {"painel": (0.0, 0.0), "bateria": (0.0, 0.0)}
-        self._fonte = "nenhuma"
+        self._bateria_vi = (0.0, 0.0)                               # (V, A com sinal)
+        self._painel_vi = (0.0, 0.0)                                # só para a página
+        self._fonte = "rede"
         self._tags, self._botoes = deque(maxlen=4), deque(maxlen=8)
         self.celulares: dict[int, fisica.CelularVirtual | None] = {p: None for p in PORTAS}
         self.painel = fisica.PainelVirtual(luz=1.0)
@@ -80,10 +82,10 @@ class Bancada:
     def ler_ina(self, porta: int) -> dict:                     # ina[p].getBusVoltage_V() / getCurrent_mA()
         return fisica.ina219(*self._medidas[porta])
 
-    def ler_fonte(self, nome: str) -> dict:                    # INA219 do painel / da bateria
-        return fisica.ina219(*self._fontes[nome])
+    def ler_bateria(self) -> dict:                             # inaSolar (Wire1): em série com a 18650
+        return fisica.ina219(*self._bateria_vi, assinado=True)  # + descarregando, - carregando
 
-    def selecionar_fonte(self, nome: str) -> None:             # 2 relés intertravados: nunca os dois
+    def selecionar_fonte(self, nome: str) -> None:             # digitalWrite(PINO_REVERSOR, nome == solar)
         if nome not in FONTES:
             raise ValueError(nome)
         self._fonte = nome
@@ -125,7 +127,7 @@ class Bancada:
         """Faltou energia na placa: relés caem, RAM some. Celular e bateria continuam onde estavam."""
         self._ligou_em = self.relogio.agora_s()
         self._reles = {p: False for p in PORTAS}
-        self._fonte = "nenhuma"
+        self._fonte = "rede"                        # bobina do reversor desligada
         self._tags.clear()
         self._botoes.clear()
         self.lcd.apagar()
@@ -157,37 +159,34 @@ class Bancada:
             tensao = fisica.V_USB - fisica.R_CABO * (pedido / fisica.V_USB)
             self._entregar(porta, pedido, tensao, dt_s)
 
-        # Vaga 4: painel OU bateria.
+        # Vaga 4: bateria solar (MT3608) OU rede, pelo reversor.
         pedido = self._pedido(PORTA_SOLAR)
-        disponivel = self.painel.disponivel_w()
-        sai_painel = sai_bateria = entra_bateria = 0.0
-        entregue, barra = 0.0, 0.0
-
-        if self._fonte == "painel":
-            if pedido <= disponivel:
-                entregue = sai_painel = pedido
-                barra = fisica.V_USB - fisica.R_CABO * (pedido / fisica.V_USB) if disponivel > 0 else 0.0
-            else:                                   # painel fraco: o barramento afunda
-                sai_painel = disponivel
-                entregue = disponivel * 0.9
-                barra = fisica.V_USB * disponivel / pedido
-        elif self._fonte == "bateria" and self.bateria.soc > 0:
-            entregue = min(pedido, fisica.P_SAIDA_BATERIA_MAX_W)
-            sai_bateria = entregue / fisica.EFICIENCIA_CONVERSOR
-            barra = fisica.V_USB - fisica.R_CABO * (entregue / fisica.V_USB)
-            self.bateria.descarregar(sai_bateria, dt_s)
+        bateria = self.bateria
+        # TP4056: com sol, o painel carrega a 18650 o tempo todo (com ou sem carga).
+        carga_painel = (min(self.painel.disponivel_w(), fisica.P_CARGA_BATERIA_MAX_W)
+                        if bateria.soc < 100.0 else 0.0)
+        tem_fonte = self._fonte == "rede" or bateria.soc > 0    # MT3608 sem bateria = 0 V
+        entregue = 0.0
+        if tem_fonte:
+            entregue = pedido if self._fonte == "rede" else min(pedido, fisica.P_SAIDA_BATERIA_MAX_W)
+        sai_bateria = entregue / fisica.EFICIENCIA_CONVERSOR if self._fonte == "solar" else 0.0
+        liquido = sai_bateria - carga_painel                    # > 0: a bateria descarrega
+        if liquido > 0:
+            bateria.descarregar(liquido, dt_s)
         else:
-            # Ninguém alimenta a vaga: o painel aproveita para carregar a bateria.
-            if self.bateria.soc < 100.0:
-                entra_bateria = sai_painel = min(disponivel, fisica.P_CARGA_BATERIA_MAX_W)
-                self.bateria.carregar(entra_bateria, dt_s)
+            bateria.carregar(-liquido, dt_s)
 
-        if self._reles[PORTA_SOLAR]:
+        if self._reles[PORTA_SOLAR] and tem_fonte:
+            barra = fisica.V_USB - fisica.R_CABO * (entregue / fisica.V_USB)
             self._entregar(PORTA_SOLAR, entregue, barra, dt_s)
         else:
             self._medidas[PORTA_SOLAR] = (0.0, 0.0)
 
-        v_painel = self.painel.tensao_v(pedido if self._fonte == "painel" else sai_painel)
-        self._fontes["painel"] = (v_painel, sai_painel / v_painel if v_painel > 0.1 else 0.0)
-        v_bateria = self.bateria.tensao_v(saida_w=sai_bateria, entrada_w=entra_bateria)
-        self._fontes["bateria"] = (v_bateria, sai_bateria / v_bateria if v_bateria > 0.1 else 0.0)
+        v_bateria = bateria.tensao_v(saida_w=sai_bateria, entrada_w=carga_painel)
+        self._bateria_vi = (v_bateria, liquido / v_bateria if v_bateria > 0.1 else 0.0)
+        v_painel = self.painel.tensao_v(carga_painel)
+        self._painel_vi = (v_painel, carga_painel / v_painel if v_painel > 0.1 else 0.0)
+
+    def painel_visto(self) -> dict:
+        """MUNDO, só para a página: o painel não tem sensor no totem (ADR-022 D2)."""
+        return fisica.ina219(*self._painel_vi)

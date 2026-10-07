@@ -14,12 +14,16 @@ um dono cada:
   recarga.py        ciclo de vida da recarga, do preparar ao recibo
   dispositivos.py   fila de comandos do ESP32
   hardware_api.py   protocolo HTTP do ESP32 (Bloco 5)
+  endurecimento.py  cabeçalhos de segurança e /docs desligado em produção
   simulador.py      laço de 10 s: demanda, pontos simulados, expirações
   chatbot/          assistente em camadas: entrada, contexto, saída, auditoria (Bloco 4)
 
+Esta é a API PÚBLICA: app do morador e totem. O painel do gestor é OUTRA
+aplicação (main_admin.py, ADR-023) - aqui não existe nenhuma rota /gestor.
+
 Rodar (de dentro de backend/):
     uvicorn main:app --reload --host 0.0.0.0
-Documentação: http://localhost:8000/docs
+Documentação (só fora de produção): http://localhost:8000/docs
 """
 
 import asyncio
@@ -30,14 +34,15 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+import endurecimento
 import simulador
 from chatbot import configurar_chatbot, responder_chatbot
-from config import CONDOMINIO_PADRAO, FRONTEND_ORIGIN_REGEX, FRONTEND_ORIGINS, MODO_DEMO, supabase
+from config import (CONDOMINIO_PADRAO, FRONTEND_ORIGIN_REGEX, FRONTEND_ORIGINS, MODO_DEMO, PRODUCAO,
+                    supabase)
 from fisica import calcular_estimativa, custo_da_sessao
 from hardware_api import router as hardware_router
 from identidade import usuario_logado
 from rotas_conta import locais_do_usuario, router as conta_router
-from rotas_gestor import router as gestor_router
 from rotas_recarga import router as recarga_router
 from seguranca import limitador_chat
 
@@ -52,7 +57,10 @@ async def ciclo_de_vida(_app: FastAPI):
     tarefa.cancel()
 
 
-app = FastAPI(title="GoodWe ChargeOps AI Assistant - API", lifespan=ciclo_de_vida)
+app = FastAPI(title="GoodWe ChargeOps AI Assistant - API", lifespan=ciclo_de_vida,
+              **endurecimento.opcoes_fastapi())
+
+endurecimento.aplicar(app)
 
 # CORS restrito à origem do frontend (Bloco 2). Sem cookies: a identidade vai
 # no header Authorization, então allow_credentials fica desligado.
@@ -63,11 +71,11 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
+    max_age=600,
 )
 
 app.include_router(conta_router)
 app.include_router(recarga_router)
-app.include_router(gestor_router)
 app.include_router(hardware_router)
 
 if MODO_DEMO:
@@ -103,4 +111,7 @@ def chatbot(payload: ChatRequest, usuario: dict = Depends(usuario_logado)):
 
 @app.get("/", tags=["saúde"])
 def raiz():
+    # Em produção, só "estou de pé": modo de operação não é assunto de anônimo.
+    if PRODUCAO:
+        return {"status": "ok"}
     return {"status": "ok", "service": "GoodWe ChargeOps AI Assistant API", "modo_demo": MODO_DEMO}

@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient          # noqa: E402
 import cenarios_demanda                            # noqa: E402
 import demanda                                     # noqa: E402
 import main                                        # noqa: E402
+import main_admin                               # noqa: E402
 import recarga                                     # noqa: E402
 import simulador                                   # noqa: E402
 from config import FUSO, agora                     # noqa: E402
@@ -28,6 +29,7 @@ from fisica import detalhar_custo, economia_vs_so_rede, minimo_kw, potencia_disj
 from seguranca import gerar_hash_senha             # noqa: E402
 
 CLIENTE = TestClient(main.app)
+ADMIN = TestClient(main_admin.app)
 SENHA = "SenhaDemo#2026"
 COND = "c0000000-0000-0000-0000-000000000016"
 OUTRO_COND = "c0000000-0000-0000-0000-000000000099"
@@ -225,6 +227,13 @@ def entrar(nome):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
+def entrar_gestor(nome):
+    """O gestor entra pela API ADMINISTRATIVA (ADR-023): outro app, outro token."""
+    r = ADMIN.post("/admin/login", json={"nome": nome, "senha": SENHA})
+    assert r.status_code == 200 and r.json().get("success"), r.text
+    return {"Authorization": f"Bearer {r.json()['token']}"}
+
+
 def sessao_ativa(**extra):
     s = fake.nova_linha("sessoes_recarga", {
         "id": "s1", "carregador_id": "k1", "veiculo_id": "v1", "usuario_id": "u-mor", "status": "carregando",
@@ -286,13 +295,13 @@ def test_alocador_grava_a_parcela_solar_da_sessao():
 
 def test_api_modbus_do_gestor():
     semear(fv=0)
-    g = entrar("Sindica Solar")
-    r = CLIENTE.get("/gestor/carregadores/k1/modbus", headers=g)
+    g = entrar_gestor("Sindica Solar")
+    r = ADMIN.get("/gestor/carregadores/k1/modbus", headers=g)
     assert r.status_code == 200 and [x["registrador"] for x in r.json()["registradores"]] == \
         [10024, 10025, 10026, 10029, 10032]
     assert "simulados" in r.json()["aviso"]
 
-    patch = lambda cid, corpo: CLIENTE.patch(f"/gestor/carregadores/{cid}/modbus", json=corpo, headers=g)  # noqa: E731
+    patch = lambda cid, corpo: ADMIN.patch(f"/gestor/carregadores/{cid}/modbus", json=corpo, headers=g)  # noqa: E731
     assert patch("k1", {"potencia_maxima_kw": 9}).status_code == 422, "7 kW: 10029 vai até 7"
     assert patch("k1", {"potencia_maxima_kw": 1.2}).status_code == 422
     assert patch("k2", {"potencia_maxima_kw": 3}).status_code == 422, "22 kW: mínimo 4,2"
@@ -303,24 +312,27 @@ def test_api_modbus_do_gestor():
     assert patch("kx", {"controle_dinamico": False}).status_code == 404, "carregador de outro condomínio"
     assert patch("k1", {"controle_dinamico": None}).status_code == 422
 
-    assert CLIENTE.patch("/gestor/condominio", json={"fv_potencia_kwp": 10}, headers=g).status_code == 200
+    assert ADMIN.patch("/gestor/condominio", json={"fv_potencia_kwp": 10}, headers=g).status_code == 200
     r = patch("k1", {"modo_carga": 1, "garantir_minimo": True, "limite_disjuntor_a": 16})
     assert r.status_code == 200, r.text
     assert r.json()["carregador"]["registradores"][2]["equivale_kw"] == 3.68
     assert patch("k1", {"limite_disjuntor_a": None}).status_code == 200
     assert next(c for c in fake.t("carregadores") if c["id"] == "k1")["limite_disjuntor_a"] is None
 
-    assert CLIENTE.patch("/gestor/condominio", json={"fv_potencia_kwp": 0}, headers=g).status_code == 200
-    r = CLIENTE.get("/gestor/carregadores/k1/modbus", headers=g).json()
+    assert ADMIN.patch("/gestor/condominio", json={"fv_potencia_kwp": 0}, headers=g).status_code == 200
+    r = ADMIN.get("/gestor/carregadores/k1/modbus", headers=g).json()
     assert r["efeito"]["modo_efetivo"] == "Rápido" and "Sem FV" in r["efeito"]["observacao"]
     morador = entrar("Morador Solar")
-    assert CLIENTE.get("/gestor/carregadores", headers=morador).status_code == 403
+    # Morador: na API administrativa o token dele não vale (401), e na API
+    # pública a rota nem existe (404).
+    assert ADMIN.get("/gestor/carregadores", headers=morador).status_code == 401
+    assert CLIENTE.get("/gestor/carregadores", headers=morador).status_code == 404
 
 
 def test_gestor_muda_preco_da_rede_e_premissas_solares():
     semear()
-    g = entrar("Sindica Solar")
-    r = CLIENTE.patch("/gestor/condominio", json={"tarifa_rede_kwh": 1.3, "preco_solar_kwh": 0.8,
+    g = entrar_gestor("Sindica Solar")
+    r = ADMIN.patch("/gestor/condominio", json={"tarifa_rede_kwh": 1.3, "preco_solar_kwh": 0.8,
                                                    "custo_solar_kwh": 0.3}, headers=g)
     assert r.status_code == 200
     assert {c["tarifa_kwh"] for c in fake.t("carregadores") if c["condominio_id"] == COND} == {1.3}
@@ -341,7 +353,7 @@ def test_painel_separa_fontes_e_extrato_mostra_a_origem():
     fake.rpc("registrar_consumo", {"p_cond": COND, "p_kwh": 10, "p_ponta": False, "p_carga_kw": 7,
                                    "p_demanda_kw": 9, "p_solar_kwh": 6, "p_rede_kw": 3}).execute()
 
-    p = CLIENTE.get("/gestor/painel", headers=entrar("Sindica Solar")).json()
+    p = ADMIN.get("/gestor/painel", headers=entrar_gestor("Sindica Solar")).json()
     mes = p["energia"]["mes"]
     assert [(l["origem"], l["faixa"]) for l in mes["linhas"]] == [
         ("rede", "fora_ponta"), ("rede", "ponta"), ("solar_simulado", None)]
@@ -361,7 +373,7 @@ def test_incentivo_invertido_aparece_no_painel():
     semear()
     for c in fake.t("carregadores"):
         c["tarifa_kwh"] = 2.10
-    inc = CLIENTE.get("/gestor/painel", headers=entrar("Sindica Solar")).json()["energia"]["incentivo_solar"]
+    inc = ADMIN.get("/gestor/painel", headers=entrar_gestor("Sindica Solar")).json()["energia"]["incentivo_solar"]
     assert inc["alinhado"] is False and inc["alerta"]
 
 

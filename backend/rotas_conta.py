@@ -8,6 +8,7 @@ saldo na conta de outra pessoa ou vincular o próprio cartão à conta dela -
 e aí carregar pagando com o saldo alheio.
 """
 
+import hmac
 import re
 from typing import Literal, Optional
 
@@ -16,11 +17,12 @@ from pydantic import BaseModel, Field
 
 import cartoes
 import carteira
-from config import BONUS_BOAS_VINDAS, CONDOMINIO_PADRAO, CREDITO_MAXIMO, supabase, um
+from config import (BONUS_BOAS_VINDAS, CODIGO_CADASTRO, CONDOMINIO_PADRAO, CREDITO_MAXIMO,
+                    supabase, um)
 from fisica import detalhar_custo
 from identidade import CAMPOS_PUBLICOS, usuario_logado
 from seguranca import (SENHA_MAX, conferir_senha, emitir_token, gerar_hash_senha,
-                       hash_ficticio, limitador_cadastro, limitador_por_ip,
+                       hash_ficticio, ip_do_cliente, limitador_cadastro, limitador_por_ip,
                        limitador_por_nome, precisa_rehash, validar_forca_senha)
 
 router = APIRouter(tags=["conta"])
@@ -44,6 +46,8 @@ class CadastroRequest(BaseModel):
     veiculo_tipo: Literal["carro", "celular"] = "carro"
     capacidade_bateria_kwh: float = Field(40, gt=0, le=250)
     potencia_carro_kw: float = Field(7.4, gt=0, le=350)
+    # Só é conferido quando CODIGO_CADASTRO está definido no ambiente.
+    codigo_convite: Optional[str] = Field(None, max_length=64)
 
 
 class LoginRequest(BaseModel):
@@ -77,7 +81,8 @@ class VeiculoRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _ip(request: Request) -> str:
-    return request.client.host if request.client else "desconhecido"
+    # Atrás de proxy, o IP real vem do X-Forwarded-For (ver seguranca.py).
+    return ip_do_cliente(request)
 
 
 def _veiculos(usuario_id: str) -> list:
@@ -110,9 +115,22 @@ def _checar_capacidade(tipo: str, capacidade: float, potencia: float) -> None:
 # Login e cadastro
 # ---------------------------------------------------------------------------
 
+@router.get("/config-publica")
+def config_publica():
+    """O que a tela de cadastro precisa saber antes do login. Nada sensível."""
+    return {"cadastro_exige_codigo": bool(CODIGO_CADASTRO)}
+
+
 @router.post("/cadastro")
 def cadastro(payload: CadastroRequest, request: Request):
     limitador_cadastro.consumir(f"ip:{_ip(request)}")
+
+    # Código do evento (se configurado). Comparação em tempo constante, e o
+    # limitador acima já freia quem tenta adivinhar.
+    if CODIGO_CADASTRO and not hmac.compare_digest(
+            (payload.codigo_convite or "").strip().encode("utf-8"),
+            CODIGO_CADASTRO.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Código de convite inválido.")
 
     nome = payload.nome.strip()
     if not NOME_VALIDO.fullmatch(nome):
@@ -182,6 +200,15 @@ def login(payload: LoginRequest, request: Request):
 
     hash_salvo = credencial["senha_hash"] if credencial else hash_ficticio()
     if not (usuario and credencial and conferir_senha(hash_salvo, payload.senha)):
+        limitador_por_nome.registrar_falha(chave_nome)
+        limitador_por_ip.registrar_falha(chave_ip)
+        raise HTTPException(status_code=401, detail="Nome de usuário ou senha incorretos.")
+
+    # Conta de gestor NÃO entra pelo app do morador (ADR-023): o painel tem
+    # endereço, login e segundo fator próprios. A resposta é a mesma da senha
+    # errada, para esta tela não servir de teste de senha de gestor nem
+    # revelar quais nomes administram o condomínio.
+    if usuario.get("tipo_usuario") == "gestor":
         limitador_por_nome.registrar_falha(chave_nome)
         limitador_por_ip.registrar_falha(chave_ip)
         raise HTTPException(status_code=401, detail="Nome de usuário ou senha incorretos.")

@@ -1,0 +1,16 @@
+# Nada de segredo, de dependência local ou de frontend dentro da imagem do backend.
+**/.env
+**/.env.*
+!**/.env.example
+**/segredos.h
+.git
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+frontend
+admin
+firmware
+docs
+AUDITORIA.md
+HANDOFF_FRONTEND.md

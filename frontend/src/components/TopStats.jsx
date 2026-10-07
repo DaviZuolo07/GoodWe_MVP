@@ -116,23 +116,23 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
   ]
 
   return (
-    <div className="mb-10 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="mb-8 grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4 lg:mb-10">
       {cards.map((card) => (
         <div
           key={card.label}
-          className="kpi group rounded-panel border border-line bg-panel p-5 transition duration-200
+          className="kpi group rounded-panel border border-line bg-panel p-3.5 transition duration-200 sm:p-5
                      hover:-translate-y-0.5 hover:border-line hover:bg-raise/50 hover:shadow-lift"
         >
-          <div className="mb-4 flex items-center gap-3">
+          <div className="mb-3 flex items-center gap-2 sm:mb-4 sm:gap-3">
             <span
-              className={`flex h-9 w-9 items-center justify-center rounded-chip ${card.fundo} ${card.cor}`}
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-chip sm:h-9 sm:w-9 ${card.fundo} ${card.cor}`}
             >
               <Icone nome={card.icone} className="h-[18px] w-[18px]" />
             </span>
-            <p className="text-sm text-mute">{card.label}</p>
+            <p className="text-xs leading-tight text-mute sm:text-sm">{card.label}</p>
           </div>
 
-          <p className="num text-3xl font-semibold leading-none text-ink 2xl:text-4xl">
+          <p className="num text-[1.375rem] font-semibold leading-none text-ink sm:text-3xl 2xl:text-4xl">
             {card.value}
           </p>
 
@@ -145,7 +145,7 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
             </div>
           )}
 
-          <p className="mt-3 text-xs text-dim">{card.sub}</p>
+          <p className="mt-2.5 text-[0.6875rem] leading-snug text-dim sm:mt-3 sm:text-xs">{card.sub}</p>
         </div>
       ))}
     </div>

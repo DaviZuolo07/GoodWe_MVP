@@ -19,7 +19,20 @@ import uuid
 
 from fastapi import FastAPI, Header, HTTPException, Request
 
+from totem_virtual.fisica import CURVA_18650
+
 PRAZO_S = 2.0
+SOC_MINIMO, HISTERESE = 20.0, 5.0     # Modbus 10030 e a histerese do backend (ADR-018 D6)
+
+
+def soc_pela_tensao(v: float) -> float:
+    """Inversa da curva da 18650, como o backend faz (soc_pela_tensao_18650)."""
+    if v <= CURVA_18650[0][1]:
+        return 0.0
+    for (s0, v0), (s1, v1) in zip(CURVA_18650, CURVA_18650[1:]):
+        if v <= v1:
+            return s0 + (s1 - s0) * (v - v0) / (v1 - v0)
+    return 100.0
 
 
 def criar(tags: dict[str, float], portas=(1, 2, 3, 4)) -> FastAPI:
@@ -31,6 +44,8 @@ def criar(tags: dict[str, float], portas=(1, 2, 3, 4)) -> FastAPI:
     app.state.fontes = {}         # fonte -> última leitura
     app.state.fontes_recebidas = 0
     app.state.perder_proximo_comando = False
+    app.state.garantir_minimo = False   # Modbus 10024
+    app.state.modo_solar = "solar"       # solar | rede | pausada
 
     def numerar(boot, seq, handshake=False):
         boot, seq = int(boot), int(seq)
@@ -121,6 +136,7 @@ def criar(tags: dict[str, float], portas=(1, 2, 3, 4)) -> FastAPI:
         for f in fontes:
             app.state.fontes[f["fonte"]] = f
         app.state.fontes_recebidas += len(fontes)
+        decidir_vaga_solar()
 
         ultima = {}
         for l in leituras:
@@ -135,16 +151,15 @@ def criar(tags: dict[str, float], portas=(1, 2, 3, 4)) -> FastAPI:
                 continue
             s["energia_wh"] = max(s["energia_wh"], l.get("energia_wh") or 0)
             w = l.get("potencia_w") or 0
-            sem_fonte = porta == 4 and \
-                (app.state.fontes.get("painel", {}).get("potencia_w", 0) < 0.5) and \
-                (app.state.fontes.get("bateria", {}).get("tensao_v", 9) < 3.6) and \
-                (app.state.fontes.get("bateria", {}).get("potencia_w", 0) < 0.5)
+            if porta == 4 and app.state.modo_solar == "pausada":
+                s["baixa_desde"], s["estado"] = None, "pausada"
+                saida.append({"porta": porta, "estado": "pausada", "deve_liberar": False,
+                              "sessao_ativa": True, "fonte": "solar"})
+                continue
             if not l.get("rele_ligado"):
                 s["baixa_desde"] = None
             elif w >= 0.5:
                 s["baixa_desde"], s["estado"] = None, "carregando"
-            elif sem_fonte:
-                s["baixa_desde"], s["estado"] = None, "pausada"       # faltou sol e bateria
             else:
                 s["baixa_desde"] = s["baixa_desde"] or agora
                 if agora - s["baixa_desde"] >= PRAZO_S:
@@ -157,8 +172,27 @@ def criar(tags: dict[str, float], portas=(1, 2, 3, 4)) -> FastAPI:
                         saida.append({"porta": porta, "estado": "livre", "deve_liberar": False,
                                       "sessao_ativa": False, "tela": tela(f"Vaga {porta} liberada")})
                         continue
+            extra = {"fonte": "rede" if app.state.modo_solar == "rede" else "solar"} if porta == 4 else {}
             saida.append({"porta": porta, "estado": s["estado"], "deve_liberar": True,
-                          "sessao_ativa": True})
+                          "sessao_ativa": True, **extra})
         return {"ok": True, "gravadas": len(leituras), "fontes_gravadas": len(fontes), "portas": saida}
+
+    def decidir_vaga_solar():
+        """ADR-018 D6: bateria descarregando abaixo do 10030 -> pausada (ou rede com o 10024)."""
+        b, s = app.state.fontes.get("bateria"), app.state.sessoes.get(4)
+        if not b:
+            return
+        soc, antes = soc_pela_tensao(b["tensao_v"]), app.state.modo_solar
+        rede_ou_pausa = "rede" if app.state.garantir_minimo else "pausada"
+        if antes in ("rede", "pausada"):
+            novo = "solar" if soc >= SOC_MINIMO + HISTERESE else rede_ou_pausa
+        elif soc < SOC_MINIMO and b["potencia_w"] > 0.3:
+            novo = rede_ou_pausa
+        else:
+            novo = "solar"
+        app.state.modo_solar = novo
+        if s and novo != antes and "pausada" in (novo, antes):
+            app.state.comandos.append({"id": str(uuid.uuid4()), "porta": 4, "sessao_id": s["id"],
+                                       "acao": "desligar" if novo == "pausada" else "ligar"})
 
     return app

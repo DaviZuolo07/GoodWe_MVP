@@ -9,8 +9,10 @@ Celular: física de referência do contrato (seção C):
   manutenção de ~0,1 W. Desplugar = corrente zero imediata, com o relé
   fechado. Ruído de ±2%.
 
-Solar: modelo simplificado (ADR-020 D5). Serve para exercitar a comutação de
-fonte e a telemetria; os limiares de verdade saem da bancada real.
+Solar (ADR-022): painel 5 V 1 W -> TP4056 -> 18650 2000 mAh -> MT3608 (5 V),
+dedicado à vaga 4 por um relé reversor (solar OU rede). Modelo simplificado:
+serve para exercitar a comutação e a telemetria; os limiares de verdade saem
+da bancada real.
 
 Funções puras e classes pequenas, sem relógio próprio: quem chama diz quanto
 tempo passou.
@@ -62,9 +64,10 @@ LSB_TENSAO_V = 0.004
 LSB_CORRENTE_A = 0.0001
 
 
-def ina219(tensao_v: float, corrente_a: float) -> dict:
+def ina219(tensao_v: float, corrente_a: float, assinado: bool = False) -> dict:
+    """`assinado`: o sensor em série com a bateria mede nos dois sentidos (ADR-022 D2)."""
     v = round(max(0.0, tensao_v) / LSB_TENSAO_V) * LSB_TENSAO_V
-    i = round(max(0.0, corrente_a) / LSB_CORRENTE_A) * LSB_CORRENTE_A
+    i = round((corrente_a if assinado else max(0.0, corrente_a)) / LSB_CORRENTE_A) * LSB_CORRENTE_A
     return {"tensao_v": round(v, 3), "corrente_a": round(i, 4), "potencia_w": round(v * i, 3)}
 
 
@@ -72,10 +75,10 @@ def ina219(tensao_v: float, corrente_a: float) -> dict:
 # Painel e bateria da vaga 4
 # ---------------------------------------------------------------------------
 
-P_PAINEL_MAX_W = 10.0
+P_PAINEL_MAX_W = 1.0             # painel 5 V 1 W da bancada
 V_PAINEL_ABERTO = 6.0
-P_CARGA_BATERIA_MAX_W = 5.0      # o carregador da 18650 limita
-P_SAIDA_BATERIA_MAX_W = 8.0      # o conversor 3,7 V -> 5 V limita
+P_CARGA_BATERIA_MAX_W = 4.0      # TP4056: 1 A a ~4 V (o painel limita antes)
+P_SAIDA_BATERIA_MAX_W = 7.5      # MT3608 a 5 V: ~1,5 A na prática
 EFICIENCIA_CONVERSOR = 0.90
 R_BATERIA = 0.06                 # ohms
 
@@ -112,7 +115,7 @@ class PainelVirtual:
 
 @dataclass
 class Bateria18650:
-    capacidade_wh: float = 9.62      # 2600 mAh x 3,7 V
+    capacidade_wh: float = 7.4       # 2000 mAh x 3,7 V
     soc: float = 60.0
 
     def tensao_v(self, saida_w: float = 0.0, entrada_w: float = 0.0) -> float:
