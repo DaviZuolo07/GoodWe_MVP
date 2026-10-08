@@ -104,7 +104,7 @@ function PainelCarregador({ charger, sessaoAtiva, ehMinhaSessao, onFechar, onIni
   const derating = temTemperatura && temperatura > 35
 
   return (
-    <div className="rise overflow-hidden rounded-panel border border-line bg-panel shadow-lift">
+    <div className="realce rise overflow-hidden rounded-panel border border-line bg-panel shadow-lift">
       <div className="flex items-start justify-between gap-4 border-b border-hair px-5 py-4">
         <div>
           <p className="eyebrow">Carregador</p>
@@ -694,6 +694,16 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
             atualizarSaldo()
             setModalPagamentoAberto(false)
             setSelectedCharger(null)
+          }}
+          onAcompanhar={() => {
+            // Fecha o modal mas MANTÉM o ponto selecionado: o painel de detalhe
+            // (com o monitor ao vivo) continua aberto. Sem isto o botão fechava
+            // tudo e a pessoa tinha de clicar no carregador de novo.
+            atualizarSaldo()
+            setModalPagamentoAberto(false)
+            const suave = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            requestAnimationFrame(() =>
+              detalheRef.current?.scrollIntoView({ behavior: suave ? 'smooth' : 'auto', block: 'start' }))
           }}
           onIrParaCarteira={() => {
             setModalPagamentoAberto(false)

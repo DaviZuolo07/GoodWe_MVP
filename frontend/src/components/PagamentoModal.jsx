@@ -147,7 +147,7 @@ function Moldura({ titulo, etiqueta, onFechar, children }) {
   )
 }
 
-function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrParaCarteira, onSaldo }) {
+function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onAcompanhar, onIrParaCarteira, onSaldo }) {
   const { usuario } = sessao
 
   // Bancada USB só aceita celular; wallbox só aceita carro. A checagem existe
@@ -534,7 +534,7 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onIrPar
               setEtapa(ETAPAS.FIM)
             }}
           />
-          <button onClick={() => { onSucesso?.(); onClose() }}
+          <button onClick={() => (onAcompanhar ? onAcompanhar() : (onSucesso?.(), onClose()))}
                   className="mt-4 w-full rounded-chip bg-raise py-2.5 font-medium text-mute transition hover:bg-line hover:text-ink">
             Acompanhar pelo painel
           </button>

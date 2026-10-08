@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { del, get, patch, post } from '../lib/api.js'
-import { brl, energia, num, potencia } from '../lib/formato.js'
+import { brl, duracao, energia, num, potencia } from '../lib/formato.js'
 import GraficoDemanda from '../components/GraficoDemanda.jsx'
 import SimuladorDemanda from '../components/SimuladorDemanda.jsx'
 
@@ -263,6 +263,73 @@ function CurvaDeCarga({ horas, pontaInicio, pontaFim }) {
   )
 }
 
+/* --------------------------------------------------------------------------
+   Recargas ao vivo: uma por sessão em andamento, com a conta que o morador vê.
+   Tudo vem pronto do backend (/gestor/painel -> recargas_ao_vivo); o painel só
+   apresenta. Atualiza no mesmo ciclo de 10 s do resto da página.
+   -------------------------------------------------------------------------- */
+function RecargaViva({ r }) {
+  const soc = Math.max(0, Math.min(100, Number(r.percentual) || 0))
+  const alvo = Math.max(soc, Math.min(100, Number(r.alvo) || 100))
+  return (
+    <div className="realce relative overflow-hidden rounded-panel border border-line bg-raise/30 p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="num text-sm font-semibold text-ink">Ponto {r.numero}</p>
+          <p className="truncate text-xs text-dim">
+            {r.morador || '—'}{r.bloco_apto ? ` · ${r.bloco_apto}` : ''}
+          </p>
+          <p className="truncate text-xs text-mute">{r.veiculo || 'Veículo'}</p>
+        </div>
+        <span className="num shrink-0 rounded-md border border-live/30 bg-live/10 px-2 py-0.5 text-sm font-semibold text-live">
+          {Math.round(soc)}%
+        </span>
+      </div>
+      <div className="relative mb-3 h-1.5 overflow-hidden rounded-full bg-panel">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-flux transition-[width] duration-700"
+             style={{ width: `${soc}%` }} />
+        <div className="absolute inset-y-0 w-px bg-mute/50" style={{ left: `${alvo}%` }} title={`Alvo ${alvo}%`} />
+      </div>
+      <div className="grid grid-cols-4 gap-2 text-center">
+        {[['Potência', potencia(r.potencia_kw)],
+          ['Energia', energia(r.energia_kwh, 3)],
+          ['Restante', r.tempo_min != null ? duracao(r.tempo_min) : '—'],
+          ['Consumido', brl(r.custo_parcial)]].map(([rotulo, v]) => (
+          <div key={rotulo}>
+            <p className="text-[0.625rem] text-dim">{rotulo}</p>
+            <p className="num mt-0.5 text-sm text-ink">{v}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RecargasAoVivo({ recargas }) {
+  const lista = recargas || []
+  return (
+    <section className="mb-5 overflow-hidden rounded-panel border border-line bg-panel">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-hair px-5 py-4">
+        <h3 className="flex items-center gap-2 font-medium text-ink">
+          <span className="h-2 w-2 rounded-full bg-live dot-live" /> Recargas ao vivo
+        </h3>
+        <p className="text-xs text-dim">
+          {lista.length ? `${lista.length} em andamento · atualiza a cada 10 s` : 'atualiza a cada 10 s'}
+        </p>
+      </div>
+      {lista.length === 0 ? (
+        <p className="px-5 py-8 text-center text-sm text-dim">
+          Nenhuma recarga em andamento agora. Quando alguém iniciar, a conta aparece aqui em tempo real.
+        </p>
+      ) : (
+        <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-3">
+          {lista.map((r) => <RecargaViva key={r.sessao_id} r={r} />)}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function PainelPage() {
   const [dados, setDados] = useState(null)
   const [erro, setErro] = useState('')
@@ -341,7 +408,8 @@ function PainelPage() {
   }
   if (!dados) return <div className="skeleton h-64 rounded-panel" />
 
-  const { agora, condominio, carregadores, hoje, mes, por_hora, por_morador, demanda, valor } = dados
+  const { agora, condominio, carregadores, hoje, mes, por_hora, por_morador, demanda, valor,
+          recargas_ao_vivo } = dados
   const abrirParametros = () =>
     document.getElementById('parametros')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   const abrirSimulador = () =>
@@ -398,6 +466,9 @@ function PainelPage() {
                   sub={`${String(condominio.ponta_inicio).slice(0, 5)}–${String(condominio.ponta_fim).slice(0, 5)}, dias úteis`} />
         </div>
       </div>
+
+      {/* Recargas ao vivo: a matemática de cada sessão, calculada pelo backend */}
+      <RecargasAoVivo recargas={recargas_ao_vivo} />
 
       {/* Resultado */}
       <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

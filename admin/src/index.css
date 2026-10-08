@@ -154,6 +154,18 @@
   animation: gw-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Filete de luz no topo: dá aos cards ao vivo a sensação de vidro erguido. */
+.realce::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.06), transparent 28%);
+  opacity: 0.9;
+  z-index: 0;
+}
+
 /* Esqueleto de carregamento */
 @keyframes gw-shimmer {
   from { background-position: -180% 0; }

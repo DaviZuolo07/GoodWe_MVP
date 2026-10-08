@@ -4,6 +4,34 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
+## 07/10/2026 — Davi · Chat V4 — Experiência Next: cadastro, recarga, visual e segurança
+
+Override do contrato v1 nesta rodada (autorizado): mexi em backend/db/admin e registrei tudo para o Daniel. Detalhes em `docs/AUDITORIA_experiencia_next.md`.
+
+### Feito (6 itens)
+1. Totem no cadastro esconde Bloco/Apto (novo `condominios.perfil`, `db/19`).
+2. Celular/Carro em todos os cadastros; Totem trava em celular.
+3. Celular: nome vira "Celular", sem placa, modelo preenche a energia por base local (`frontend/src/lib/celulares.js`); admin ganha "Recargas ao vivo" (`recargas_ao_vivo` em `/gestor/painel`).
+4. "Acompanhar pelo painel" mantém o ponto selecionado e leva ao monitor (antes fechava tudo).
+5. Visual com mais profundidade/3D (`.realce`, `.halo-carga`, `.aurora`), só marca GoodWe, reduced-motion aware; nenhuma lógica tocada.
+6. Revisão estática de segurança do admin: postura sólida, sem achado crítico.
+
+### Testado
+- backend `pytest`: 76 verdes. frontend/admin `npm run build`: ok (isolamento ok). lint: 0 erros.
+
+### NÃO testado
+- Runtime contra o Supabase real (não subi a stack para não criar dado no banco de vocês). Build + testes cobrem a corretude.
+- Varredura ativa do deploy do admin (precisa de URL + autorização).
+
+### Quebrou / atenção
+- **Aplicar `db/19_condominio_perfil.sql` e rodar `python preparar_totem.py`** antes da banca. Sem o 19, o app não quebra (há fallback), mas o Totem não é reconhecido pelo `perfil`.
+
+### Próximo
+1. Daniel: revisar `db/19`, `recargas_ao_vivo` e o helper `_condominios_ordenados`.
+2. Se quiser, autorizar a sondagem ativa do admin publicado (gobuster) e os prints da experiência ao vivo.
+
+---
+
 ## 07/10/2026 — Davi · Chat V3 — Auditoria para o Next, painel do gestor separado, visual e deploy (ADR-023)
 
 ### Feito

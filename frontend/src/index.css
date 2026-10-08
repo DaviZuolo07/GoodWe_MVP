@@ -168,6 +168,53 @@
   animation: gw-shimmer 1.6s ease-in-out infinite;
 }
 
+/* ---------------------------------------------------------------------------
+   Profundidade (item 5): mais 3D e mais vida, sem sair do contrato GoodWe.
+   Só luz branca tênue e o vermelho/flare da marca. Nada pesado: são camadas
+   ::before/::after e um gradiente que respira, tudo com pointer-events: none
+   e desligado por quem pede menos movimento.
+   --------------------------------------------------------------------------- */
+
+/* Filete de luz no topo + leve brilho: dá a um card a sensação de vidro erguido. */
+.realce::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.07), transparent 28%);
+  opacity: 0.9;
+  z-index: 0;
+}
+
+/* Halo de energia atrás do retrato do carro quando a vaga está carregando. */
+.halo-carga {
+  background: radial-gradient(58% 58% at 50% 54%, rgb(229 53 43 / 0.22), transparent 70%);
+  filter: blur(3px);
+}
+
+/* Aurora ambiente: dois focos quentes da marca que respiram devagar. Só em
+   áreas grandes e escuras (a tela de entrada), nunca sobre dado numérico. */
+@keyframes gw-aurora {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.5; }
+  50%      { transform: translate3d(0, -2%, 0) scale(1.08); opacity: 0.78; }
+}
+.aurora {
+  position: absolute;
+  inset: -22% -12% auto -12%;
+  height: 72%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(40% 50% at 24% 30%, rgb(229 53 43 / 0.18), transparent 70%),
+    radial-gradient(38% 46% at 80% 18%, rgb(255 106 69 / 0.14), transparent 72%);
+  filter: blur(28px);
+  animation: gw-aurora 12s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .aurora { animation: none; }
+}
+
 /* Brilho ambiente antigo. No escuro e no claro, quem desenha o fundo agora é
    o ::before da seção CARBONO, no fim deste arquivo. */
 .ambient-legado {

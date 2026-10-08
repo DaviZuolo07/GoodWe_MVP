@@ -22,7 +22,7 @@ function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
       type="button"
       onClick={() => onSelecionar(charger)}
       aria-pressed={selecionado}
-      className={`sweep group relative w-full overflow-hidden rounded-panel border bg-panel p-5 text-left
+      className={`sweep realce group relative w-full overflow-hidden rounded-panel border bg-panel p-5 text-left
         transition duration-200 ease-out will-change-transform
         hover:-translate-y-1 hover:bg-raise/50 hover:shadow-lift active:scale-[0.995]
         ${emUso && sessao ? 'carregando-borda' : ''}
@@ -53,8 +53,11 @@ function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
 
       {/* Retrato: o carro quando há recarga, o equipamento quando está livre */}
       <div className="relative flex h-36 items-center justify-center py-2">
+        {emUso && sessao && (
+          <span aria-hidden="true" className="halo-carga pointer-events-none absolute inset-0" />
+        )}
         {emUso && sessao ? (
-          <ArteVeiculo modelo={sessao.veiculos?.modelo} className="h-28" />
+          <ArteVeiculo modelo={sessao.veiculos?.modelo} className="relative h-28" />
         ) : (
           <ArteCarregador status={charger.status} modelo={charger.modelo} className="h-32" />
         )}

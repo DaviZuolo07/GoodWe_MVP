@@ -41,6 +41,18 @@ export function useCondominios() {
   return { condominios, carregando, erro }
 }
 
+/**
+ * Um condomínio "de bancada" é o ponto do Totem (estande): só carrega celular
+ * e não tem bloco/apto. O backend marca com `perfil='bancada'`; se a coluna
+ * ainda não existir no banco, caímos no nome (Estande Next / Totem) como rede
+ * de segurança, para a tela nunca quebrar por causa disso.
+ */
+export function ehCondominioBancada(cond) {
+  if (!cond) return false
+  if (cond.perfil) return cond.perfil === 'bancada'
+  return /totem|estande|bancada/i.test(cond.nome || '')
+}
+
 function normalizar(texto) {
   return (texto || '')
     .normalize('NFD')

@@ -43,7 +43,9 @@ export async function api(caminho, { method = 'GET', body, sinal } = {}) {
     throw new ErroApi('Não foi possível falar com o servidor. O backend está rodando?', 0)
   }
 
-  if (resposta.status === 401) {
+  // Sem token não há sessão para expirar: o 401 do /login (senha errada)
+  // segue abaixo e mostra a mensagem real do servidor.
+  if (resposta.status === 401 && token) {
     aoExpirar()
     throw new ErroApi('Sua sessão expirou. Entre novamente.', 401)
   }

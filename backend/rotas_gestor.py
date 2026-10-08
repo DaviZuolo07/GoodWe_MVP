@@ -282,12 +282,38 @@ def painel(gestor: dict = Depends(gestor_logado)):
     ids = [c["id"] for c in chargers]
 
     ativas = {}
+    ao_vivo = []
     sessoes_mes, sessoes_hoje = [], []
     if ids:
+        numero_por_id = {c["id"]: c["numero"] for c in chargers}
         for s in supabase.table("sessoes_recarga").select(
-            "carregador_id, potencia_atual_kw, potencia_alocada_kw, percentual_bateria_atual"
+            "*, usuarios(nome, bloco_apto), veiculos(modelo, tipo)"
         ).eq("status", "carregando").in_("carregador_id", ids).execute().data or []:
             ativas[s["carregador_id"]] = s
+            # A conta ao vivo é a MESMA do recibo (detalhar_custo): o painel do
+            # gestor nunca recalcula por conta própria. Mid-recarga, o total é
+            # o consumido até agora.
+            try:
+                custo_parcial = round(detalhar_custo(s)["total"], 2)
+            except Exception:
+                custo_parcial = round(float(s.get("custo_estimado") or 0), 2)
+            u = s.get("usuarios") or {}
+            v = s.get("veiculos") or {}
+            ao_vivo.append({
+                "sessao_id": s["id"], "carregador_id": s["carregador_id"],
+                "numero": numero_por_id.get(s["carregador_id"]),
+                "morador": u.get("nome"), "bloco_apto": u.get("bloco_apto"),
+                "veiculo": v.get("modelo"), "veiculo_tipo": v.get("tipo"),
+                "percentual": round(float(s.get("percentual_bateria_atual") or 0), 1),
+                "alvo": round(float(s.get("alvo_percentual") or 100), 0),
+                "energia_kwh": round(float(s.get("energia_entregue_kwh") or 0), 4),
+                "potencia_kw": round(float(s.get("potencia_atual_kw") or 0), 3),
+                "potencia_alocada_kw": s.get("potencia_alocada_kw"),
+                "tempo_min": s.get("tempo_estimado_min"),
+                "custo_parcial": custo_parcial,
+                "iniciado_em": s.get("iniciado_em"),
+            })
+        ao_vivo.sort(key=lambda x: x["numero"] or 0)
 
         sessoes_mes = supabase.table("sessoes_recarga").select(
             "*, usuarios(nome, bloco_apto)"
@@ -339,6 +365,7 @@ def painel(gestor: dict = Depends(gestor_logado)):
                                                 "custo_energia_kwh", "custo_energia_ponta_kwh",
                                                 "fv_potencia_kwp", "custo_solar_kwh", "preco_solar_kwh")},
         "agora": agora_estado,
+        "recargas_ao_vivo": ao_vivo,
         "carregadores": [{
             "id": c["id"], "numero": c["numero"], "status": c["status"], "origem": c.get("origem"),
             "perfil": c.get("perfil"), "modelo": c.get("modelo"), "potencia_maxima_kw": c["potencia_maxima_kw"],

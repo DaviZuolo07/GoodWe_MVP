@@ -1,14 +1,14 @@
-import { useEffect, useState } from 'react'
-import CondominioSelect, { useCondominios } from '../components/CondominioSelect.jsx'
+import { useEffect, useMemo, useState } from 'react'
+import CondominioSelect, { useCondominios, ehCondominioBancada } from '../components/CondominioSelect.jsx'
 import { CONDOMINIO_PADRAO } from '../config.js'
 import { get, post } from '../lib/api.js'
 import HeroFluxo from '../components/HeroFluxo.jsx'
+import CamposCelular from '../components/CamposCelular.jsx'
+import { CELULARES, CELULAR_OUTRO, acharCelular, mahParaKwh, MAH_PADRAO } from '../lib/celulares.js'
 
-/** Presets do cadastro: carro elétrico ou o celular da bancada do ESP32. */
-const PRESETS = {
-  carro: { capacidade: 40, potencia: 7.4, rotulo: 'Carro elétrico', exemplo: 'BYD Dolphin Mini' },
-  celular: { capacidade: 0.015, potencia: 0.018, rotulo: 'Celular (bancada ESP32)', exemplo: 'Celular de bancada' },
-}
+/** Carro: presets de um elétrico comum. Celular: a energia vem do modelo. */
+const CARRO_PADRAO = { capacidade: 40, potencia: 7.4, exemplo: 'BYD Dolphin Mini' }
+const POTENCIA_CELULAR_PADRAO = 0.018   // ~18 W, quando o modelo não informa
 
 function Login({ onLoginSuccess, aviso }) {
   const { condominios, carregando: carregandoCondominios } = useCondominios()
@@ -31,6 +31,10 @@ function Login({ onLoginSuccess, aviso }) {
   const [capacidadeBateria, setCapacidadeBateria] = useState(40)
   const [potenciaCarro, setPotenciaCarro] = useState(7.4)
   const [veiculoTipo, setVeiculoTipo] = useState('carro')
+  // Celular: escolhe o modelo e a energia vem da base local (lib/celulares.js).
+  const [celularModelo, setCelularModelo] = useState(CELULARES[0].modelo)
+  const [celularNome, setCelularNome] = useState('')   // nome do aparelho quando é "Outro"
+  const [celularMah, setCelularMah] = useState(MAH_PADRAO)
   // Código de convite: o servidor diz se o cadastro exige (evento publicado).
   const [exigeCodigo, setExigeCodigo] = useState(false)
   const [codigoConvite, setCodigoConvite] = useState('')
@@ -42,6 +46,16 @@ function Login({ onLoginSuccess, aviso }) {
       .catch(() => { /* servidor antigo ou fora do ar: o cadastro segue sem o campo */ })
     return () => { vivo = false }
   }, [])
+
+  // O Totem Next (ponto de bancada) só carrega celular e não tem bloco/apto.
+  const condSelecionado = useMemo(
+    () => condominios.find((c) => c.id === condominioId) || null, [condominios, condominioId])
+  const ehBancada = ehCondominioBancada(condSelecionado)
+
+  // Escolheu o Totem: trava no celular (lá não entra carro).
+  useEffect(() => {
+    if (ehBancada && veiculoTipo !== 'celular') setVeiculoTipo('celular')
+  }, [ehBancada, veiculoTipo])
 
   async function handleLogin(e) {
     e.preventDefault()
@@ -65,6 +79,9 @@ function Login({ onLoginSuccess, aviso }) {
       return
     }
 
+    const veiculo = montarVeiculo()
+    if (veiculo.erro) { setErro(veiculo.erro); return }
+
     setCarregando(true)
     try {
       onLoginSuccess(await post('/cadastro', {
@@ -72,12 +89,8 @@ function Login({ onLoginSuccess, aviso }) {
         senha,
         condominio_id: condominioId || CONDOMINIO_PADRAO,
         tipo_usuario: tipoUsuario,
-        bloco_apto: blocoApto,
-        veiculo_modelo: veiculoModelo,
-        veiculo_placa: veiculoPlaca || null,
-        veiculo_tipo: veiculoTipo,
-        capacidade_bateria_kwh: Number(capacidadeBateria),
-        potencia_carro_kw: Number(potenciaCarro),
+        bloco_apto: ehBancada ? null : (blocoApto || null),
+        ...veiculo.payload,
         codigo_convite: exigeCodigo ? codigoConvite.trim() : undefined,
       }))
     } catch (e) {
@@ -85,6 +98,28 @@ function Login({ onLoginSuccess, aviso }) {
     } finally {
       setCarregando(false)
     }
+  }
+
+  /** Monta os campos do veículo conforme o tipo (celular pela base local, carro pelos campos). */
+  function montarVeiculo() {
+    if (veiculoTipo === 'celular') {
+      const escolhido = celularModelo !== CELULAR_OUTRO ? acharCelular(celularModelo) : null
+      const modelo = escolhido ? escolhido.modelo : celularNome.trim()
+      if (!modelo) return { erro: 'Diga qual é o seu celular.' }
+      const capacidade = escolhido ? escolhido.capacidade_kwh : mahParaKwh(celularMah)
+      if (!escolhido && (!celularMah || Number(celularMah) <= 0))
+        return { erro: 'Informe a capacidade do celular em mAh.' }
+      if (capacidade > 0.2) return { erro: 'Capacidade acima do limite de um celular (máx. ~50.000 mAh).' }
+      return { payload: {
+        veiculo_modelo: modelo, veiculo_placa: null, veiculo_tipo: 'celular',
+        capacidade_bateria_kwh: capacidade,
+        potencia_carro_kw: escolhido ? escolhido.potencia_kw : POTENCIA_CELULAR_PADRAO,
+      } }
+    }
+    return { payload: {
+      veiculo_modelo: veiculoModelo, veiculo_placa: veiculoPlaca || null, veiculo_tipo: 'carro',
+      capacidade_bateria_kwh: Number(capacidadeBateria), potencia_carro_kw: Number(potenciaCarro),
+    } }
   }
 
   const inputClass =
@@ -96,6 +131,7 @@ function Login({ onLoginSuccess, aviso }) {
       {/* Painel de marca — só visual, não participa do formulário */}
       <aside className="relative hidden overflow-hidden border-r border-line lg:flex lg:flex-col lg:justify-between lg:p-12"
              aria-hidden="true">
+        <div className="aurora" />
         <div className="piso pointer-events-none absolute inset-0" />
         <div className="entra relative" style={{ '--i': 0 }}>
           <p className="text-[2.25rem] marca font-bold leading-none tracking-[0.08em] text-flux">GOODWE</p>
@@ -115,7 +151,7 @@ function Login({ onLoginSuccess, aviso }) {
       <div className="flex flex-col items-center justify-center p-4 sm:p-8">
       {/* No celular o diagrama vem em cima do formulário, pequeno */}
       <HeroFluxo className="mb-2 w-full max-w-[340px] lg:hidden" />
-      <div className="w-full max-w-md rounded-2xl border border-line bg-panel/80 p-6 shadow-lift backdrop-blur-xl sm:p-8">
+      <div className="realce relative w-full max-w-md rounded-2xl border border-line bg-panel/80 p-6 shadow-lift backdrop-blur-xl sm:p-8">
         <p className="mb-5 text-[1.5rem] marca font-bold leading-none tracking-[0.08em] text-flux lg:hidden">GOODWE</p>
         <h1 className="mb-1 text-2xl font-bold text-ink">ChargeOps</h1>
         <p className="text-mute mb-6">
@@ -216,7 +252,7 @@ function Login({ onLoginSuccess, aviso }) {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className={ehBancada ? '' : 'grid grid-cols-2 gap-3'}>
               <div>
                 <label className={labelClass}>Tipo</label>
                 <select className={inputClass} value={tipoUsuario} onChange={(e) => setTipoUsuario(e.target.value)}>
@@ -224,52 +260,71 @@ function Login({ onLoginSuccess, aviso }) {
                   <option value="visitante">Visitante</option>
                 </select>
               </div>
-              <div>
-                <label className={labelClass}>Bloco / Apto</label>
-                <input className={inputClass} value={blocoApto} onChange={(e) => setBlocoApto(e.target.value)} placeholder="Bloco A - 101" />
-              </div>
+              {/* O Totem Next é um ponto de estande: não tem bloco nem apto. */}
+              {!ehBancada && (
+                <div>
+                  <label className={labelClass}>Bloco / Apto</label>
+                  <input className={inputClass} value={blocoApto} onChange={(e) => setBlocoApto(e.target.value)} placeholder="Bloco A - 101" />
+                </div>
+              )}
             </div>
 
             <hr className="border-line my-2" />
             <p className="text-sm text-mute">O que você vai carregar</p>
 
-            <div className="flex gap-2">
-              {Object.entries(PRESETS).map(([chave, preset]) => (
-                <button key={chave} type="button"
-                        onClick={() => {
-                          setVeiculoTipo(chave)
-                          setCapacidadeBateria(preset.capacidade)
-                          setPotenciaCarro(preset.potencia)
-                          if (!veiculoModelo) setVeiculoModelo(preset.exemplo)
-                        }}
-                        className={`flex-1 rounded-lg py-2 text-sm transition ${
-                          veiculoTipo === chave ? 'bg-flux text-white' : 'bg-raise text-mute hover:bg-line'}`}>
-                  {preset.rotulo}
-                </button>
-              ))}
-            </div>
+            {/* O Totem trava no celular; nos demais, a pessoa escolhe. */}
+            {!ehBancada && (
+              <div className="flex gap-2">
+                {[['celular', 'Celular'], ['carro', 'Carro elétrico']].map(([chave, rotulo]) => (
+                  <button key={chave} type="button"
+                          onClick={() => {
+                            setVeiculoTipo(chave)
+                            if (chave === 'carro') {
+                              setCapacidadeBateria(CARRO_PADRAO.capacidade)
+                              setPotenciaCarro(CARRO_PADRAO.potencia)
+                              if (!veiculoModelo) setVeiculoModelo(CARRO_PADRAO.exemplo)
+                            }
+                          }}
+                          className={`flex-1 rounded-lg py-2 text-sm transition ${
+                            veiculoTipo === chave ? 'bg-flux text-white' : 'bg-raise text-mute hover:bg-line'}`}>
+                    {rotulo}
+                  </button>
+                ))}
+              </div>
+            )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelClass}>Modelo</label>
-                <input className={inputClass} value={veiculoModelo} onChange={(e) => setVeiculoModelo(e.target.value)} placeholder="BYD Dolphin Mini" required />
-              </div>
-              <div>
-                <label className={labelClass}>Placa</label>
-                <input className={inputClass} value={veiculoPlaca} onChange={(e) => setVeiculoPlaca(e.target.value)} placeholder="ABC1D23" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelClass}>Capacidade da bateria (kWh)</label>
-                <input className={inputClass} type="number" step="0.001" value={capacidadeBateria} onChange={(e) => setCapacidadeBateria(e.target.value)} />
-              </div>
-              <div>
-                <label className={labelClass}>Potência aceita (kW)</label>
-                <input className={inputClass} type="number" step="0.001" value={potenciaCarro} onChange={(e) => setPotenciaCarro(e.target.value)} />
-              </div>
-            </div>
+            {veiculoTipo === 'celular' ? (
+              <CamposCelular
+                inputClass={inputClass} labelClass={labelClass}
+                modelo={celularModelo} onModelo={setCelularModelo}
+                nome={celularNome} onNome={setCelularNome}
+                mah={celularMah} onMah={setCelularMah}
+                ehBancada={ehBancada}
+              />
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelClass}>Modelo</label>
+                    <input className={inputClass} value={veiculoModelo} onChange={(e) => setVeiculoModelo(e.target.value)} placeholder="BYD Dolphin Mini" required />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Placa</label>
+                    <input className={inputClass} value={veiculoPlaca} onChange={(e) => setVeiculoPlaca(e.target.value)} placeholder="ABC1D23" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelClass}>Capacidade da bateria (kWh)</label>
+                    <input className={inputClass} type="number" step="0.001" value={capacidadeBateria} onChange={(e) => setCapacidadeBateria(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Potência aceita (kW)</label>
+                    <input className={inputClass} type="number" step="0.001" value={potenciaCarro} onChange={(e) => setPotenciaCarro(e.target.value)} />
+                  </div>
+                </div>
+              </>
+            )}
             <p className="text-xs text-dim">
               A % de bateria atual será perguntada na hora de iniciar a recarga, não agora.
             </p>

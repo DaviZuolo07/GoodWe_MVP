@@ -90,6 +90,25 @@ def _veiculos(usuario_id: str) -> list:
         .order("criado_em").execute().data or []
 
 
+# `perfil` só existe a partir da migration 19. Se ela ainda não rodou, o
+# PostgREST recusa a coluna; caímos no formato antigo e lembramos a decisão
+# para não bater na mesma pedra a cada requisição.
+_condominios_tem_perfil = None
+
+
+def _condominios_ordenados() -> list:
+    global _condominios_tem_perfil
+    if _condominios_tem_perfil is not False:
+        try:
+            dados = supabase.table("condominios").select("id, nome, endereco, perfil") \
+                .order("nome").execute().data or []
+            _condominios_tem_perfil = True
+            return dados
+        except Exception:
+            _condominios_tem_perfil = False
+    return supabase.table("condominios").select("id, nome, endereco").order("nome").execute().data or []
+
+
 def _resposta_autenticada(usuario: dict) -> dict:
     vs = _veiculos(usuario["id"])
     usuario = {k: usuario.get(k) for k in CAMPOS_PUBLICOS.replace(" ", "").split(",")}
@@ -323,7 +342,7 @@ def adicionar_veiculo(payload: VeiculoRequest, usuario: dict = Depends(usuario_l
 @router.get("/condominios")
 def listar_condominios():
     """Público: alimenta o cadastro. Nome e endereço não são dado pessoal."""
-    return supabase.table("condominios").select("id, nome, endereco").order("nome").execute().data
+    return _condominios_ordenados()
 
 
 def locais_do_usuario(usuario: dict) -> dict:
@@ -332,7 +351,7 @@ def locais_do_usuario(usuario: dict) -> dict:
     ids = {f["condominio_id"] for f in favs}
     if usuario.get("condominio_id"):
         ids.add(usuario["condominio_id"])
-    todos = supabase.table("condominios").select("id, nome, endereco").order("nome").execute().data or []
+    todos = _condominios_ordenados()
     return {"padrao_id": usuario.get("condominio_id"),
             "favoritos": [c for c in todos if c["id"] in ids], "todos": todos}
 

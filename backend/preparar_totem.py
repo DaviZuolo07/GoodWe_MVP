@@ -57,11 +57,18 @@ def checar_banco(sb):
         sys.exit("O banco ainda não tem a migration 17. Rode db/17_totem_escala_fontes.sql "
                  f"no SQL Editor do Supabase e tente de novo.\n(erro: {str(e)[:160]})")
     _ok("migration 17 presente")
+    try:
+        sb.table("condominios").select("perfil").limit(1).execute()
+    except Exception as e:
+        sys.exit("O banco ainda não tem a migration 19 (condominios.perfil). Rode "
+                 f"db/19_condominio_perfil.sql no SQL Editor do Supabase.\n(erro: {str(e)[:160]})")
+    _ok("migration 19 presente")
 
 
 def condominio(sb):
     sb.table("condominios").upsert({
         "id": ESTANDE, "nome": "Estande Next (totem)", "endereco": "FIAP - Next 2026",
+        "perfil": "bancada",          # cadastro: só celular, sem bloco/apto (db/19)
         "limite_potencia_kw": 20,
         # ponta 00:00-00:00 = nunca: o valor da demonstração não muda com a hora
         "ponta_inicio": "00:00", "ponta_fim": "00:00",
