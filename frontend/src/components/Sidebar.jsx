@@ -18,6 +18,7 @@ export const NAV_GROUPS = [
       { label: 'Assistente IA', page: null, acao: 'chat', icon: 'chat' },
       { label: 'Meus Veículos', page: 'veiculos', icon: 'car' },
       { label: 'Histórico de Recargas', page: 'historico', icon: 'history' },
+      { label: 'Mapa de pontos', page: 'mapa', icon: 'map' },
     ],
   },
   {
@@ -92,6 +93,12 @@ const PATHS = {
     <>
       <path d="M12 4v7.5" />
       <path d="M7.6 7.2a7 7 0 1 0 8.8 0" />
+    </>
+  ),
+  map: (
+    <>
+      <path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" />
+      <circle cx="12" cy="10" r="2.4" />
     </>
   ),
   bolt: <path d="M13 2.5 4.8 13.8H11l-1 7.7 8.2-11.3H12l1-7.7Z" />,
@@ -193,7 +200,7 @@ const BARRA = [
   { label: 'Histórico', page: 'historico', icon: 'history' },
   { label: 'Mais', acao: 'mais', icon: 'settings' },
 ]
-const NA_FOLHA = ['veiculos', 'notificacoes', 'configuracoes', 'como-funciona', 'suporte']
+const NA_FOLHA = ['mapa', 'veiculos', 'notificacoes', 'configuracoes', 'como-funciona', 'suporte']
 
 export function NavInferior({ paginaAtiva, onNavigate, onAbrirChat, onLogout, naoLidas = 0 }) {
   const [folha, setFolha] = useState(false)

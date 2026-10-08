@@ -24,6 +24,7 @@ const HistoricoPage = lazy(() => import('./HistoricoPage.jsx'))
 const NotificacoesPage = lazy(() => import('./NotificacoesPage.jsx'))
 const ConfiguracoesPage = lazy(() => import('./ConfiguracoesPage.jsx'))
 const SuportePage = lazy(() => import('./SuportePage.jsx'))
+const MapaPage = lazy(() => import('./MapaPage.jsx'))
 
 const STATUS = {
   disponivel: { label: 'Disponível', cor: 'text-live', ponto: 'bg-live', borda: 'border-live/30', fundo: 'bg-live/10' },
@@ -298,6 +299,21 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
   )
   const { condominios, carregando: carregandoCondominios } = useCondominios()
 
+  const trocarLocal = useCallback((id) => {
+    if (id === condominioId) return
+    // Limpa a visão do local anterior: sem isso, os cards do condomínio
+    // antigo ficam na tela até a nova consulta voltar, e por um instante o
+    // número mostrado é mentira.
+    setSelectedCharger(null)
+    setChargers([])
+    setSessions([])
+    setSessoesHoje([])
+    setFilaCount(0)
+    setCondominio(null)
+    setCarregando(true)
+    setCondominioId(id)
+  }, [condominioId])
+
 // Saldo e veículos vêm do backend (a tabela `usuarios` é fechada pelo RLS).
   const atualizarSaldo = useCallback(async () => {
     try {
@@ -480,20 +496,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                     condominios={condominios}
                     valorId={condominioId}
                     carregando={carregandoCondominios}
-                    onSelecionar={(c) => {
-                      if (c.id === condominioId) return
-                      // Limpa a visão do local anterior: sem isso, os cards do
-                      // condomínio antigo ficam na tela até a nova consulta
-                      // voltar, e por um instante o número mostrado é mentira.
-                      setSelectedCharger(null)
-                      setChargers([])
-                      setSessions([])
-                      setSessoesHoje([])
-                      setFilaCount(0)
-                      setCondominio(null)
-                      setCarregando(true)
-                      setCondominioId(c.id)
-                    }}
+                    onSelecionar={(c) => trocarLocal(c.id)}
                   />
                 ) : condominio ? (
                   <h1 className="truncate text-xl font-semibold tracking-tight text-ink lg:text-2xl">
@@ -562,6 +565,11 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
               )}
 
               {pagina === 'suporte' && <SuportePage onAbrirChat={() => setChatAberto(true)} />}
+
+              {pagina === 'mapa' && (
+                <MapaPage condominioAtual={condominioId}
+                          onVerLocal={(id) => { trocarLocal(id); irPara('inicio') }} />
+              )}
 
               {pagina === 'como-funciona' && <ComoFuncionaPage condominio={condominio} />}
               </Suspense>

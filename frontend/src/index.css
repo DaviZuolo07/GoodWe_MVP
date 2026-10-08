@@ -668,3 +668,27 @@ html {
 @media (max-width: 40rem) {
   input, select, textarea { font-size: 16px; }
 }
+
+/* --- Mapa de pontos (MapaPage) ------------------------------------------
+   Pino desenhado em CSS (sem imagem): gota vermelha da marca com o número de
+   pontos livres. Sem vaga, fica cinza; o local aberto ganha o brilho.      */
+.pino-mapa {
+  display: grid; place-items: center;
+  width: 34px; height: 34px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: var(--color-flux);
+  border: 2px solid #fff;
+  box-shadow: 0 6px 16px rgb(0 0 0 / 0.45);
+}
+.pino-mapa > span {
+  transform: rotate(45deg);
+  font: 600 13px/1 var(--font-display, system-ui);
+  color: #fff;
+}
+.pino-mapa.pino-sem-vaga { background: var(--color-off); }
+.pino-mapa.pino-ativo { box-shadow: 0 0 0 6px color-mix(in oklab, var(--color-flux) 35%, transparent), 0 6px 16px rgb(0 0 0 / 0.45); }
+.leaflet-container { background: var(--color-panel); font-family: inherit; }
+.leaflet-control-attribution { font-size: 10px; }
+/* Tema escuro sem outro provedor de mapa: inverte e devolve o matiz. */
+.mapa-escuro { filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); }

@@ -1,7 +1,12 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { get, post } from '../lib/api.js'
 
 /**
- * Suporte — conteúdo estático. Não toca no banco nem no backend.
+ * Suporte — perguntas frequentes (estáticas) e chamados.
+ *
+ * Os chamados vão para o painel do gestor (Visão geral), que responde; a
+ * resposta aparece aqui e no sino. Tudo pelo backend (/me/chamados): a
+ * tabela é fechada ao navegador.
  *
  * As perguntas foram escritas a partir do comportamento real do sistema
  * (derating térmico, saldo, trava de veículo duplicado). Se o comportamento
@@ -65,6 +70,89 @@ function Item({ p, r, aberto, onToggle }) {
   )
 }
 
+const ROTULO = { aberto: 'Aberto', em_andamento: 'Em andamento', resolvido: 'Respondido' }
+const COR = { aberto: 'text-queue', em_andamento: 'text-queue', resolvido: 'text-live' }
+
+function Chamados() {
+  const [lista, setLista] = useState([])
+  const [assunto, setAssunto] = useState('')
+  const [mensagem, setMensagem] = useState('')
+  const [erro, setErro] = useState('')
+  const [ok, setOk] = useState('')
+  const [enviando, setEnviando] = useState(false)
+
+  const carregar = useCallback(async () => {
+    try {
+      setLista(await get('/me/chamados'))
+    } catch (e) {
+      setErro(e.message)
+    }
+  }, [])
+
+  useEffect(() => { carregar() }, [carregar])
+
+  async function abrir(e) {
+    e.preventDefault()
+    setErro('')
+    setOk('')
+    setEnviando(true)
+    try {
+      await post('/me/chamados', { assunto: assunto.trim(), mensagem: mensagem.trim() })
+      setAssunto('')
+      setMensagem('')
+      setOk('Chamado aberto. A resposta chega no sino e aparece aqui.')
+      carregar()
+    } catch (e2) {
+      setErro(e2.message)
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  const campo = 'w-full rounded-chip border border-line bg-raise/70 px-3 py-2 text-sm text-ink placeholder-dim focus:border-flux focus:outline-none'
+  return (
+    <section className="mt-5 grid gap-5 lg:grid-cols-[1fr_320px]">
+      <div className="rounded-panel border border-line bg-panel p-5">
+        <h3 className="font-medium text-ink">Meus chamados</h3>
+        {!lista.length && <p className="mt-2 text-sm text-dim">Você ainda não abriu nenhum chamado.</p>}
+        <ul className="mt-3 divide-y divide-hair">
+          {lista.map((c) => (
+            <li key={c.id} className="py-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-sm font-medium text-ink">{c.assunto}</p>
+                <span className={`shrink-0 text-xs ${COR[c.status] || 'text-mute'}`}>{ROTULO[c.status] || c.status}</span>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-mute">{c.mensagem}</p>
+              {c.resposta && (
+                <div className="mt-2 rounded-chip border border-hair bg-raise/50 px-3 py-2">
+                  <p className="text-xs text-dim">Resposta da equipe</p>
+                  <p className="mt-0.5 whitespace-pre-wrap text-sm text-ink">{c.resposta}</p>
+                </div>
+              )}
+              <p className="num mt-1 text-xs text-dim">{new Date(c.criado_em).toLocaleString('pt-BR')}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <form onSubmit={abrir} className="h-fit rounded-panel border border-line bg-panel p-5">
+        <h3 className="font-medium text-ink">Abrir chamado</h3>
+        <p className="mt-1 text-sm text-dim">Problema com recarga, cobrança ou cartão? A equipe responde por aqui.</p>
+        <input value={assunto} onChange={(e) => setAssunto(e.target.value)} maxLength={120} required minLength={3}
+               placeholder="Assunto" className={`${campo} mt-3`} />
+        <textarea value={mensagem} onChange={(e) => setMensagem(e.target.value)} maxLength={2000} required minLength={5}
+                  rows={4} placeholder="Conte o que aconteceu" className={`${campo} mt-2`} />
+        {erro && <p className="mt-2 text-sm text-flux">{erro}</p>}
+        {ok && <p className="mt-2 text-sm text-live">{ok}</p>}
+        <button type="submit" disabled={enviando}
+                className="mt-3 w-full rounded-chip bg-flux px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-flare disabled:opacity-50">
+          {enviando ? 'Enviando…' : 'Enviar chamado'}
+        </button>
+      </form>
+    </section>
+  )
+}
+
 function SuportePage({ onAbrirChat }) {
   const [abertoIdx, setAbertoIdx] = useState(0)
 
@@ -72,7 +160,7 @@ function SuportePage({ onAbrirChat }) {
     <div>
       <div className="mb-8">
         <h2 className="text-xl font-semibold tracking-tight text-ink lg:text-[1.375rem]">Suporte</h2>
-        <p className="mt-1 text-sm text-dim">Dúvidas comuns sobre recarga, cobrança e cartão.</p>
+        <p className="mt-1 text-sm text-dim">Dúvidas comuns, assistente e chamados para a equipe.</p>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
@@ -117,6 +205,8 @@ function SuportePage({ onAbrirChat }) {
           </div>
         </aside>
       </div>
+
+      <Chamados />
     </div>
   )
 }

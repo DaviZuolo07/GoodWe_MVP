@@ -44,6 +44,7 @@ from hardware_api import router as hardware_router
 from identidade import usuario_logado
 from rotas_conta import locais_do_usuario, router as conta_router
 from rotas_recarga import router as recarga_router
+from rotas_suporte import router as suporte_router
 from seguranca import limitador_chat
 
 
@@ -76,6 +77,7 @@ app.add_middleware(
 
 app.include_router(conta_router)
 app.include_router(recarga_router)
+app.include_router(suporte_router)
 app.include_router(hardware_router)
 
 if MODO_DEMO:

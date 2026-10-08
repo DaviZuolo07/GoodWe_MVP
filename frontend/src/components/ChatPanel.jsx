@@ -270,6 +270,7 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
 
   const fimRef = useRef(null)
   const inputRef = useRef(null)
+  const painelRef = useRef(null)
 
   const localAtivo = locais.todos.find((c) => c.id === localAtivoId) || null
 
@@ -324,6 +325,17 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
     const onKey = (e) => e.key === 'Escape' && onFechar()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
+  }, [aberto, onFechar])
+
+  // Clique fora fecha em qualquer largura. No xl não há fundo escuro para
+  // clicar, e o painel ficava aberto ao trocar de aba ou abrir uma recarga.
+  useEffect(() => {
+    if (!aberto) return
+    const onFora = (e) => {
+      if (painelRef.current && !painelRef.current.contains(e.target)) onFechar()
+    }
+    document.addEventListener('pointerdown', onFora)
+    return () => document.removeEventListener('pointerdown', onFora)
   }, [aberto, onFechar])
 
   function trocarLocal(c) {
@@ -413,6 +425,7 @@ function ChatPanel({ sessao, chargerId, aberto, onFechar, condominioId }) {
       />
 
       <aside
+        ref={painelRef}
         className="slide-in fixed right-0 top-0 z-50 flex h-screen w-full max-w-[400px] flex-col
                    border-l border-line bg-panel shadow-lift"
         role="complementary"

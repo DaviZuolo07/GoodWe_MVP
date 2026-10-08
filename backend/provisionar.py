@@ -343,7 +343,14 @@ def cmd_limpar(args):
             print(f"    {a['id']}  {a['status']:<17} {(a.get('veiculos') or {}).get('modelo', '?')}")
 
     usuarios = sb.table("usuarios").select("id, nome, tipo_usuario").execute().data or []
-    extras = [u for u in usuarios if u["id"] not in USUARIOS_DO_SEED]
+    # Gestor e admin global nunca são "cadastro de teste": apagar a conta de
+    # quem opera o painel trancaria todo mundo do lado de fora.
+    try:
+        globais = {g["usuario_id"] for g in sb.table("admins_globais").select("usuario_id").execute().data or []}
+    except Exception:                    # db/20 ainda não rodou
+        globais = set()
+    extras = [u for u in usuarios if u["id"] not in USUARIOS_DO_SEED
+              and u["id"] not in globais and u["tipo_usuario"] != "gestor"]
     print(f"\n  Contas do seed ...: {len(usuarios) - len(extras)}")
     print(f"  Cadastros de teste: {len(extras)}")
     for u in extras:
@@ -654,6 +661,78 @@ def cmd_gestor_mfa(args):
     print("Não mande esta chave em grupo: quem tiver ela gera os códigos.\n")
 
 
+def _senha_forte() -> str:
+    """20 caracteres de um alfabeto sem ambíguos (0/O, 1/l), com símbolo."""
+    import secrets
+    alfabeto = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+    corpo = "".join(secrets.choice(alfabeto) for _ in range(18))
+    return f"{corpo[:9]}-{corpo[9:]}#"
+
+
+def cmd_admin_global(args):
+    """
+    Cria (ou promove) a conta de quem opera a plataforma: gestor + linha em
+    `admins_globais` (db/20). Sem --senha, gera uma forte e mostra UMA vez.
+    """
+    from seguranca import gerar_hash_senha, validar_forca_senha
+    from fastapi import HTTPException
+
+    sb = _supabase()
+    achados = sb.table("usuarios").select("id, nome, tipo_usuario").ilike("nome", args.nome).execute().data
+    senha = args.senha or (None if achados and not args.nova_senha else _senha_forte())
+    if senha:
+        try:
+            validar_forca_senha(senha, args.nome)
+        except HTTPException as e:
+            sys.exit(e.detail)
+
+    if achados:
+        u = achados[0]
+        if u["tipo_usuario"] != "gestor":
+            sb.table("usuarios").update({"tipo_usuario": "gestor", "papel": "Administrador"}) \
+                .eq("id", u["id"]).execute()
+        print(f"Conta existente: {u['nome']}")
+    else:
+        u = sb.table("usuarios").insert({
+            "nome": args.nome, "papel": "Administrador", "tipo_usuario": "gestor",
+            "condominio_id": args.condominio, "bloco_apto": "Administração", "saldo": 0,
+        }).execute().data[0]
+        print(f"Conta criada: {u['nome']}")
+    if senha:
+        sb.table("credenciais_usuario").upsert({"usuario_id": u["id"],
+                                                "senha_hash": gerar_hash_senha(senha)}).execute()
+    try:
+        sb.table("admins_globais").upsert({"usuario_id": u["id"]}).execute()
+    except Exception as e:                                   # noqa: BLE001
+        sys.exit(f"admins_globais não existe ({type(e).__name__}). Rode o db/20 e repita.")
+
+    print("Acesso à Visão geral: liberado.")
+    if senha and not args.senha:
+        print(f"\n  Senha gerada (aparece UMA vez, guarde no gerenciador de senhas):  {senha}\n")
+    print(f"Próximo passo: python provisionar.py gestor-mfa --nome \"{u['nome']}\"")
+
+
+def cmd_senha_gestor(args):
+    """Troca a senha de uma conta de gestor por uma forte gerada (ou --senha)."""
+    from seguranca import gerar_hash_senha, validar_forca_senha
+    from fastapi import HTTPException
+
+    sb = _supabase()
+    achados = sb.table("usuarios").select("id, nome, tipo_usuario").ilike("nome", args.nome).execute().data
+    if not achados or achados[0]["tipo_usuario"] != "gestor":
+        sys.exit(f"Nenhum gestor chamado '{args.nome}'.")
+    senha = args.senha or _senha_forte()
+    try:
+        validar_forca_senha(senha, args.nome)
+    except HTTPException as e:
+        sys.exit(e.detail)
+    sb.table("credenciais_usuario").upsert({"usuario_id": achados[0]["id"],
+                                            "senha_hash": gerar_hash_senha(senha)}).execute()
+    print(f"Senha de '{achados[0]['nome']}' trocada.")
+    if not args.senha:
+        print(f"  Nova senha (aparece UMA vez):  {senha}")
+
+
 # ---------------------------------------------------------------------------
 
 def main():
@@ -714,6 +793,20 @@ def main():
     g.add_argument("--trocar", action="store_true", help="substitui um segundo fator já ativo")
     g.add_argument("--remover", action="store_true", help="apaga o segundo fator da conta")
     g.set_defaults(fn=cmd_gestor_mfa)
+
+    a = sub.add_parser("admin-global")
+    a.add_argument("--nome", required=True, help="nome de login (ex.: 'Davi Admin')")
+    a.add_argument("--condominio", default="11111111-1111-1111-1111-111111111111",
+                   help="condomínio-base da conta (o painel do gestor abre nele)")
+    a.add_argument("--senha", help="sem isto, gera uma senha forte e mostra uma vez")
+    a.add_argument("--nova-senha", action="store_true", dest="nova_senha",
+                   help="conta já existe: gera senha nova mesmo assim")
+    a.set_defaults(fn=cmd_admin_global)
+
+    sg = sub.add_parser("senha-gestor")
+    sg.add_argument("--nome", required=True)
+    sg.add_argument("--senha", help="sem isto, gera uma senha forte e mostra uma vez")
+    sg.set_defaults(fn=cmd_senha_gestor)
 
     sub.add_parser("verificar").set_defaults(fn=cmd_verificar)
 

@@ -90,23 +90,30 @@ def _veiculos(usuario_id: str) -> list:
         .order("criado_em").execute().data or []
 
 
-# `perfil` só existe a partir da migration 19. Se ela ainda não rodou, o
-# PostgREST recusa a coluna; caímos no formato antigo e lembramos a decisão
-# para não bater na mesma pedra a cada requisição.
-_condominios_tem_perfil = None
+# `perfil` só existe a partir da migration 19, e latitude/longitude a partir
+# da 20. Se a coluna ainda não existe, o PostgREST recusa; caímos para o
+# formato anterior. A recusa fica lembrada por um minuto (não bate na mesma
+# pedra a cada requisição) e depois tenta de novo - aplicar a migration com o
+# backend no ar passa a valer sem reiniciar.
+_FORMATOS_CONDOMINIO = ("id, nome, endereco, perfil, latitude, longitude",
+                        "id, nome, endereco, perfil",
+                        "id, nome, endereco")
+_formato_recusado_ate: dict[str, float] = {}
 
 
 def _condominios_ordenados() -> list:
-    global _condominios_tem_perfil
-    if _condominios_tem_perfil is not False:
+    import time as _time
+    agora = _time.monotonic()
+    for i, cols in enumerate(_FORMATOS_CONDOMINIO):
+        ultimo = i == len(_FORMATOS_CONDOMINIO) - 1
+        if not ultimo and _formato_recusado_ate.get(cols, 0) > agora:
+            continue
         try:
-            dados = supabase.table("condominios").select("id, nome, endereco, perfil") \
-                .order("nome").execute().data or []
-            _condominios_tem_perfil = True
-            return dados
+            return supabase.table("condominios").select(cols).order("nome").execute().data or []
         except Exception:
-            _condominios_tem_perfil = False
-    return supabase.table("condominios").select("id, nome, endereco").order("nome").execute().data or []
+            if ultimo:
+                raise
+            _formato_recusado_ate[cols] = agora + 60
 
 
 def _resposta_autenticada(usuario: dict) -> dict:

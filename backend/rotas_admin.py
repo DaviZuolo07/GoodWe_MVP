@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from config import ADMIN_MFA_OBRIGATORIO, agora_iso, supabase, um
 from identidade import CAMPOS_PUBLICOS, gestor_logado
 from rotas_conta import NOME_VALIDO
+from rotas_geral import eh_admin_global
 from seguranca import (SENHA_MAX, cifrar_segredo_mfa, conferir_senha, conferir_totp,
                        decifrar_segredo_mfa, emitir_token_admin, gerar_segredo_totp,
                        hash_ficticio, ip_do_cliente, limitador_admin_ip, limitador_admin_nome,
@@ -147,6 +148,7 @@ def login(payload: LoginAdmin, request: Request):
     limitador_admin_nome.limpar(chave_nome)
     auditar("login", usuario=usuario, ip=ip, detalhe="mfa" if ativo else "sem_mfa")
     return {"success": True, "gestor": _publico(usuario), "mfa": ativo,
+            "global": eh_admin_global(usuario["id"]),
             **emitir_token_admin(usuario["id"], mfa=ativo)}
 
 
@@ -158,7 +160,8 @@ def _publico(u: dict) -> dict:
 def eu(gestor: dict = Depends(gestor_logado)):
     c = um(supabase.table("condominios").select("id, nome, endereco")
            .eq("id", gestor.get("condominio_id")).execute()) if gestor.get("condominio_id") else None
-    return {"gestor": _publico(gestor), "condominio": c, "mfa": gestor["_mfa"]}
+    return {"gestor": _publico(gestor), "condominio": c, "mfa": gestor["_mfa"],
+            "global": eh_admin_global(gestor["id"])}
 
 
 @router.post("/mfa/iniciar")

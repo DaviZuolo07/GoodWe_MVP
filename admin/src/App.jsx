@@ -2,10 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import Entrar from './pages/Entrar.jsx'
 import PainelPage from './pages/PainelPage.jsx'
 import SegurancaPage from './pages/SegurancaPage.jsx'
+import VisaoGeralPage from './pages/VisaoGeralPage.jsx'
 import { definirAoExpirar, definirToken } from './lib/api.js'
 import { aplicarTema, lerTema } from './lib/tema.js'
 
 const ABAS = [
+  { id: 'geral', rotulo: 'Visão geral', soGlobal: true },
   { id: 'painel', rotulo: 'Operação' },
   { id: 'seguranca', rotulo: 'Acesso e segurança' },
 ]
@@ -21,8 +23,10 @@ function App() {
   const entrar = useCallback((dados) => {
     definirToken(dados.token)
     setAviso('')
-    setAba(dados.mfa ? 'painel' : 'seguranca')   // sem segundo fator: começa por cadastrá-lo
-    setSessao({ gestor: dados.gestor, expiraEm: dados.expira_em, mfa: Boolean(dados.mfa) })
+    // Sem segundo fator: começa por cadastrá-lo. Admin da plataforma abre na Visão geral.
+    setAba(!dados.mfa ? 'seguranca' : dados.global ? 'geral' : 'painel')
+    setSessao({ gestor: dados.gestor, expiraEm: dados.expira_em, mfa: Boolean(dados.mfa),
+                global: Boolean(dados.global) })
   }, [])
 
   const sair = useCallback((motivo = '') => {
@@ -64,11 +68,11 @@ function App() {
             <p className="text-sm text-mute">Painel do gestor</p>
           </div>
 
-          <nav className="order-3 flex w-full gap-1 sm:order-none sm:w-auto" aria-label="Seções do painel">
-            {ABAS.map((a) => (
+          <nav className="order-3 flex w-full gap-1 overflow-x-auto sm:order-none sm:w-auto" aria-label="Seções do painel">
+            {ABAS.filter((a) => !a.soGlobal || sessao.global).map((a) => (
               <button key={a.id} type="button" onClick={() => setAba(a.id)}
                       aria-current={aba === a.id ? 'page' : undefined}
-                      className={`relative rounded-chip px-3.5 py-2 text-sm transition-colors ${
+                      className={`relative shrink-0 rounded-chip px-3.5 py-2 text-sm transition-colors ${
                         aba === a.id ? 'nav-ativo text-ink' : 'text-mute hover:bg-raise/60 hover:text-ink'}`}>
                 {a.rotulo}
                 {a.id === 'seguranca' && !sessao.mfa && (
@@ -93,6 +97,7 @@ function App() {
       </header>
 
       <main className="mx-auto w-full max-w-[1360px] px-4 py-7 lg:px-9 lg:py-9">
+        {aba === 'geral' && sessao.global && <VisaoGeralPage />}
         {aba === 'painel' && <PainelPage />}
         {aba === 'seguranca' && (
           <SegurancaPage

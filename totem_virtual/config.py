@@ -100,6 +100,9 @@ def carregar(caminho: Path | None = None) -> Config:
         amostra_ms=int(n("TOTEM_AMOSTRA_S", 2) * 1000),
         envio_ms=int(n("TOTEM_ENVIO_S", 6) * 1000),
         offline_corte_ms=int(n("TOTEM_OFFLINE_CORTE_S", 120) * 1000),
+        # 3 s é o do firmware. Backend longe do Supabase (notebook no Brasil,
+        # banco no Canadá) leva ~5 s no handshake: suba aqui para testar.
+        http_timeout_s=n("TOTEM_HTTP_TIMEOUT_S", 3),
         painel_porta=int(n("PAINEL_PORTA", 8765)),
         roteiro_espera_s=n("ROTEIRO_ESPERA_S", 90),
         tags=tags, app_contas=contas)

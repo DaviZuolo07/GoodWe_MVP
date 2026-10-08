@@ -33,6 +33,7 @@ import endurecimento
 from config import ADMIN_MFA_OBRIGATORIO, ADMIN_ORIGIN_REGEX, ADMIN_ORIGINS, PRODUCAO
 from hardware_api import router_admin as hardware_admin_router
 from rotas_admin import auditar, router as admin_router
+from rotas_geral import router as geral_router
 from rotas_gestor import router as gestor_router
 from seguranca import ip_do_cliente, mfa_configurado, validar_token_admin
 
@@ -85,6 +86,7 @@ app.add_middleware(
 
 app.include_router(admin_router)
 app.include_router(gestor_router)
+app.include_router(geral_router)
 app.include_router(hardware_admin_router)
 
 

@@ -4,6 +4,33 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
+## 08/10/2026 — Davi · Chat V5 — Auditoria final do Next
+
+Override do contrato v1 de novo (autorizado por Davi): backend/db/admin mexidos e registrados para o Daniel. Detalhes em `docs/AUDITORIA_FINAL_next.md`.
+
+### Feito
+1. Varredura de todo o histórico do git: nenhuma chave real; senha de demo `SenhaDemo#2026` abria o painel como "Sindico FIAP" → senhas dos síndicos trocadas.
+2. Conta `Davi Admin` (gestor + admin global) e `db/20` (coordenadas, `chamados`, `admins_globais`) — aplicado no Supabase.
+3. Painel: aba **Visão geral** (resumo, chamados, recargas, cadastros, pagamentos, notificações) para todos os locais.
+4. App: **Mapa de pontos** (Leaflet + OpenStreetMap), **chamados** no Suporte, chatbot fecha ao clicar fora.
+5. Totem virtual: `TOTEM_HTTP_TIMEOUT_S` configurável.
+
+### Testado
+- pytest 85 verdes; lint/build front e admin ok; ponta a ponta contra o banco real; prints em Edge no tamanho de celular; roteiro do totem (14/17 em memória, 13/17 real).
+
+### NÃO testado
+- `docker build` (sem Docker na máquina; reproduzido em ambiente limpo).
+
+### Quebrou / atenção
+- **Banco no Canadá:** handshake do totem leva ~5 s a partir do Brasil; firmware desiste em 3 s. Publicar o backend na América do Norte ou subir o timeout.
+- Cadastrar o MFA do `Davi Admin`; trocar senhas das contas Totem e Gus Bancada.
+
+### Próximo
+1. Daniel: revisar `rotas_geral.py`, `rotas_suporte.py`, `db/20` e as sugestões da seção 12 da auditoria.
+2. Deploy conforme a seção 10 da auditoria.
+
+---
+
 ## 07/10/2026 — Davi · Chat V4 — Experiência Next: cadastro, recarga, visual e segurança
 
 Override do contrato v1 nesta rodada (autorizado): mexi em backend/db/admin e registrei tudo para o Daniel. Detalhes em `docs/AUDITORIA_experiencia_next.md`.
