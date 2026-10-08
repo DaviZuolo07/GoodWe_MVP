@@ -11,8 +11,13 @@ import { supabase } from '../supabaseClient.js'
  * O estande do Next (perfil 'bancada') não entra: é um ponto de demonstração,
  * não um lugar para onde alguém vai dirigir.
  *
- * Mapa: Leaflet + azulejos oficiais do OpenStreetMap. Sem chave e sem
- * cartão de crédito; a rota abre no Google Maps, que todo mundo já tem.
+ * Mapa: Leaflet + azulejos da CARTO (dados do OpenStreetMap). Sem chave e sem
+ * cartão de crédito. Não usamos tile.openstreetmap.org: a política de uso dele
+ * exige o cabeçalho Referer, e o app manda `no-referrer` (index.html) - o
+ * resultado era o mosaico "Access blocked / 403".
+ * A rota abre no Google Maps pelo ENDEREÇO escrito, não pela coordenada: no
+ * Brasil o OSM quase não tem número de casa, então a coordenada pode ser o
+ * meio da rua; o Google resolve o número e leva até a porta.
  * "Usar minha localização" pede permissão ao navegador e só funciona em
  * https ou em localhost (regra do navegador, não nossa).
  */
@@ -32,7 +37,8 @@ function fmtKm(km) {
 }
 
 function linkRota(local) {
-  return `https://www.google.com/maps/dir/?api=1&destination=${local.latitude},${local.longitude}`
+  const destino = local.endereco || `${local.latitude},${local.longitude}`
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destino)}`
 }
 
 function pino(ativo, livres) {
@@ -90,12 +96,11 @@ function MapaPage({ condominioAtual, onVerLocal }) {
     if (!caixa.current || mapa.current) return
     const escuro = document.documentElement.dataset.tema !== 'claro'
     const m = L.map(caixa.current, { zoomControl: true, attributionControl: true }).setView(CENTRO_SP, 11)
-    // Azulejos oficiais do OpenStreetMap: sem chave. No tema escuro, um filtro
-    // CSS escurece o mapa (classe mapa-escuro em index.css).
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      className: escuro ? 'mapa-escuro' : '',
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    // Azulejos CARTO: estilo escuro nativo (sem filtro CSS) e não exigem Referer.
+    L.tileLayer(`https://{s}.basemaps.cartocdn.com/${escuro ? 'dark_all' : 'rastertiles/voyager'}/{z}/{x}/{y}{r}.png`, {
+      subdomains: 'abcd',
+      maxZoom: 20,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
     }).addTo(m)
     camadaPinos.current = L.layerGroup().addTo(m)
     mapa.current = m

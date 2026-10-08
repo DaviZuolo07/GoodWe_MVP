@@ -57,6 +57,16 @@ class _Query:
     def in_(self, c, vs): self.filtros.append(lambda r: r.get(c) in list(vs)); return self
     def lt(self, c, v): self.filtros.append(lambda r: r.get(c) is not None and _cmp(r[c]) < _cmp(v)); return self
     def gte(self, c, v): self.filtros.append(lambda r: r.get(c) is not None and _cmp(r[c]) >= _cmp(v)); return self
+    # Só `is_(coluna, "null")` e `not_.is_(coluna, "null")`, o que o código usa.
+    def is_(self, c, v): self.filtros.append(lambda r: r.get(c) is None); return self
+
+    @property
+    def not_(self):
+        q = self
+
+        class _Nao:
+            def is_(self, c, v): q.filtros.append(lambda r: r.get(c) is not None); return q
+        return _Nao()
 
     def ilike(self, c, v):
         self.filtros.append(lambda r: str(r.get(c) or "").lower() == str(v).lower())
@@ -161,7 +171,7 @@ class FakeSupabase:
 
     # --- RPC com a mesma regra do SQL ---
     SINAL = {"credito": 1, "bonus": 1, "estorno": 1, "ajuste": 1,
-             "pre_autorizacao": -1, "ajuste_debito": -1}
+             "pre_autorizacao": -1, "ajuste_debito": -1, "taxa_ociosidade": -1}
 
     def _usuario(self, uid):
         u = next((x for x in self.t("usuarios") if x["id"] == uid), None)

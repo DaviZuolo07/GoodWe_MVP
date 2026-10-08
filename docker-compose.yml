@@ -1,0 +1,67 @@
+# =============================================================================
+# ChargeOps completo em contêineres - "o Next antes do Next"
+# =============================================================================
+# Sobe os QUATRO pedaços do jeito que vão ser publicados (docs/DEPLOY.md):
+#
+#   app do morador      http://localhost:8080   site estático (build de produção)
+#   painel do gestor    http://localhost:8081   site estático (build de produção)
+#   API pública         http://localhost:8000   AMBIENTE=producao
+#   API administrativa  http://localhost:8001   AMBIENTE=producao, 2º fator obrigatório
+#
+# O banco é o Supabase REAL (o mesmo do backend/.env). Não existe Supabase local.
+#
+# Uso (da raiz do repositório, com o Docker Desktop aberto):
+#   docker compose up --build        sobe tudo (primeira vez ~3-5 min)
+#   docker compose logs -f api       acompanha o simulador e as recargas
+#   docker compose down              desliga
+#
+# ANTES: pare o uvicorn e o "npm run dev" que estiverem rodando - as portas
+# 8000 e 8001 são as mesmas. Roteiro completo em docs/RODAR_E_VALIDAR.md.
+# =============================================================================
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  image: chargeops-backend
+  env_file: backend/.env
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *backend
+    environment:
+      AMBIENTE: producao
+      SERVICO: publico
+      PROXIES_CONFIAVEIS: "0"          # sem proxy na frente, aqui
+      MODO_DEMO: "0"
+      FRONTEND_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      ADMIN_ORIGINS: http://localhost:8081,http://127.0.0.1:8081
+    ports: ["8000:8000"]
+
+  api-admin:
+    <<: *backend
+    environment:
+      AMBIENTE: producao
+      SERVICO: admin
+      PROXIES_CONFIAVEIS: "0"
+      ADMIN_MFA: obrigatorio
+      FRONTEND_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      ADMIN_ORIGINS: http://localhost:8081,http://127.0.0.1:8081
+    ports: ["8001:8001"]
+
+  app:
+    build:
+      context: frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    ports: ["8080:80"]
+    depends_on: [api]
+
+  painel:
+    build:
+      context: admin
+      args:
+        VITE_ADMIN_API_URL: http://localhost:8001
+    ports: ["8081:80"]
+    depends_on: [api-admin]

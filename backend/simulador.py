@@ -13,6 +13,7 @@ A cada ciclo, nesta ordem:
   5b. liga quem espera energia (fila por ordem de chegada, ADR-018)
   6. registra a carga total do condomínio (e quanto veio da rede) na curva
      horária do gestor
+  7. taxa de ociosidade: carro que ficou na vaga depois da carga (db/21)
 
 SOLAR SIMULADO
 --------------
@@ -245,6 +246,8 @@ def ciclo() -> None:
         demanda.registrar_consumo(cond["id"], 0, em_horario_de_ponta(cond), carga_total,
                                   demanda_kw=estado.get("demanda_kw", carga_total),
                                   rede_kw=max(0.0, carga_total - solar_total))
+
+    recarga.atualizar_ociosas()
 
 async def laco() -> None:
     while True:

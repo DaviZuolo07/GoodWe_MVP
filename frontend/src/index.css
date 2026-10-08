@@ -690,5 +690,3 @@ html {
 .pino-mapa.pino-ativo { box-shadow: 0 0 0 6px color-mix(in oklab, var(--color-flux) 35%, transparent), 0 6px 16px rgb(0 0 0 / 0.45); }
 .leaflet-container { background: var(--color-panel); font-family: inherit; }
 .leaflet-control-attribution { font-size: 10px; }
-/* Tema escuro sem outro provedor de mapa: inverte e devolve o matiz. */
-.mapa-escuro { filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9); }

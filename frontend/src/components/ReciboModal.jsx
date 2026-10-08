@@ -18,6 +18,7 @@ const MOVIMENTO = {
   estorno: { texto: 'Devolvido à carteira', sinal: '+', cor: 'text-live' },
   credito: { texto: 'Crédito adicionado', sinal: '+', cor: 'text-live' },
   ajuste: { texto: 'Ajuste', sinal: '', cor: 'text-mute' },
+  taxa_ociosidade: { texto: 'Taxa de ociosidade (carro na vaga)', sinal: '−', cor: 'text-flux' },
 }
 
 const STATUS = {

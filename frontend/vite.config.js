@@ -12,9 +12,9 @@ export default defineConfig(({ mode }) => {
     react(),
     tailwindcss(),
     // A página só pode conversar com a API do morador e com o Supabase.
-    // Imagens de fora: só os azulejos do mapa (OpenStreetMap).
+    // Imagens de fora: só os azulejos do mapa (CARTO, dados do OpenStreetMap).
     csp({ conectar: [env.VITE_API_URL, env.VITE_SUPABASE_URL],
-          imagens: ['https://tile.openstreetmap.org'] }),
+          imagens: ['https://*.basemaps.cartocdn.com'] }),
   ],
   server: { port: 5173, strictPort: true },
   preview: { port: 5173, strictPort: true },

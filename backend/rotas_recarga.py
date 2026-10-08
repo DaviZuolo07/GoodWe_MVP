@@ -47,6 +47,18 @@ def encerrar(sessao_id: str, usuario: dict = Depends(usuario_logado)):
     return recarga.encerrar_pelo_usuario(usuario, sessao_id)
 
 
+@router.get("/recargas/vaga-ocupada")
+def vaga_ocupada(usuario: dict = Depends(usuario_logado)):
+    """Recarga que terminou com o carro ainda na vaga (taxa de ociosidade, db/21)."""
+    return {"vaga": recarga.vaga_ocupada_do_usuario(usuario["id"])}
+
+
+@router.post("/recargas/{sessao_id}/liberar-vaga")
+def liberar_vaga(sessao_id: str, usuario: dict = Depends(usuario_logado)):
+    """"Já retirei o carro": cobra a taxa de ociosidade (se houver) e libera o ponto."""
+    return recarga.liberar_vaga(usuario, sessao_id)
+
+
 @router.get("/recargas/{sessao_id}/recibo")
 def recibo(sessao_id: str, usuario: dict = Depends(usuario_logado)):
     """A conta linha a linha da MINHA recarga: energia, tarifa, reservado, cobrado, estorno."""

@@ -14,6 +14,7 @@ import ConfirmarStopModal from '../components/ConfirmarStopModal.jsx'
 import ChatPanel, { BotaoChat } from '../components/ChatPanel.jsx'
 import CondominioSelect, { useCondominios } from '../components/CondominioSelect.jsx'
 import FilaPanel from '../components/FilaPanel.jsx'
+import AvisoVagaOcupada from '../components/AvisoVagaOcupada.jsx'
 
 // Páginas secundárias entram sob demanda: quem abre o app no celular baixa
 // primeiro só o painel de carregadores.
@@ -536,6 +537,7 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                   <button onClick={() => setErroAcao('')} className="text-flux/70 hover:text-flux">✕</button>
                 </div>
               )}
+              <AvisoVagaOcupada onLiberada={() => { atualizarSaldo(); carregarDados() }} />
               <Suspense fallback={<div className="skeleton h-40 rounded-panel" />}>
               {pagina === 'veiculos' && (
                 <VeiculosPage veiculos={veiculos} onVeiculoAdicionado={atualizarSaldo} />

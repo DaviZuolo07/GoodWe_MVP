@@ -16,7 +16,10 @@ recarga.py - Ciclo de vida de uma recarga, do "preparar" ao recibo.
         |               ponta/fora-ponta, SoC, previsão de término, e as
         |               condições de parada (alvo, teto do valor reservado)
   encerrar()            custo real, ESTORNO da diferença, `bloquear`,
-                        recibo em notificação, fila avisada, potência realocada
+        |               recibo em notificação, fila avisada, potência realocada
+  liberar_vaga()        ponto SIMULADO que terminou sozinho: o carro segue na
+                        vaga e, depois da tolerância, corre a TAXA DE
+                        OCIOSIDADE (db/21) até o morador tocar "Já retirei o carro"
 
 TOTEM v2.1 - TAG PRIMEIRO (ADR-018)
 -----------------------------------
@@ -35,6 +38,7 @@ o morador encerrarem no mesmo segundo, só um UPDATE acerta a linha - e só ele
 calcula o estorno. Sem isso, o estorno sairia em dobro.
 """
 
+import math
 import unicodedata
 from datetime import timedelta
 
@@ -644,7 +648,14 @@ def encerrar(s: dict, motivo: str) -> dict:
         .eq("sessao_id", atual["id"]).execute()
 
     charger = carregador(atual["carregador_id"])
-    if charger["status"] != "offline":
+    # Terminou sozinha num ponto simulado: o carro continua plugado. A vaga
+    # só libera quando o morador avisa (liberar_vaga) - até lá corre a taxa.
+    fica_na_vaga = (motivo in MOTIVOS_CARRO_FICA and charger.get("origem") != "hardware"
+                    and _tem_ociosidade())
+    if fica_na_vaga:
+        supabase.table("sessoes_recarga").update({"vaga_ocupada_desde": agora_iso()}) \
+            .eq("id", atual["id"]).execute()
+    elif charger["status"] != "offline":
         supabase.table("carregadores").update({"status": "disponivel"}).eq("id", charger["id"]).execute()
     if atual.get("percentual_bateria_atual") is not None:
         supabase.table("veiculos").update({"percentual_bateria": atual["percentual_bateria_atual"]}) \
@@ -658,11 +669,157 @@ def encerrar(s: dict, motivo: str) -> dict:
         f"{fontes or energia_legivel(atual.get('energia_entregue_kwh'))}, custo {brl(custo)}"
         + (f", estorno de {brl(estorno)} já na sua carteira." if estorno > 0 else ".")))
 
-    avisar_proximo_da_fila(charger["id"])
+    if fica_na_vaga:
+        p = politica_ociosidade(condominio_de(charger))
+        notificar(atual["usuario_id"], (
+            f"Retire o carro do ponto {charger['numero']}: a vaga fica sem custo por "
+            f"{p['tolerancia_min']} min. Depois disso, taxa de ociosidade de "
+            f"{brl(p['taxa_por_min'])}/min (máximo {brl(p['teto'])}). "
+            "Toque em \"Já retirei o carro\" no app."))
+    else:
+        avisar_proximo_da_fila(charger["id"])
     demanda.alocar(charger["condominio_id"])
     _promover_sem_derrubar(charger["condominio_id"])
     print(f"[RECARGA] {atual['id']} encerrada ({motivo}) custo={custo} estorno={estorno}")
     return {"success": True, "custo_final": custo, "estorno": estorno, "motivo": motivo}
+
+
+# ---------------------------------------------------------------------------
+# Taxa de ociosidade (db/21) - só pontos SIMULADOS
+# ---------------------------------------------------------------------------
+# Encerrar pelo app ("usuario") conta como "estou no carro": a vaga libera na
+# hora. Só quem deixa a recarga terminar sozinha pode ter esquecido o carro.
+MOTIVOS_CARRO_FICA = ("bateria_cheia", "alvo_atingido", "limite_pre_autorizado")
+# Carro "esquecido" para sempre travaria o ponto simulado: o sistema libera
+# sozinho depois disto, cobrando a taxa (que já parou no teto).
+HORAS_LIBERACAO_AUTOMATICA = 6
+_ociosidade_no_banco = None
+
+
+def _tem_ociosidade() -> bool:
+    """O db/21 já rodou? Sem ele, a vaga libera na hora, como antes."""
+    global _ociosidade_no_banco
+    if _ociosidade_no_banco is None:
+        try:
+            supabase.table("sessoes_recarga").select("vaga_ocupada_desde").limit(1).execute()
+            _ociosidade_no_banco = True
+        except Exception:
+            _ociosidade_no_banco = False
+    return _ociosidade_no_banco
+
+
+def politica_ociosidade(cond: dict | None) -> dict:
+    c = cond or {}
+
+    def campo(nome, padrao):
+        return padrao if c.get(nome) is None else c[nome]
+    return {"tolerancia_min": int(campo("tolerancia_ociosidade_min", 15)),
+            "taxa_por_min": round(float(campo("taxa_ociosidade_min", 0.50)), 2),
+            "teto": round(float(campo("teto_ociosidade", 60.00)), 2)}
+
+
+def calcular_ociosidade(s: dict, cond: dict | None, ate=None) -> dict:
+    """Minuto COMEÇADO depois da tolerância conta inteiro (como Tesla e EA)."""
+    p = politica_ociosidade(cond)
+    desde = para_datetime(s.get("vaga_ocupada_desde"))
+    if not desde:
+        return {**p, "minutos_parado": 0, "minutos_cobrados": 0, "valor": 0.0, "cobra_a_partir_de": None}
+    fim = ate or para_datetime(s.get("vaga_liberada_em")) or agora()
+    parado = max(0.0, (fim - desde).total_seconds() / 60)
+    cobrados = max(0, math.ceil(parado - p["tolerancia_min"] - 1e-9))
+    return {**p, "minutos_parado": round(parado, 1), "minutos_cobrados": cobrados,
+            "valor": round(min(p["teto"], cobrados * p["taxa_por_min"]), 2),
+            "cobra_a_partir_de": (desde + timedelta(minutes=p["tolerancia_min"])).isoformat()}
+
+
+def _ociosas(usuario_id: str | None = None) -> list[dict]:
+    if not _tem_ociosidade():
+        return []
+    q = supabase.table("sessoes_recarga").select("*").not_.is_("vaga_ocupada_desde", "null") \
+        .is_("vaga_liberada_em", "null")
+    if usuario_id:
+        q = q.eq("usuario_id", usuario_id)
+    return q.execute().data or []
+
+
+def vaga_ocupada_do_usuario(usuario_id: str) -> dict | None:
+    """A recarga que terminou e cujo carro ainda está na vaga, com a taxa ao vivo."""
+    s = next(iter(_ociosas(usuario_id)), None)
+    if not s:
+        return None
+    charger = carregador(s["carregador_id"])
+    return {"sessao_id": s["id"], "carregador_id": charger["id"], "carregador": charger.get("numero"),
+            "finalizado_em": s.get("finalizado_em"), "vaga_ocupada_desde": s["vaga_ocupada_desde"],
+            **calcular_ociosidade(s, condominio_de(charger))}
+
+
+def _fechar_vaga(s: dict, por: str) -> dict:
+    """Uma vez só por sessão (UPDATE condicional), como o encerrar()."""
+    momento = agora()
+    marcada = supabase.table("sessoes_recarga").update({"vaga_liberada_em": momento.isoformat()}) \
+        .eq("id", s["id"]).is_("vaga_liberada_em", "null").execute()
+    if not marcada.data:
+        return {"success": True, "ja_liberada": True}
+
+    charger = carregador(s["carregador_id"])
+    conta = calcular_ociosidade(s, condominio_de(charger), ate=momento)
+    valor, cobrado = conta["valor"], 0.0
+    if valor > 0:
+        descricao = (f"Taxa de ociosidade - ponto {charger['numero']}, "
+                     f"{conta['minutos_cobrados']} min após a tolerância")
+        try:
+            carteira.debitar(s["usuario_id"], valor, "taxa_ociosidade", descricao, s["id"])
+            cobrado = valor
+        except carteira.SaldoInsuficiente:
+            # Cobra o que houver; o resto fica registrado como pendente.
+            disponivel = carteira.saldo_de(s["usuario_id"])
+            if disponivel > 0:
+                carteira.debitar(s["usuario_id"], disponivel, "taxa_ociosidade",
+                                 descricao + " (parcial)", s["id"])
+                cobrado = disponivel
+    supabase.table("sessoes_recarga").update({"taxa_ociosidade": valor,
+                                              "taxa_ociosidade_cobrada": round(cobrado, 2)}) \
+        .eq("id", s["id"]).execute()
+
+    if charger["status"] == "em_uso" and not sessao_viva_na_vaga(charger["id"]):
+        supabase.table("carregadores").update({"status": "disponivel"}).eq("id", charger["id"]).execute()
+    pendente = round(valor - cobrado, 2)
+    quem = "pelo sistema" if por == "sistema" else "por você"
+    notificar(s["usuario_id"], (
+        f"Vaga do ponto {charger['numero']} liberada {quem} após {conta['minutos_parado']:.0f} min. "
+        + (f"Taxa de ociosidade: {brl(cobrado)}." if valor > 0 else "Sem taxa de ociosidade.")
+        + (f" {brl(pendente)} ficaram pendentes por falta de saldo." if pendente > 0 else "")))
+    avisar_proximo_da_fila(charger["id"])
+    demanda.alocar(charger["condominio_id"])
+    print(f"[OCIOSIDADE] {s['id']} vaga liberada ({por}) taxa={valor} cobrado={cobrado}")
+    return {"success": True, "taxa": valor, "cobrado": round(cobrado, 2), "pendente": pendente,
+            "minutos_parado": conta["minutos_parado"]}
+
+
+def liberar_vaga(usuario: dict, sessao_id: str) -> dict:
+    s = sessao_do_usuario(sessao_id, usuario["id"])
+    if not s.get("vaga_ocupada_desde") or s.get("vaga_liberada_em"):
+        return {"success": True, "ja_liberada": True}
+    return _fechar_vaga(s, "usuario")
+
+
+def atualizar_ociosas() -> None:
+    """Laço de 10 s: taxa ao vivo na sessão, aviso quando a tolerância acaba."""
+    for s in _ociosas():
+        charger = carregador(s["carregador_id"])
+        conta = calcular_ociosidade(s, condominio_de(charger))
+        if conta["minutos_parado"] >= HORAS_LIBERACAO_AUTOMATICA * 60:
+            _fechar_vaga(s, "sistema")
+            continue
+        anterior = float(s.get("taxa_ociosidade") or 0)
+        if conta["valor"] != anterior:
+            supabase.table("sessoes_recarga").update({"taxa_ociosidade": conta["valor"]}) \
+                .eq("id", s["id"]).is_("vaga_liberada_em", "null").execute()
+        if anterior == 0 and conta["valor"] > 0:
+            notificar(s["usuario_id"], (
+                f"A tolerância do ponto {charger['numero']} acabou: a taxa de ociosidade "
+                f"({brl(conta['taxa_por_min'])}/min) começou a contar. Retire o carro."))
+
 
 
 def encerrar_pelo_usuario(usuario: dict, sessao_id: str) -> dict:
@@ -762,6 +919,8 @@ def recibo(usuario: dict, sessao_id: str) -> dict:
                                 "explicacao": "kWh solar comparado com a tarifa da rede fora da ponta "
                                               "congelada nesta recarga."},
         "movimentacoes": movimentos,
+        "ociosidade": (calcular_ociosidade(s, condominio_de(charger))
+                       if s.get("vaga_ocupada_desde") else None),
     }
 
 

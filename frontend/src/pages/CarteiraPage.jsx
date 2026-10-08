@@ -17,6 +17,7 @@ const ROTULOS = {
   pre_autorizacao: { texto: 'Reservado para a recarga', cor: 'text-flux', sinal: '−' },
   estorno: { texto: 'Estorno da diferença', cor: 'text-live', sinal: '+' },
   ajuste: { texto: 'Ajuste', cor: 'text-mute', sinal: '' },
+  taxa_ociosidade: { texto: 'Taxa de ociosidade', cor: 'text-flux', sinal: '−' },
 }
 
 function CarteiraPage({ sessao, onSaldoAtualizado }) {
