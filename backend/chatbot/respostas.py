@@ -146,8 +146,17 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
         total = f.get("total") or 0
         if not disp:
             em_uso = len(f.get("em_uso") or [])
+            fora = len(f.get("offline") or [])
+            if em_uso == 0 and fora:
+                # Antes: "0 de 4 estão em uso" - verdade, mas não explica nada.
+                return (f"Nenhum carregador livre{onde(ctx)} agora: "
+                        + (f"os {fora} pontos estão offline" if fora == total
+                           else f"{fora} de {total} {'estão' if fora > 1 else 'está'} offline")
+                        + " (sem conexão com o ponto). "
+                        "Assim que voltarem, aparecem como livres no painel.")
+            extra = f" e {fora} offline" if fora else ""
             return (f"Nenhum carregador livre{onde(ctx)} agora — {em_uso} de {total} "
-                    "estão em uso. Posso te colocar na fila pelo painel.")
+                    f"estão em uso{extra}. Posso te colocar na fila pelo painel.")
         return (f"Estão livres agora{onde(ctx)}: {lista(disp)} "
                 f"({len(disp)} de {total} pontos).")
 
@@ -156,7 +165,7 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
             return ("Não encontrei esse carregador no seu condomínio. "
                     "Confere o número no painel?")
         return (f"Carregador {f['numero']} ({f.get('modelo') or 'modelo não informado'}): "
-                f"{f.get('tipo') or '—'}, até {num(f['potencia_maxima_kw'])} kW, "
+                f"{f.get('tipo') or '—'}, até {potencia(f['potencia_maxima_kw'])}, "
                 f"conector {f.get('conector') or '—'}, tarifa {brl(f['tarifa_kwh'])}/kWh. "
                 f"Status: {f.get('status')}. Temperatura: {num(f.get('temperatura_c'), 1)} °C.")
 
@@ -181,12 +190,17 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
         vs = f.get("veiculos") or []
         if not vs:
             return "Você ainda não tem veículo cadastrado. Dá para adicionar em Meus Veículos."
-        partes = [
-            f"{v.get('modelo')} ({v.get('placa')}), bateria de "
-            f"{num(v.get('capacidade_bateria_kwh'), 1)} kWh em "
-            f"{num(v.get('percentual_bateria'), 0)}%"
-            for v in vs
-        ]
+        # Celular não tem placa nem % conhecido: nada de "(None)" ou "—%" na tela,
+        # e 0,017 kWh vira "17,2 Wh" (energia()), não "0 kWh".
+        partes = []
+        for v in vs:
+            texto = v.get("modelo") or "Veículo"
+            if v.get("placa"):
+                texto += f" ({v['placa']})"
+            texto += f", bateria de {energia(v.get('capacidade_bateria_kwh'))}"
+            if v.get("percentual_bateria") is not None:
+                texto += f" em {num(v['percentual_bateria'], 0)}%"
+            partes.append(texto)
         return "Seus veículos: " + lista(partes) + "."
 
     if intencao == R.SIMULAR_RECARGA:
@@ -218,22 +232,35 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
     if intencao == R.DEMANDA:
         if not f.get("encontrado"):
             return "Não encontrei os dados de potência deste condomínio."
-        ponta = (f"Agora é horário de ponta ({f['ponta_inicio']} às {f['ponta_fim']}): o limite "
-                 f"para recarga cai para {f['ponta_percentual_limite']}% e a tarifa fica "
-                 f"{num(f['ponta_multiplicador'], 2)}x maior."
-                 if f.get("em_ponta") else
-                 f"O horário de ponta é das {f['ponta_inicio']} às {f['ponta_fim']} em dias "
-                 "úteis; nele o limite cai e a tarifa sobe.")
-        geral = (f"O condomínio{onde(ctx)} libera até {potencia(f['limite_agora_kw'])} para recarga e "
-                 f"tem {potencia(f['carga_agora_kw'])} reservados para {f['recargas_ativas']} recarga(s) em andamento. "
-                 "O sistema divide essa potência entre os carros para nunca passar do limite do quadro.")
+        bancada = f.get("bancada")
+        aparelhos = "os celulares" if bancada else "os carros"
+        if f.get("sem_ponta"):
+            # 00:00-00:00 = sem ponta. Antes saía "das 00:00 às 00:00", que não diz nada.
+            ponta = "Este local não tem horário de ponta: o limite e a tarifa são os mesmos o dia todo."
+        elif f.get("em_ponta"):
+            ponta = (f"Agora é horário de ponta ({f['ponta_inicio']} às {f['ponta_fim']}): o limite "
+                     f"para recarga cai para {f['ponta_percentual_limite']}% e a tarifa fica "
+                     f"{num(f['ponta_multiplicador'], 2)}x maior.")
+        else:
+            ponta = (f"O horário de ponta é das {f['ponta_inicio']} às {f['ponta_fim']} em dias "
+                     "úteis; nele o limite cai e a tarifa sobe.")
+        local = (ctx or {}).get("condominio_nome") if bancada else None
+        sujeito = local or f"O condomínio{onde(ctx)}"
+        if f.get("recargas_ativas"):
+            uso = (f"tem {potencia(f['carga_agora_kw'])} reservados para "
+                   f"{f['recargas_ativas']} recarga(s) em andamento")
+        else:
+            uso = "não tem nenhuma recarga em andamento agora"
+        geral = (f"{sujeito} libera até {potencia(f['limite_agora_kw'])} para recarga e {uso}. "
+                 f"O sistema divide essa potência entre {aparelhos} para nunca passar do limite do quadro.")
         m = f.get("minha")
         if not m:
-            return f"{geral} {ponta}"
+            voce = "Você não tem recarga em andamento agora, então nada está limitando a sua. "
+            return f"{voce}{geral} {ponta}"
         if m.get("limitada"):
             sua = (f"Sua recarga no ponto {m['carregador_numero']} está recebendo "
                    f"{potencia(m['potencia_alocada_kw'])} de {potencia(m['potencia_maxima_kw'])} possíveis, "
-                   f"porque os carros ligados pediriam {potencia(f['demanda_agora_kw'])}. Quando alguém "
+                   f"porque {aparelhos} ligados pediriam {potencia(f['demanda_agora_kw'])}. Quando alguém "
                    "terminar, a sua sobe sozinha.")
         elif m.get("fixa"):
             sua = (f"Sua recarga no ponto {m['carregador_numero']} não é limitada pelo condomínio: a "
@@ -247,10 +274,12 @@ def redigir(intencao: str, fatos: dict, ctx: dict) -> str:
         return f"{sua} {geral} {ponta}"
 
     if intencao == R.COBRANCA:
+        horario = ("pela mesma tarifa o dia todo (este local não tem horário de ponta)"
+                   if f.get("sem_ponta") else
+                   f"pela tarifa do horário em que foi entregue (na ponta, {f['ponta_inicio']} às "
+                   f"{f['ponta_fim']}, fica {num(f['ponta_multiplicador'], 2)}x)")
         base = ("Funciona como pré-autorização: ao aproximar o cartão, reservamos o custo "
-                "estimado; cada kWh é cobrado pela tarifa do horário em que foi entregue "
-                f"(na ponta, {f['ponta_inicio']} às {f['ponta_fim']}, fica "
-                f"{num(f['ponta_multiplicador'], 2)}x); ao terminar, a diferença volta na hora.")
+                f"estimado; cada kWh é cobrado {horario}; ao terminar, a diferença volta na hora.")
         u = f.get("ultima")
         if u and u.get("reservado") is not None:
             base += (f" Na sua última recarga: reservado {brl(u['reservado'])}, custo real "

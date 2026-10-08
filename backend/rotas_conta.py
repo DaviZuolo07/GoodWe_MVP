@@ -39,7 +39,8 @@ class CadastroRequest(BaseModel):
     senha: str = Field(..., min_length=1, max_length=SENHA_MAX)
     condominio_id: Optional[str] = None
     # Gestor NÃO se cadastra pela tela pública: nasce pela migration.
-    tipo_usuario: Literal["morador", "visitante"] = "morador"
+    # Estande Next (perfil bancada): o banco troca por "next" sozinho (db/22).
+    tipo_usuario: Literal["morador", "visitante", "next"] = "morador"
     bloco_apto: Optional[str] = Field(None, max_length=40)
     veiculo_modelo: str = Field(..., min_length=1, max_length=60)
     veiculo_placa: Optional[str] = Field(None, max_length=10)
@@ -193,6 +194,9 @@ def cadastro(payload: CadastroRequest, request: Request):
             raise HTTPException(status_code=409, detail="Esse nome de usuário já está cadastrado.")
         if "condominio_invalido" in texto:
             raise HTTPException(status_code=400, detail="Condomínio inválido.")
+        if "tipo_invalido" in texto:
+            raise HTTPException(status_code=400, detail=(
+                "Cargo inválido para este local: NEXT só existe no Estande Next."))
         print(f"[CADASTRO] falhou para '{nome}': {type(e).__name__}: {texto[:200]}")
         raise HTTPException(status_code=500, detail="Não foi possível concluir o cadastro.")
 

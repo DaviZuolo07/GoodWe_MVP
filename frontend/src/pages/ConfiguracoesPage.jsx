@@ -257,7 +257,7 @@ function ConfiguracoesPage({ sessao, condominio, onUsuarioAtualizado }) {
           descricao="Edição destes campos depende de um endpoint que ainda não existe no backend."
         >
           <Campo label="Nome" valor={usuario.nome} />
-          <Campo label="Tipo de usuário" valor={usuario.tipo_usuario || usuario.papel} />
+          <Campo label="Tipo de usuário" valor={usuario.tipo_usuario === 'next' ? 'NEXT' : (usuario.tipo_usuario || usuario.papel)} />
           <Campo label="Bloco / Apto" valor={usuario.bloco_apto} />
           <Campo
             label="Saldo"

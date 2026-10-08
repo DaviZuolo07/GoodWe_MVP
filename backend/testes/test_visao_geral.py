@@ -172,3 +172,18 @@ def test_condominios_traz_coordenadas():
     locais = {c["nome"]: c for c in APP.get("/condominios").json()}
     assert locais["Residencial Um"]["latitude"] == -23.5
     assert locais["Estande"]["latitude"] is None
+
+
+# --- cargo NEXT (db/22) -------------------------------------------------------
+
+def test_cadastro_no_estande_vira_next_e_next_nao_existe_fora_dele():
+    corpo = {"senha": SENHA, "veiculo_modelo": "iPhone 15", "veiculo_tipo": "celular",
+             "capacidade_bateria_kwh": 0.0128, "potencia_carro_kw": 0.02}
+    r = APP.post("/cadastro", json={**corpo, "nome": "Visita Feira", "condominio_id": C2,
+                                    "tipo_usuario": "morador"})
+    assert r.status_code == 200, r.text
+    assert next(u for u in fake.t("usuarios") if u["nome"] == "Visita Feira")["tipo_usuario"] == "next"
+
+    r = APP.post("/cadastro", json={**corpo, "nome": "Intruso Next", "condominio_id": C1,
+                                    "tipo_usuario": "next"})
+    assert r.status_code == 400

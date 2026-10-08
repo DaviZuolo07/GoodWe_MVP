@@ -17,7 +17,14 @@ services:
       - { key: PROXIES_CONFIAVEIS, value: "1" }
       - { key: MODO_DEMO, value: "0" }
       - { key: FUSO_HORARIO, value: America/Sao_Paulo }
-      - { key: CHAT_MODO, value: regras }
+      # Assistente: LLM open-weight (gpt-oss, Apache 2.0) no Ollama Cloud. Sem a
+      # chave, ou com o Ollama fora, o chat cai sozinho nas respostas prontas.
+      - { key: CHAT_MODO, value: llm }
+      - { key: OLLAMA_HOST, value: "https://ollama.com" }
+      - { key: OLLAMA_MODEL, value: "gpt-oss:120b" }
+      - { key: OLLAMA_THINK, value: low }
+      - { key: OLLAMA_TIMEOUT_S, value: "30" }
+      - { key: OLLAMA_DEV, value: "0" }
       - { key: SUPABASE_URL, sync: false }
       - { key: SUPABASE_KEY, sync: false }
       - { key: JWT_PRIVATE_JWK, sync: false }

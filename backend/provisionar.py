@@ -58,6 +58,12 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
       UMA vez, o endereço para o app autenticador (Google/Microsoft
       Authenticator, Authy, 1Password). --trocar substitui um cadastro que já
       existe (celular perdido). --remover apaga o segundo fator da conta.
+      Só ATIVA depois que você digita um código do app que confere (antes,
+      ativava na hora e uma letra errada trancava a conta).
+
+  python provisionar.py testar-mfa --nome "Nome do Gestor"
+      Diagnóstico do "Código inválido": diz se o código do app bate com a
+      chave gravada, se o relógio está fora ou se a chave é outra. Não grava nada.
 
   python provisionar.py chave-jwt-admin
       Opcional. Chave SEPARADA para assinar o token do painel do gestor
@@ -645,20 +651,111 @@ def cmd_gestor_mfa(args):
         sys.exit(f"'{u['nome']}' já tem segundo fator ativo. Use --trocar para substituir.")
 
     from datetime import datetime, timezone
+    from seguranca import conferir_totp
     segredo = gerar_segredo_totp()
+    # Nasce PENDENTE (ativado_em nulo), como no cadastro pelo painel: só vira
+    # ativo depois que o celular provar que gera o código certo. Antes, a
+    # linha nascia ativa - uma letra errada ao digitar a chave trancava a
+    # conta com "Código inválido" para sempre, sem pista do motivo.
     linha = {"usuario_id": u["id"], "segredo_cifrado": cifrar_segredo_mfa(segredo),
-             "ativado_em": datetime.now(timezone.utc).isoformat(), "ultimo_passo": None}
+             "ativado_em": None, "ultimo_passo": None}
     if atual:
         sb.table("gestor_mfa").update(linha).eq("usuario_id", u["id"]).execute()
     else:
         sb.table("gestor_mfa").insert(linha).execute()
 
-    print(f"\nSegundo fator de '{u['nome']}' cadastrado. Isto aparece UMA vez:\n")
-    print(f"  Chave para digitar no app:  {segredo}")
-    print(f"  Ou abra/gere um QR com:     {uri_totp(segredo, u['nome'])}\n")
-    print("No app autenticador: adicionar conta -> inserir chave de configuração ->")
-    print("tipo 'baseada em tempo'. O painel vai pedir o código de 6 dígitos no login.")
-    print("Não mande esta chave em grupo: quem tiver ela gera os códigos.\n")
+    agrupada = " ".join(segredo[i:i + 4] for i in range(0, len(segredo), 4))
+    print(f"\nSegundo fator de '{u['nome']}'. Isto aparece UMA vez:\n")
+    print(f"  Chave para o app:      {segredo}")
+    print(f"  A mesma, para conferir: {agrupada}")
+    print(f"  Endereço otpauth (QR):  {uri_totp(segredo, u['nome'])}\n")
+    print("No app autenticador: + -> 'Outra conta' / 'Inserir chave de configuração' ->")
+    print("cole ou digite a chave (só letras A-Z e números 2-7; não existe 0, 1, 8 nem 9),")
+    print("tipo 'baseada em tempo'. Não mande esta chave em grupo.\n")
+
+    for tentativa in range(1, 4):
+        codigo = input(f"Digite o código de 6 dígitos que o app mostra agora ({tentativa}/3): ")
+        passo = conferir_totp(segredo, codigo)
+        if passo is not None:
+            sb.table("gestor_mfa").update({
+                "ativado_em": datetime.now(timezone.utc).isoformat(), "ultimo_passo": passo,
+            }).eq("usuario_id", u["id"]).execute()
+            print("\nConfere. Segundo fator ATIVO: o painel vai pedir o código no login.")
+            print("(Este código já foi usado; para entrar, espere o próximo.)\n")
+            return
+        print("  Não confere. Confira a chave no app (letra a letra) e tente o próximo código.")
+    print("\nO segundo fator ficou PENDENTE (não ativado): a chave do app não bate com a do servidor.")
+    print("Apague a conta no app autenticador e rode este comando de novo.")
+    print("Em desenvolvimento (ADMIN_MFA=opcional) o login no painel segue só com a senha.\n")
+
+
+def cmd_testar_mfa(args):
+    """
+    Diagnóstico: o código do celular bate com a chave gravada? Não grava nada e
+    não queima o código. Procura em ±5 min para separar 'relógio errado' de
+    'chave diferente'.
+    """
+    import time
+    from seguranca import TOTP_PASSO_S, _totp_no_passo, decifrar_segredo_mfa
+
+    sb = _supabase()
+    achados = sb.table("usuarios").select("id, nome").ilike("nome", args.nome).execute().data
+    if not achados:
+        sys.exit(f"Nenhum usuário chamado '{args.nome}'.")
+    mfa = sb.table("gestor_mfa").select("*").eq("usuario_id", achados[0]["id"]).execute().data
+    if not mfa:
+        sys.exit("Esta conta não tem segundo fator cadastrado.")
+    try:
+        segredo = decifrar_segredo_mfa(mfa[0]["segredo_cifrado"])
+    except Exception:                                        # noqa: BLE001
+        sys.exit("A chave gravada não abre com a ADMIN_MFA_KEY deste .env: ela mudou. "
+                 "Recadastre com gestor-mfa --trocar.")
+    print(f"Estado: {'ATIVO' if mfa[0].get('ativado_em') else 'PENDENTE'}; "
+          f"último passo usado: {mfa[0].get('ultimo_passo')}")
+    codigo = "".join(input("Código que o app mostra agora: ").split())
+    atual = int(time.time() // TOTP_PASSO_S)
+    for desvio in sorted(range(-10, 11), key=abs):
+        if _totp_no_passo(segredo, atual + desvio) == codigo:
+            if abs(desvio) <= 1:
+                print("CONFERE. Chave e relógio certos.")
+                usado = mfa[0].get("ultimo_passo")
+                if usado is not None and atual + desvio <= usado:
+                    print("Mas este passo já foi usado: espere o próximo código.")
+            else:
+                print(f"A chave está certa, mas o relógio está {desvio * TOTP_PASSO_S:+d} s fora "
+                      "(o servidor aceita ±30 s). Sincronize a hora do PC e do celular.")
+            return
+    print("NÃO CONFERE em ±5 min: o app tem uma chave DIFERENTE da gravada.\n"
+          f"Apague a conta no app e rode: python provisionar.py gestor-mfa --nome \"{achados[0]['nome']}\" --trocar")
+
+
+def cmd_testar_llm(_args):
+    """Uma pergunta mínima ao Ollama com a configuração do .env: chave, modelo e latência."""
+    import time
+    import httpx
+    from chatbot import llm
+
+    print(f"\nCHAT_MODO={llm.CHAT_MODO}  host={llm.OLLAMA_HOST}  modelo={llm.OLLAMA_MODEL}  "
+          f"chave={'presente' if llm.OLLAMA_API_KEY else 'AUSENTE'}")
+    if llm.CHAT_MODO != "llm":
+        print("CHAT_MODO não é 'llm': o assistente responde só com as regras.")
+    cab = {"Authorization": f"Bearer {llm.OLLAMA_API_KEY}"} if llm.OLLAMA_API_KEY else {}
+    inicio = time.perf_counter()
+    try:
+        r = httpx.post(f"{llm.OLLAMA_HOST}/api/chat", headers=cab, timeout=llm.OLLAMA_TIMEOUT_S, json={
+            "model": llm.OLLAMA_MODEL, "stream": False,
+            "messages": [{"role": "user", "content": "Responda apenas: ok"}]})
+    except httpx.HTTPError as e:
+        sys.exit(f"FALHOU: sem resposta do Ollama ({type(e).__name__}). Rede ou OLLAMA_HOST.")
+    ms = int((time.perf_counter() - inicio) * 1000)
+    if r.status_code == 401:
+        sys.exit("FALHOU 401: chave recusada. Gere outra em https://ollama.com/settings/keys "
+                 "e troque OLLAMA_API_KEY no .env (e na hospedagem).")
+    if r.status_code == 404:
+        sys.exit(f"FALHOU 404: o modelo '{llm.OLLAMA_MODEL}' não existe neste host.")
+    if r.status_code != 200:
+        sys.exit(f"FALHOU {r.status_code}: {r.text[:200]}")
+    print(f"PASSOU em {ms} ms: {(r.json().get('message') or {}).get('content', '').strip()[:60]!r}\n")
 
 
 def _senha_forte() -> str:
@@ -726,11 +823,44 @@ def cmd_senha_gestor(args):
         validar_forca_senha(senha, args.nome)
     except HTTPException as e:
         sys.exit(e.detail)
-    sb.table("credenciais_usuario").upsert({"usuario_id": achados[0]["id"],
-                                            "senha_hash": gerar_hash_senha(senha)}).execute()
-    print(f"Senha de '{achados[0]['nome']}' trocada.")
+    from datetime import datetime, timezone
+    from seguranca import conferir_senha
+    uid = achados[0]["id"]
+    sb.table("credenciais_usuario").upsert({
+        "usuario_id": uid, "senha_hash": gerar_hash_senha(senha),
+        "atualizado_em": datetime.now(timezone.utc).isoformat()}).execute()
+    # Lê de volta e confere com o MESMO código do login: "trocada" só aparece
+    # se o banco realmente tem esta senha.
+    gravada = sb.table("credenciais_usuario").select("senha_hash").eq("usuario_id", uid).execute().data
+    if not gravada or not conferir_senha(gravada[0]["senha_hash"], senha):
+        sys.exit("FALHOU: o banco não ficou com a senha nova. Nada mudou.")
+    print(f"Senha de '{achados[0]['nome']}' trocada e conferida no banco "
+          f"({len(senha)} caracteres).")
     if not args.senha:
         print(f"  Nova senha (aparece UMA vez):  {senha}")
+
+
+def cmd_testar_senha(args):
+    """Confere uma senha digitada (oculta) contra o banco, com o mesmo código do login."""
+    import getpass
+    from seguranca import conferir_senha
+
+    sb = _supabase()
+    achados = sb.table("usuarios").select("id, nome, tipo_usuario").ilike("nome", args.nome).execute().data
+    if not achados:
+        sys.exit(f"Nenhuma conta chamada '{args.nome}'.")
+    c = sb.table("credenciais_usuario").select("senha_hash, atualizado_em") \
+        .eq("usuario_id", achados[0]["id"]).execute().data
+    if not c:
+        sys.exit("Esta conta não tem senha cadastrada.")
+    print(f"Conta '{achados[0]['nome']}' ({achados[0]['tipo_usuario']}), senha gravada em "
+          f"{c[0]['atualizado_em']}.")
+    senha = getpass.getpass("Digite a senha (não aparece na tela): ")
+    if conferir_senha(c[0]["senha_hash"], senha):
+        print("CONFERE: esta é a senha do banco. Se o painel recusa, o navegador está "
+              "preenchendo OUTRA senha salva - apague o campo e digite (ou cole) esta.")
+    else:
+        print(f"NÃO CONFERE ({len(senha)} caracteres digitados). Defina uma nova com senha-gestor.")
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +923,16 @@ def main():
     g.add_argument("--trocar", action="store_true", help="substitui um segundo fator já ativo")
     g.add_argument("--remover", action="store_true", help="apaga o segundo fator da conta")
     g.set_defaults(fn=cmd_gestor_mfa)
+
+    sub.add_parser("testar-llm").set_defaults(fn=cmd_testar_llm)
+
+    ts = sub.add_parser("testar-senha")
+    ts.add_argument("--nome", required=True)
+    ts.set_defaults(fn=cmd_testar_senha)
+
+    tm = sub.add_parser("testar-mfa")
+    tm.add_argument("--nome", required=True, help="nome de login do gestor")
+    tm.set_defaults(fn=cmd_testar_mfa)
 
     a = sub.add_parser("admin-global")
     a.add_argument("--nome", required=True, help="nome de login (ex.: 'Davi Admin')")

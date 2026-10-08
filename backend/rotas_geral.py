@@ -130,7 +130,7 @@ def resumo(_: dict = Depends(admin_global)):
 
     total = bloco()
     total["usuarios_por_tipo"] = {t: sum(1 for u in usuarios if u.get("tipo_usuario") == t)
-                                  for t in ("morador", "visitante", "gestor")}
+                                  for t in ("morador", "visitante", "next", "gestor")}
     total["novos_mes"] = sum(1 for u in usuarios if (u.get("criado_em") or "") >= mes)
     total["creditos_carteira_mes"] = round(sum(_f(m["valor"]) for m in creditos if m["tipo"] == "credito"), 2)
     total["chamados_abertos"] = abertos

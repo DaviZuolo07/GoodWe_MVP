@@ -88,7 +88,7 @@ function Login({ onLoginSuccess, aviso }) {
         nome,
         senha,
         condominio_id: condominioId || CONDOMINIO_PADRAO,
-        tipo_usuario: tipoUsuario,
+        tipo_usuario: ehBancada ? 'next' : tipoUsuario,
         bloco_apto: ehBancada ? null : (blocoApto || null),
         ...veiculo.payload,
         codigo_convite: exigeCodigo ? codigoConvite.trim() : undefined,
@@ -255,10 +255,17 @@ function Login({ onLoginSuccess, aviso }) {
             <div className={ehBancada ? '' : 'grid grid-cols-2 gap-3'}>
               <div>
                 <label className={labelClass}>Tipo</label>
-                <select className={inputClass} value={tipoUsuario} onChange={(e) => setTipoUsuario(e.target.value)}>
-                  <option value="morador">Morador</option>
-                  <option value="visitante">Visitante</option>
-                </select>
+                {/* No Estande Next o único cargo é NEXT (o banco garante, db/22). */}
+                {ehBancada ? (
+                  <select className={inputClass} value="next" disabled>
+                    <option value="next">NEXT</option>
+                  </select>
+                ) : (
+                  <select className={inputClass} value={tipoUsuario} onChange={(e) => setTipoUsuario(e.target.value)}>
+                    <option value="morador">Morador</option>
+                    <option value="visitante">Visitante</option>
+                  </select>
+                )}
               </div>
               {/* O Totem Next é um ponto de estande: não tem bloco nem apto. */}
               {!ehBancada && (

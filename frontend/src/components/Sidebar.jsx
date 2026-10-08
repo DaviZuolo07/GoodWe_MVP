@@ -342,7 +342,7 @@ function Sidebar({ sessao, paginaAtiva, onNavigate, onLogout, onAbrirChat, naoLi
             </span>
             <div className="min-w-0">
               <p className="truncate font-medium leading-tight text-ink">{usuario.nome}</p>
-              <p className="mt-0.5 truncate text-xs capitalize text-dim">
+              <p className={`mt-0.5 truncate text-xs text-dim ${usuario.tipo_usuario === 'next' ? 'uppercase' : 'capitalize'}`}>
                 {usuario.tipo_usuario || usuario.papel || 'morador'}
               </p>
             </div>

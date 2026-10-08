@@ -1,4 +1,4 @@
-import { CELULARES, CELULAR_OUTRO, acharCelular, mahParaKwh } from '../lib/celulares.js'
+import { CELULARES, CELULAR_OUTRO, MARCAS, acharCelular, mahParaKwh } from '../lib/celulares.js'
 import { energia } from '../lib/formato.js'
 
 /**
@@ -21,8 +21,12 @@ function CamposCelular({ inputClass, labelClass, modelo, onModelo, nome, onNome,
       <div>
         <label className={labelClass}>Modelo do celular</label>
         <select className={inputClass} value={modelo} onChange={(e) => onModelo(e.target.value)}>
-          {CELULARES.map((c) => (
-            <option key={c.modelo} value={c.modelo}>{c.modelo}</option>
+          {MARCAS.map((marca) => (
+            <optgroup key={marca} label={marca}>
+              {CELULARES.filter((c) => c.marca === marca).map((c) => (
+                <option key={c.modelo} value={c.modelo}>{c.modelo}</option>
+              ))}
+            </optgroup>
           ))}
           <option value={CELULAR_OUTRO}>Outro (informar manualmente)</option>
         </select>

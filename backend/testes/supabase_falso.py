@@ -282,7 +282,10 @@ class FakeSupabase:
         return len(lote)
 
     def _cadastrar(self, p):
-        if p["p_tipo"] not in ("morador", "visitante"):
+        cond = next((c for c in self.t("condominios") if c["id"] == p["p_condominio"]), None)
+        if cond and cond.get("perfil") == "bancada":           # db/22: o estande é sempre 'next'
+            p = {**p, "p_tipo": "next", "p_bloco": None}
+        elif p["p_tipo"] not in ("morador", "visitante"):
             raise ErroRPC("tipo_invalido")
         if not str(p.get("p_senha_hash") or "").startswith("$argon2"):
             raise ErroRPC("hash_invalido")

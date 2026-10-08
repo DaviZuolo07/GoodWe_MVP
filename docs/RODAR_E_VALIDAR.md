@@ -23,10 +23,10 @@ Dois jeitos de rodar:
 
 ## 0. Pré-requisitos (uma vez)
 
-- [ ] Python 3.13+ e `pip install -r requirements.txt` (da raiz)
-- [ ] Node 22+ e `npm install` em `frontend/` e em `admin/`
-- [ ] `backend/.env` e `frontend/.env` preenchidos (modelos nos `.env.example`)
-- [ ] **Relógio do Windows sincronizado.** O código do autenticador e a
+- [x] Python 3.13+ e `pip install -r requirements.txt` (da raiz)
+- [x] Node 22+ e `npm install` em `frontend/` e em `admin/`
+- [x] `backend/.env` e `frontend/.env` preenchidos (modelos nos `.env.example`)
+- [x] **Relógio do Windows sincronizado.** O código do autenticador e a
       anti-replay do totem dependem disso (já tivemos o PC 249 s atrasado):
       Configurações → Hora e idioma → Data e hora → **Sincronizar agora**.
 - [ ] Docker Desktop instalado (só para o modo Docker): <https://www.docker.com/products/docker-desktop/>
@@ -59,11 +59,13 @@ Se 8000 estiver numa faixa, use outra porta (`--port 8010`) ou rode
 
 No **Supabase → SQL Editor**, nesta ordem:
 
-1. [ ] `db/20_mapa_chamados_admin_global.sql` (se ainda não rodou) — coordenadas, chamados, admin global.
-2. [ ] `db/21_taxa_ociosidade.sql` — taxa por minuto de carro esquecido na vaga.
-3. [ ] `db/98_reset_total.sql` — **apaga todas as contas (inclusive admin e
+1. [x] `db/20_mapa_chamados_admin_global.sql` (se ainda não rodou) — coordenadas, chamados, admin global.
+2. [x] `db/21_taxa_ociosidade.sql` — taxa por minuto de carro esquecido na vaga.
+3. [x] `db/98_reset_total.sql` — **apaga todas as contas (inclusive admin e
        síndicos do seed) e todo o histórico/logs.** Mantém condomínios,
        carregadores, placas e cartões do condomínio. Não tem desfazer.
+4. [ ] `db/22_cargo_next.sql` — no Estande Next o único cargo é **NEXT** (o
+       banco garante). Pode rodar depois do reset; não apaga nada.
 
 A sessão "que não fecha": o login é um token guardado **só na memória da aba**
 (recarregar a página já sai) e toda rota confere se a conta existe. Apagando a
@@ -87,8 +89,14 @@ python provisionar.py admin-global --nome "Davi Admin"
 ```
 
 A senha é gerada e aparece **uma vez** no terminal: guarde direto no
-gerenciador de senhas (nunca em arquivo do repositório). O segundo fator vem
-no passo 3.
+gerenciador de senhas (nunca em arquivo do repositório, nem colada em chat).
+Se ela vazou, troque: `python provisionar.py senha-gestor --nome "Davi Admin"`.
+O segundo fator vem no passo 3.
+
+**Conta de gestor não entra no app do morador** — de propósito (ADR-023): o
+app responde "Nome de usuário ou senha incorretos", a mesma mensagem da senha
+errada, para não revelar quem é gestor. Para testar o app, crie uma conta de
+morador pelo próprio cadastro.
 
 ## 3. Google Authenticator no painel — como funciona
 
@@ -118,8 +126,24 @@ Dois jeitos de cadastrar:
   ```powershell
   python provisionar.py gestor-mfa --nome "Davi Admin"
   ```
-  Mostra a chave e o endereço `otpauth://` uma vez. No app: **+** → **Inserir
-  chave de configuração** → nome da conta, a chave, tipo **baseada em tempo**.
+  Mostra a chave e o endereço `otpauth://` uma vez. No app: **+** → **Outra
+  conta** → **Inserir código manualmente** → nome da conta, a chave, tipo
+  **baseada em tempo**. Em seguida o comando **pede um código do app** e só
+  ativa se ele conferir (antes ativava na hora, e uma letra errada na chave
+  trancava a conta).
+
+**"Código inválido ou já usado" em todo login** — diagnóstico em 1 minuto:
+
+```powershell
+python provisionar.py testar-mfa --nome "Davi Admin"
+```
+
+Digite o código que o app mostra. A resposta é uma de três:
+`CONFERE` (espere o próximo código: cada um vale uma vez), `relógio X s fora`
+(sincronize PC e celular) ou `NÃO CONFERE` (o app tem outra chave — apague a
+conta no app e rode `gestor-mfa --trocar`). Em 08/10 o caso foi o terceiro: a
+senha conferia, o relógio estava certo, a chave do banco abria com a
+`ADMIN_MFA_KEY`, mas o celular gerava códigos de outra chave.
 
 Perdeu o celular: `python provisionar.py gestor-mfa --nome "Davi Admin" --trocar`.
 Trocar a `ADMIN_MFA_KEY` invalida o segundo fator de **todos** os gestores.
@@ -137,13 +161,20 @@ npm run dev
 npm run dev
 ```
 
-- [ ] <http://localhost:8000/> e <http://localhost:8001/> respondem `{"status":"ok"...}`
-- [ ] <http://localhost:8000/docs> abre (só em desenvolvimento)
+- [x] <http://localhost:8000/> e <http://localhost:8001/> respondem `{"status":"ok"...}`
+- [x] <http://localhost:8000/docs> abre (só em desenvolvimento)
 - [ ] O log da API pública mostra o simulador rodando a cada 10 s, sem `[SIMULADOR] erro`
 
 ## 5. Rodar com Docker (ensaio do Next)
 
-Pare tudo do passo 4 (mesmas portas 8000/8001) e, **da raiz**:
+**Os 4 terminais do passo 4: feche (Ctrl+C em cada um).** As duas APIs
+precisam sair de qualquer jeito: o Docker usa as mesmas portas 8000/8001 e
+não sobe com elas ocupadas. Os dois `npm run dev` (5173/5174) não conflitam,
+mas deixá-los abertos faz você testar a versão errada sem perceber — no
+Docker os endereços são **8080** e **8081**. Os dois modos usam o **mesmo
+banco**: o que você criar num aparece no outro.
+
+Com o Docker Desktop aberto, **da raiz**:
 
 ```powershell
 docker compose up --build
@@ -209,6 +240,17 @@ prédio: Google Maps → clique direito no prédio → clique nas coordenadas (c
 ```sql
 update condominios set latitude = <lat>, longitude = <lng> where nome ilike '%Melville%';
 ```
+
+### Cadastro no Estande Next (db/22)
+- [ ] Cadastro com o local **Estande Next (totem)**: o campo Tipo mostra só **NEXT** (travado) e não pede bloco/apto.
+- [ ] Na barra lateral e em Configurações a conta aparece como **NEXT**.
+- [ ] Cadastro num condomínio residencial continua com Morador/Visitante.
+- [ ] Celular: a lista de modelos vem agrupada por marca (iPhone X → 18 Pro Max, Galaxy S22 → S26 e linha A/M).
+
+### Assistente (chatbot)
+- [ ] `python provisionar.py testar-llm` → **PASSOU**. Com 401, a chave do Ollama está revogada: gere outra em <https://ollama.com/settings/keys>, troque `OLLAMA_API_KEY` no `backend/.env` e reinicie a API.
+- [ ] No app, "Por que minha recarga está lenta?" responde em linguagem natural (LLM). Sem LLM, cai nas respostas prontas — que também precisam fazer sentido (no Estande: "não tem horário de ponta", não "00:00 às 00:00").
+- [ ] Supabase → `chat_mensagens`: cada pergunta vira 2 linhas, e a coluna `camada` diz quem respondeu (`redacao_llm` ou `redacao_regras`).
 
 ### Suporte e chamados
 - [ ] App → Suporte → abrir chamado (assunto + mensagem). Aparece em "Meus chamados" como **aberto**.

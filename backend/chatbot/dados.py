@@ -181,7 +181,10 @@ def info_carregador(condominio_id: str, numero=None, charger_id: str = None) -> 
     if charger_id:
         q = q.eq("id", charger_id)
     elif numero is not None:
-        q = q.eq("numero", str(numero))
+        # O estande numera T1..T4; os condomínios, 01..NN. Quem digita "ponto 1"
+        # quer o mesmo ponto em qualquer um dos dois.
+        n = str(numero).upper().lstrip("T").lstrip("0") or "0"
+        q = q.in_("numero", list({str(numero), n, n.zfill(2), f"T{n}"}))
     else:
         return {"encontrado": False, "fonte": ["carregadores"]}
 
@@ -358,6 +361,10 @@ def demanda(condominio: dict, usuario_id: str = None) -> dict:
         "minha": None,
         "fonte": ["condominios", "sessoes_recarga", "alocador_de_demanda"],
     }
+    # Início == fim (o estande grava 00:00-00:00) = local SEM horário de ponta.
+    fatos["sem_ponta"] = fatos["ponta_inicio"] == fatos["ponta_fim"]
+    # Bancada (Estande Next): celulares, não carros - muda o vocabulário da resposta.
+    fatos["bancada"] = condominio.get("perfil") == "bancada"
     if usuario_id:
         minha = sb().table("sessoes_recarga").select(
             "id, carregador_id, potencia_alocada_kw, potencia_atual_kw, percentual_bateria_atual") \
@@ -393,6 +400,8 @@ def cobranca(usuario_id: str, condominio: dict) -> dict:
         "ponta_inicio": str((condominio or {}).get("ponta_inicio") or "18:00")[:5],
         "ponta_fim": str((condominio or {}).get("ponta_fim") or "21:00")[:5],
         "ponta_multiplicador": float((condominio or {}).get("ponta_multiplicador_tarifa") or 1),
+        "sem_ponta": (str((condominio or {}).get("ponta_inicio") or "18:00")[:5]
+                      == str((condominio or {}).get("ponta_fim") or "21:00")[:5]),
         "ultima": {
             "reservado": u.get("valor_pre_autorizado"),
             "custo_final": u.get("custo_final"),

@@ -90,7 +90,7 @@ function Resumo({ dados }) {
         <Cartao rotulo="Recargas agora" valor={num(t.recargas_ativas, 0)} cor={t.recargas_ativas ? 'text-live' : undefined}
                 sub={`${potencia(t.potencia_agora_kw)} em uso`} />
         <Cartao rotulo="Cadastros" valor={num(t.usuarios, 0)}
-                sub={`${t.usuarios_por_tipo.morador} moradores · ${t.usuarios_por_tipo.visitante} visitantes · ${t.novos_mes} novos no mês`} />
+                sub={`${t.usuarios_por_tipo.morador} moradores · ${t.usuarios_por_tipo.visitante} visitantes · ${t.usuarios_por_tipo.next ?? 0} NEXT · ${t.novos_mes} novos no mês`} />
         <Cartao rotulo="Faturamento do mês" valor={brl(t.faturamento_mes)}
                 sub={`${num(t.recargas_mes, 0)} recargas · ${brl(t.creditos_carteira_mes)} em créditos`} />
         <Cartao rotulo="Chamados em aberto" valor={t.chamados_abertos == null ? '—' : num(t.chamados_abertos, 0)}
@@ -373,7 +373,7 @@ function VisaoGeralPage() {
                  className="mb-3 w-full max-w-sm rounded-chip border border-line bg-raise/50 px-3 py-2 text-sm text-ink focus:border-flux focus:outline-none" />
           <Tabela vazio="Nenhum cadastro." linhas={usuariosFiltrados} colunas={[
             { id: 'nome', rotulo: 'Nome', render: (u) => <span className="font-medium text-ink">{u.nome}</span> },
-            { id: 'tipo_usuario', rotulo: 'Tipo', render: (u) => <span className="capitalize">{u.tipo_usuario}</span> },
+            { id: 'tipo_usuario', rotulo: 'Tipo', render: (u) => <span className={u.tipo_usuario === 'next' ? 'uppercase' : 'capitalize'}>{u.tipo_usuario}</span> },
             { id: 'local', rotulo: 'Local', render: (u) => `${u.local || '—'}${u.bloco_apto ? ` · ${u.bloco_apto}` : ''}` },
             { id: 'veiculos', rotulo: 'Veículos', render: (u) => <span className="text-mute">{u.veiculos.join(', ') || '—'}</span> },
             { id: 'recargas', rotulo: 'Recargas', direita: true },

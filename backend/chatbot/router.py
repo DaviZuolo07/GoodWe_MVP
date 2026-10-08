@@ -177,7 +177,7 @@ def extrair_parametros(texto: str, intencao: str) -> dict:
     """
     params = {}
 
-    m = re.search(r"(?:carregador|ponto|vaga)\s*(?:n[uo]?\.?\s*)?(\d{1,3})", texto)
+    m = re.search(r"(?:carregador|ponto|vaga)\s*(?:n[uo]?\.?\s*)?t?(\d{1,3})", texto)
     if m:
         params["numero_carregador"] = m.group(1).zfill(2)
 

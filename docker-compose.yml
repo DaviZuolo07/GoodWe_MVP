@@ -35,6 +35,7 @@ services:
       SERVICO: publico
       PROXIES_CONFIAVEIS: "0"          # sem proxy na frente, aqui
       MODO_DEMO: "0"
+      OLLAMA_DEV: "0"                  # prompts lidos uma vez, como em produção
       FRONTEND_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
       ADMIN_ORIGINS: http://localhost:8081,http://127.0.0.1:8081
     ports: ["8000:8000"]
