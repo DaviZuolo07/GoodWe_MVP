@@ -1,4 +1,4 @@
-# ADR-021 — Totem que o servidor recusa: parar de insistir e dizer por quê
+S# ADR-021 — Totem que o servidor recusa: parar de insistir e dizer por quê
 
 - **Status:** ACEITO em 06/10/2026 (Davi) — pasta `totem_virtual/` e contrato da máquina de estados; P1 e P2 são pedidos ao Daniel
 - **Chat:** V2 — laço de 401, totem físico e firmware

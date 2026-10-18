@@ -64,7 +64,7 @@ No **Supabase → SQL Editor**, nesta ordem:
 3. [x] `db/98_reset_total.sql` — **apaga todas as contas (inclusive admin e
        síndicos do seed) e todo o histórico/logs.** Mantém condomínios,
        carregadores, placas e cartões do condomínio. Não tem desfazer.
-4. [ ] `db/22_cargo_next.sql` — no Estande Next o único cargo é **NEXT** (o
+4. [x] `db/22_cargo_next.sql` — no Estande Next o único cargo é **NEXT** (o
        banco garante). Pode rodar depois do reset; não apaga nada.
 
 A sessão "que não fecha": o login é um token guardado **só na memória da aba**
