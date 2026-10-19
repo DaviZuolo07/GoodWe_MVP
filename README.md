@@ -5,7 +5,13 @@ morador, painel do síndico, assistente de IA com guardrails e um ponto de
 recarga físico em ESP32 que mede energia de verdade.
 
 Projeto acadêmico FIAP + GoodWe. Os dados de moradores e condomínios são
-simulados; a medição de energia do ponto do ESP32 é real.
+simulados; a medição de energia do totem (quatro vagas e o painel solar) é real.
+
+**No NEXT (22/10/2026) tudo roda local, no PC do Gustavo**: backend, API do
+gestor, app do morador e painel. O banco é o projeto Supabase do Davi, acessado
+desse PC. **Não há deploy.** O acordo do que o visitante vive está em
+[docs/contratos/experiencia_next.md](docs/contratos/experiencia_next.md); o
+guia de estudo do grupo, em [docs/MAPA_DE_ESTUDO.md](docs/MAPA_DE_ESTUDO.md).
 
 ---
 
@@ -14,11 +20,11 @@ simulados; a medição de energia do ponto do ESP32 é real.
 | Camada | Tecnologia |
 |---|---|
 | Aplicativo | React 19, Vite, Tailwind CSS v4, `@supabase/supabase-js` |
-| Backend | Python 3.10+, FastAPI, Pydantic, `supabase-py`, httpx |
+| Backend | Python 3.13, FastAPI, Pydantic, `supabase-py`, httpx |
 | Banco | Supabase (PostgreSQL + Realtime), com RLS ligada |
 | Identidade | Argon2id para a senha, JWT ES256 assinado pelo backend |
 | IA | Ollama (nuvem ou local), com fallback determinístico |
-| Hardware | ESP32 por WiFi, relé, INA219 (ou PZEM), leitor RFID MFRC522 |
+| Hardware | Totem Central: ESP32, 4 vagas USB com relé + INA219, INA219 no painel solar, 18650 pelo ADC, reversor SPDT, LCD 16x2, MFRC522 |
 
 Os quatro problemas que ele resolve:
 
@@ -29,8 +35,11 @@ Os quatro problemas que ele resolve:
    teto no valor reservado e estorno automático da diferença. Tudo no extrato.
 3. **Assistente confiável.** Quatro camadas (entrada, contexto, saída,
    auditoria) e um eval que roda contra o produto, não contra um laboratório.
-4. **Energia medida.** O ESP32 reporta W, V, A e Wh a cada 2 segundos; o
-   backend deriva carga, tempo restante e custo a partir do que o sensor viu.
+4. **Energia medida.** O ESP32 reporta W, V, A e Wh de cada vaga e a geração
+   do painel a cada 2 segundos; o backend deriva carga, tempo restante e custo
+   a partir do que o sensor viu. Os dados do celular (mAh, potência) vêm da
+   lista embarcada `frontend/src/lib/celulares.js` ou do que o visitante
+   digita — o USB não manda dados.
 
 ---
 
@@ -60,26 +69,59 @@ GoodWe_MVP/
 │   ├── evals/               casos + runner contra o produto
 │   └── testes/              testes sem banco e sem placa
 │
-├── db/                      migrations, na ordem 01 -> 14 (99 = limpeza)
-├── firmware/chargeops_esp32/
-│   ├── chargeops_esp32.ino  firmware do ESP32
-│   └── segredos.exemplo.h   copie para segredos.h e preencha
+│   ├── main_admin.py        API do painel do gestor (outra aplicação, porta 8001)
+│   └── preparar_totem.py    deixa o banco pronto para o Totem Central
+│
+├── admin/                   painel do gestor (React, porta 5174)
+├── db/                      migrations 01 -> 22 (98 = reset total, 99 = limpeza)
+├── firmware/
+│   ├── totem_central/       firmware do totem do NEXT (4 vagas + solar)
+│   └── chargeops_esp32/     placa v1 (um ponto só), mantida como estava
+├── totem_virtual/           o totem inteiro em Python: referência testada do firmware
+├── docs/                    contratos, ADRs, estado, mapa de estudo
 └── frontend/src/            páginas, componentes, lib/api.js, lib/formato.js
 ```
 
 ---
 
-## 3. Rodar do zero
+## 3. Rodar do zero (no PC do estande)
 
 ### Pré-requisitos
 
-Python 3.10+, Node 18+, conta no Supabase, conta no Ollama (grátis, opcional).
+Python **3.13**, Node 18+, acesso ao projeto Supabase do Davi, conta no Ollama
+(opcional: sem ela use `CHAT_MODO=regras`). No Windows:
+`pip install tzdata` — sem a base de fusos o horário de ponta cai para UTC.
 
 ### Passo 1 — banco
 
 No **SQL Editor** do Supabase, rode os arquivos de `db/` **na ordem numérica**,
-do `01` ao `14`, um de cada vez. **Banco que já tinha 01–13: rode só o `14`.** A ordem importa: cada um assume o estado
-deixado pelo anterior.
+um de cada vez. A ordem importa: cada um assume o estado deixado pelo anterior.
+
+```
+01_schema                  12_produto
+02_seed                    13_cartoes
+03_alter_login_cadastro    14_valor_e_integridade
+04_fix_percentual_bateria  15_multiporta_protocolo_v2
+05_saldo_billing           16_fontes_e_cobranca
+06_rfid_e_temperatura      17_totem_escala_fontes
+07_multi_condominio        18_painel_admin
+08_locais_favoritos        19_condominio_perfil
+09_hardware_esp32          20_mapa_chamados_admin_global
+10_rfid_fluxo_real         21_taxa_ociosidade
+11_seguranca               22_cargo_next
+```
+
+**Banco que já tem até o N:** rode só do `N+1` em diante. O banco do Davi já
+está na 22: no PC do Gustavo não é preciso rodar nada.
+
+`15_verificacao.sql`, `16_verificacao.sql` e `17_verificacao.sql` **não são
+migrations**: conferem, no próprio Postgres, que as RPCs daquela etapa fazem o
+que o backend espera. Nenhum deles altera dado.
+
+| Arquivo | O que faz |
+|---|---|
+| `98_reset_total.sql` | **apaga todas as contas e todo o histórico.** Mantém condomínios, carregadores, placas e cartões. Não tem desfazer. |
+| `99_limpeza.sql` | limpeza pontual de dado de teste |
 
 Depois, em **Settings → API**, copie a URL, a chave publicável (frontend) e a
 chave secreta / `service_role` (backend).
@@ -102,11 +144,22 @@ O comando imprime duas coisas:
 - a linha `JWT_PRIVATE_JWK=...`: cole no `backend/.env`. A chave privada nunca
   sai do backend.
 
-Em seguida, dê senha às contas do seed (inclui os síndicos e a conta de
-bancada criadas pela migration 12):
+> Copiando o `backend/.env` de um PC que já funciona (o do Davi), pule este
+> passo: a chave JWT já está no Supabase. **O `.env` vai por canal privado,
+> nunca pelo git** (o repositório é público).
+
+Senhas das contas do seed:
 
 ```bash
 python provisionar.py senhas-demo --senha "SuaSenhaDemo#2026"
+```
+
+Conferência rápida, **sem Supabase, sem `.env` e sem rede** (os testes usam o
+ambiente falso de `backend/testes/ambiente.py`):
+
+```bash
+python -m pytest backend/testes -q          # 108 passed  (~25 s)
+python -m pytest totem_virtual/testes -q    # 57 passed   (~3 min 20 s)
 ```
 
 ### Passo 3 — backend
@@ -116,10 +169,12 @@ cd backend
 uvicorn main:app --reload --host 0.0.0.0
 ```
 
-O `--host 0.0.0.0` é obrigatório para o celular e para o ESP32 alcançarem o
+O `--host 0.0.0.0` é obrigatório para o celular e o ESP32 alcançarem o
 servidor. Documentação da API: <http://localhost:8000/docs>.
+Deixe `AMBIENTE=desenvolvimento` (o padrão): `producao` fecha o CORS da rede
+local e o celular para de abrir o app.
 
-### Passo 4 — frontend
+### Passo 4 — app do morador
 
 ```bash
 cd frontend
@@ -128,14 +183,11 @@ npm install
 npm run dev -- --host
 ```
 
-O terminal mostra dois endereços. O segundo (`http://192.168.x.x:5173`)
-funciona no celular, no mesmo WiFi — sem editar nada, porque o app deduz a URL
-da API do endereço que abriu a página.
+O segundo endereço que o terminal mostra (`http://<IP do PC>:5173`) funciona
+no celular, na mesma rede, sem editar nada: o app deduz a URL da API do
+endereço que abriu a página. **Deixe `VITE_API_URL` comentado.**
 
 ### Passo 4b — painel do gestor (outro aplicativo, ADR-023)
-
-O painel não faz parte do app do morador: tem pasta, endereço, API e login
-próprios. Dois terminais:
 
 ```bash
 cd backend
@@ -148,71 +200,145 @@ npm install
 npm run dev                   # http://127.0.0.1:5174
 ```
 
-Antes da primeira vez: rode `db/18_painel_admin.sql` no Supabase. Para o
-segundo fator (obrigatório publicado, opcional na bancada):
-`python provisionar.py chave-mfa` e
-`python provisionar.py gestor-mfa --nome "Nome do Gestor"`.
-Conta de gestor não entra pelo app do morador. Publicar: `docs/DEPLOY.md`.
+Segundo fator (opcional na bancada): `python provisionar.py chave-mfa` e
+`python provisionar.py gestor-mfa --nome "Nome do Gestor"`. Conta de gestor não
+entra pelo app do morador.
 
-### Passo 5 — conferir a segurança
+### Passo 5 — o totem do estande
+
+```bash
+cd backend
+python preparar_totem.py --fisico --sem-env
+```
+
+Cria (ou acerta, se já existir) o condomínio **"Estande Next (totem)"** —
+limite **30 kW** (4 vagas × 7,5 kW na escala ×1000), sem horário de ponta — as
+vagas T1–T4, a placa com porta solar 4 e três moradores de teste. Na **T4**
+grava `modo_carga = 1` (10032, FV) e `garantir_minimo = true` (10024): sem o
+10024 a vaga **pausa** quando a 18650 acaba, em vez de seguir pela rede.
+Copie `DEVICE_ID` e `DEVICE_KEY_HEX` da saída para o `segredos.h` (§4).
+
+### Passo 6 — rede do estande (hotspot 4G)
+
+O backend roda no PC, mas consulta o Supabase **dentro de cada requisição**:
+sem internet, o estande cai. Faça **uma vez**, com o PC já no hotspot:
+
+**1. Firewall** — rede nova no Windows vira "Pública" e bloqueia a entrada nas
+portas do projeto; o sintoma é *timeout*, que parece bug. PowerShell **como
+administrador**:
+
+```powershell
+Get-NetConnectionProfile | Where-Object { $_.Name -like "*<nome do hotspot>*" } |
+  Set-NetConnectionProfile -NetworkCategory Private
+
+New-NetFirewallRule -DisplayName "ChargeOps Next" -Direction Inbound `
+  -Protocol TCP -LocalPort 8000,8001,5173,5174 -Action Allow -Profile Private
+```
+
+Teste: `http://<IP do PC>:8000/` no navegador **de outro celular** tem de
+voltar `{"status":"ok", ...}`. Se não voltar, nada do resto funciona.
+
+**2. IP fixo no PC** (o `BACKEND_URL` fica gravado na placa):
+
+| Hotspot | Gateway | Máscara | IP sugerido para o PC |
+|---|---|---|---|
+| iPhone | `172.20.10.1` | `255.255.255.240` | `172.20.10.5` |
+| Android | `192.168.43.1` (confira) | `255.255.255.0` | `192.168.43.50` |
+
+Configurações → Rede → Wi-Fi → a rede → Configurações de IP → Manual, IPv4,
+DNS `8.8.8.8` e `1.1.1.1`. O CORS já aceita as faixas privadas
+(`192.168.*`, `10.*`, `172.16–31.*`).
+
+**3. Latência** — o firmware espera até **8 s** (`HTTP_TIMEOUT_MS`): o banco
+está no Canadá e o handshake leva ~5 s do Brasil. Meça no hotspot, 5 vezes:
+
+```powershell
+Measure-Command { Invoke-WebRequest http://localhost:8000/hardware/v2/hora } |
+  Select-Object TotalMilliseconds
+```
+
+Se o pior passar de 4 s, suba o timeout para o dobro dele (`config.h` e
+`TOTEM_HTTP_TIMEOUT_S` do totem virtual).
+
+**Checklist da manhã do dia 22**
+
+- [ ] Celular do hotspot com bateria > 80 %, carregador junto, franquia conferida
+- [ ] Hotspot em **2,4 GHz** (o ESP32 não enxerga 5 GHz; iPhone: *Maximizar Compatibilidade*)
+- [ ] SSID e senha **sem acento e sem emoji**
+- [ ] PC com IP fixo e rede **Privada**; `:8000` abre do celular de outra pessoa
+- [ ] `w32tm /resync` — relógio errado derruba o handshake assinado
+- [ ] `MODO_DEMO=0` no `backend/.env`, com a placa conectada
+- [ ] Segundo celular pronto como hotspot reserva, com **o mesmo SSID e a
+      mesma senha** (a placa reconecta sozinha) — e o mesmo IP fixo no PC
+
+**Plano B de palco, sem rede nenhuma:** `python -m totem_virtual painel --bolso`
+sobe o FastAPI de verdade com o Supabase falso em memória. O laço de 10 s não
+roda e o dado some ao fechar. Ensaie uma vez antes.
+
+### Passo 7 — conferir a segurança
 
 ```bash
 cd backend
 python provisionar.py verificar
 ```
 
-São 17 tentativas de invasão contra o banco real (ler usuários, ler a carteira
-do vizinho, forjar token, se dar crédito pelo RPC). Todas devem falhar, e o
-controle positivo no fim deve passar — se ele falhar, os "bloqueios" podem ser
-falso positivo.
+São 17 tentativas de invasão contra o banco real. Todas devem falhar, e o
+controle positivo no fim deve passar.
 
 ---
 
-## 4. O ESP32 do ponto físico
+## 4. O Totem Central (ESP32 do estande)
 
-### Montagem (carregador de celular por USB)
+Montagem, pinos, bibliotecas e a ordem da primeira ligação:
+[firmware/totem_central/README.md](firmware/totem_central/README.md). Hardware
+e decisões: [ADR-022](docs/decisoes/ADR-022_totem_fisico.md).
 
 | Peça | Ligação |
 |---|---|
-| Relé no fio +5 V do cabo USB | GPIO 26 |
-| LED de status | GPIO 2 (LED da placa) |
-| INA219 (mede V e A) | I²C: SDA 21, SCL 22 |
-| MFRC522 (RFID) | SPI: SDA 5, SCK 18, MOSI 23, MISO 19, RST 4 |
+| Relés das vagas 1–4 | GPIO 26, 27, 25, 33 |
+| Reversor SPDT da vaga 4 | GPIO 32 (desligado = rede, ligado = solar) |
+| Botões 1–4 | GPIO 13, 14, 15, 34 (o 34 com 10 kΩ ao 3V3) |
+| LCD 16x2 + INA219 das vagas (0x40/41/44/45) | I²C: SDA 21, SCL 22 |
+| **INA219 do painel** (0x40) | I²C 2 (`Wire1`): SDA 17, SCL 16 — entre o painel e o TP4056 |
+| **18650** | ADC no **GPIO 35** (ADC1) por divisor 10k + 10k |
+| MFRC522 | SPI: SS 5, SCK 18, MOSI 23, MISO 19, RST 4 |
+
+**São 5 INA219: quatro vagas e o painel.** A geração solar é medida e vai para
+`geracao_solar` com `origem = 'medido'`. A bateria não tem sensor: a tensão
+vem do ADC e a potência é deduzida (consumo da vaga 4 − painel).
 
 ### Gravar
 
-1. Gere o token do dispositivo (o antigo, que estava no repositório, não vale
-   mais — o banco guarda só o hash):
+1. `cd backend && python preparar_totem.py --fisico --sem-env` — copie
+   `DEVICE_ID` e `DEVICE_KEY_HEX` (canal privado, nunca chat/commit).
+2. Copie `firmware/totem_central/segredos.exemplo.h` para `segredos.h` e
+   preencha SSID, senha e `BACKEND_URL` (o IP fixo do PC, **nunca**
+   `localhost`, sem barra no fim).
+3. Abra `firmware/totem_central/totem_central.ino` no Arduino IDE (placa
+   **esp32 3.3.12**, "ESP32 Dev Module") e grave.
 
-   ```bash
-   cd backend
-   python provisionar.py token-esp --carregador b0000000-0000-0000-0000-000000000001
-   ```
+**Sem a placa:** `python -m totem_virtual painel` roda o mesmo firmware em
+Python contra o backend de verdade, com uma página para encostar tag, plugar
+celular e tapar o painel.
 
-2. Copie `firmware/chargeops_esp32/segredos.exemplo.h` para `segredos.h` na
-   mesma pasta e preencha SSID, senha, URL do backend (o IP do PC, **nunca**
-   `localhost`) e o token.
-3. Abra `firmware/chargeops_esp32/chargeops_esp32.ino` no Arduino IDE, escolha
-   `SENSOR_TIPO` e `USAR_RFID` no topo do arquivo e grave.
-
-**Sem hardware montado:** deixe `SENSOR_SIMULADO` e `USAR_RFID 0`. A placa
-simula um carregador de celular e você "aproxima o cartão" digitando o UID no
-monitor serial. O fluxo inteiro funciona assim.
+A placa v1 de um ponto só (`firmware/chargeops_esp32/`) continua no
+repositório como estava; não é a do estande.
 
 ### Cadastrar o cartão
 
-Um cartão físico só, atendendo todos os moradores:
+Um cartão físico só, atendendo todos os moradores (no estande, o condomínio é
+o "Estande Next (totem)", `e57a4de0-0000-4000-8000-000000000000`):
 
 ```bash
 cd backend
 python provisionar.py cartao-compartilhado \
-  --uid A1B2C3D4 --condominio c0000000-0000-0000-0000-000000000002
+  --uid A1B2C3D4 --condominio e57a4de0-0000-4000-8000-000000000000
 ```
 
 Não sabe o UID? Prepare uma recarga no app e encoste o cartão: a tela de
 espera mostra o número lido e oferece o cadastro ali mesmo.
 
-### Qualquer carregador pode ser físico
+### Qualquer carregador pode ser físico (placa v1)
 
 Não existe carregador especial. O `b0000000-...-0001` é apenas o ponto que o
 seed marcou como físico. Um ponto vira ESP32 quando três coisas são verdade:
@@ -235,7 +361,7 @@ mesmo fluxo, mesma cobrança, mesma gestão de demanda. A diferença é de onde
 vem o número de energia — do sensor da placa ou do modelo físico do
 `fisica.py`. Uma segunda placa é só repetir o comando acima em outro ponto.
 
-### O fluxo, passo a passo
+### O fluxo, passo a passo (placa v1)
 
 ```
 1. Morador confirma a recarga no app
@@ -257,7 +383,11 @@ vem o número de energia — do sensor da placa ou do modelo físico do
 
 ---
 
-## 5. Roteiro de demonstração (3 minutos)
+## 5. Roteiro de demonstração (3 minutos, placa v1)
+
+O roteiro do **estande NEXT** (totem de 4 vagas, vaga solar, painel tapado) está em
+[docs/contratos/experiencia_next.md](docs/contratos/experiencia_next.md) §5 e §8.
+O de baixo é o da placa v1 de um ponto só.
 
 1. Entre como **Gus Bancada** — a conta começa com saldo **zero**, de
    propósito.
@@ -425,12 +555,11 @@ como plano B se o hardware falhar no dia da apresentação.
 Não precisam de banco, rede nem placa:
 
 ```bash
-cd backend
-python testes/test_unidades.py     # 52 verificações: física, tarifa, alocador, camadas, token
-python testes/test_fluxo_esp32.py  # 62 verificações: fluxo completo com Supabase falso
+python -m pytest backend/testes -q          # 108 passed
+python -m pytest totem_virtual/testes -q    # 57 passed
 ```
 
-O segundo sobe o app real do FastAPI e percorre login → preparar → pedido no
+`backend/testes/test_fluxo_esp32.py` sobe o app real do FastAPI e percorre login → preparar → pedido no
 ESP32 → cartão desconhecido → cartão pessoal de outro → sem saldo → crédito →
 cartão aprovado → telemetria → alvo atingido → estorno → painel do gestor →
 **o mesmo cartão usado por outro morador, debitando a carteira dele**. Confere
@@ -466,7 +595,12 @@ também que ninguém encerra, cancela ou cobra a recarga de outro.
   precisaria de Redis.
 - `MODO_DEMO=1` desliga travas reais. Deixe em `0` com a placa conectada.
 - Não há gateway de pagamento: o crédito é simulado.
-- Sem deploy: tudo roda local, só o banco está na nuvem.
+- Sem deploy: tudo roda no PC do estande; só o banco está na nuvem. Sem
+  internet o estande cai — plano B: `backend_de_bolso`.
+- As vagas USB do totem são carga fixa (relé liga/desliga): o alocador as
+  contabiliza e controla a admissão, mas não as modula. A divisão igual é do
+  ponto modulável (HCA G2) e aparece no simulador do painel.
+- A carga da 18650 é estimada pela tensão; a potência dela é deduzida.
 
 ---
 

@@ -474,6 +474,11 @@ def _aplicar_vaga_solar(d: dict, porta: int, ctx: dict) -> str | None:
                                       20 if minimo is None else float(minimo),
                                       bool(charger.get("garantir_minimo")))
     if novo == atual:
+        if s.get("modo_vaga_solar") is None:
+            # Grava o "solar" implícito: o alocador precisa saber que a vaga
+            # está fora do barramento (demanda.item_de, `fora_da_rede`).
+            supabase.table("sessoes_recarga").update({"modo_vaga_solar": novo}) \
+                .eq("id", s["id"]).eq("status", "carregando").execute()
         return novo
     r = supabase.table("sessoes_recarga").update({"modo_vaga_solar": novo}) \
         .eq("id", s["id"]).eq("status", "carregando").execute()

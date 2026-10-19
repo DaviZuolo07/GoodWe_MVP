@@ -13,8 +13,8 @@ namespace {
   Adafruit_INA219 ina[5] = {Adafruit_INA219(0x40), Adafruit_INA219(ENDERECO_INA[1]),
                             Adafruit_INA219(ENDERECO_INA[2]), Adafruit_INA219(ENDERECO_INA[3]),
                             Adafruit_INA219(ENDERECO_INA[4])};
-  Adafruit_INA219 inaSolar(ENDERECO_INA_SOLAR);
-  bool inaOk[5] = {false, false, false, false, false};   // [0] = bateria
+  Adafruit_INA219 inaPainel(ENDERECO_INA_PAINEL);
+  bool inaOk[5] = {false, false, false, false, false};   // [0] = painel
 
   LiquidCrystal_I2C tela(ENDERECO_LCD, COLUNAS, LINHAS);
   char sombra[LINHAS][COLUNAS + 1];                      // o que está no vidro agora
@@ -34,7 +34,7 @@ namespace {
     float bus = s.getBusVoltage_V();
     float shunt = s.getShuntVoltage_mV() / 1000.0f;
     float i = s.getCurrent_mA() / 1000.0f;
-    // Vaga: tensão no lado do celular (bus). Bateria: no lado da 18650 (bus + shunt).
+    // Vaga e painel: tensão no lado da carga (bus). Assinado: no lado da fonte (bus + shunt).
     m.tensao_v = assinado ? bus + shunt : bus;
     m.corrente_a = assinado ? i : max(0.0f, i);
     m.potencia_w = m.tensao_v * m.corrente_a;
@@ -70,9 +70,13 @@ void iniciar() {
     if (inaOk[p]) ina[p].setCalibration_32V_2A();      // até ~3,2 A com o shunt de 0,1 ohm
     else Serial.printf("[hal] INA219 da vaga %u (0x%02X) NAO respondeu\n", p, ENDERECO_INA[p]);
   }
-  inaOk[0] = inaSolar.begin(&Wire1);
-  if (inaOk[0]) inaSolar.setCalibration_32V_2A();
-  else Serial.println("[hal] INA219 da bateria solar (Wire1 0x40) NAO respondeu");
+  inaOk[0] = inaPainel.begin(&Wire1);
+  // Painel de 1 W: ~200 mA. A faixa de 400 mA tem 8x mais resolução que a de
+  // 2 A e enxerga o painel em luz fraca, que é quando a medida importa.
+  if (inaOk[0]) inaPainel.setCalibration_16V_400mA();
+  else Serial.println("[hal] INA219 do painel (Wire1 0x40) NAO respondeu");
+
+  analogSetPinAttenuation(PINO_ADC_BATERIA, ADC_11db);   // 4,2 V / 2 = 2,1 V: dentro da faixa linear
 
   tela.init();
   tela.backlight();
@@ -92,7 +96,16 @@ void rele(uint8_t porta, bool ligado) {
 
 Medida lerIna(uint8_t porta) { return medir(ina[porta], inaOk[porta], false); }
 
-Medida lerBateria() { return medir(inaSolar, inaOk[0], true); }
+Medida lerPainel() { return medir(inaPainel, inaOk[0], false); }
+
+float tensaoBateria() {
+  // analogReadMilliVolts aplica a calibração de fábrica do eFuse: bem melhor
+  // que analogRead() cru. 16 leituras levam ~1 ms.
+  uint32_t soma = 0;
+  for (uint8_t i = 0; i < AMOSTRAS_ADC; i++) soma += analogReadMilliVolts(PINO_ADC_BATERIA);
+  float v = (soma / (float)AMOSTRAS_ADC) / 1000.0f * DIVISOR_BATERIA * AJUSTE_ADC;
+  return v >= V_BATERIA_AUSENTE ? v : 0.0f;   // 0 = "não sei", não "vazia"
+}
 
 void selecionarFonte(bool solar) { digitalWrite(PINO_REVERSOR, nivel(solar, REVERSOR_ATIVO_EM_LOW)); }
 

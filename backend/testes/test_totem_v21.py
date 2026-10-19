@@ -384,6 +384,17 @@ def test_vaga_solar_vai_para_a_rede_com_10024_ligado():
     assert (p4["deve_liberar"], p4["estado"], p4["fonte"]) == (True, "carregando", "rede")
 
 
+def test_vaga_solar_grava_o_solar_implicito_para_o_alocador():
+    """Sem troca, `modo_vaga_solar` ficava None e o alocador não sabia que a
+    vaga 4 está fora do barramento (demanda.item_de, `fora_da_rede`)."""
+    placa = cenario()
+    r = tag(placa, 4, "A")
+    lote(placa, [{"porta": 4, "potencia_w": 7.5, "energia_wh": 0.5, "rele_ligado": True}],
+         fontes=[{"fonte": "painel", "potencia_w": 1.0, "tensao_v": 5.9},
+                 {"fonte": "bateria", "potencia_w": 6.5, "tensao_v": 3.95}])
+    assert sessao(r["sessao_id"])["modo_vaga_solar"] == "solar"
+
+
 def test_politica_da_vaga_solar_e_curva_da_bateria():
     d = demanda.decidir_vaga_solar
     assert d("solar", 15, 7.0, 20, False) == "pausada"

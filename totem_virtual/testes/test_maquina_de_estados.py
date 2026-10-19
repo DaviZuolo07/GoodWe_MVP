@@ -158,11 +158,14 @@ def test_telemetria_em_lote_com_w_brutos_e_fontes():
     da_1 = [x for x in lote["leituras"] if x["porta"] == 1][-1]
     assert 7 < da_1["potencia_w"] < 8, "W brutos da bancada, sem escala 1:1000"
     assert da_1["rele_ligado"] and da_1["energia_wh"] > 0 and 4.9 < da_1["tensao_v"] < 5.1
-    assert [x["fonte"] for x in lote["fontes"]] == ["bateria", "bateria"], \
-        "uma leitura da bateria por amostra; o painel não tem sensor (ADR-022 D2)"
+    assert [x["fonte"] for x in lote["fontes"]] == ["painel", "bateria", "painel", "bateria"], \
+        "por amostra: o painel MEDIDO (INA219) e a 18650 (ADC + balanço deduzido)"
     assert all(set(x) == {"fonte", "t_ms", "potencia_w", "tensao_v", "corrente_a"} for x in lote["fontes"])
-    assert all(x["potencia_w"] < 0 for x in lote["fontes"]), \
-        "vaga 4 parada e sol: o painel carrega a bateria, e o sinal diz isso"
+    painel = [x for x in lote["fontes"] if x["fonte"] == "painel"]
+    bateria = [x for x in lote["fontes"] if x["fonte"] == "bateria"]
+    assert all(x["potencia_w"] > 0 for x in painel), "com sol, o painel gera"
+    assert all(abs(b["potencia_w"] + p["potencia_w"]) < 1e-6 for p, b in zip(painel, bateria)), \
+        "vaga 4 parada: tudo o que o painel gera carrega a bateria (sinal negativo)"
     assert lote["t_envio_ms"] >= max(x["t_ms"] for x in lote["leituras"])
     assert m.t.trocas("/telemetria")[-1]["dados"]["gravadas"] == 8
 
@@ -451,6 +454,27 @@ def test_vaga_solar_comeca_pela_bateria_e_o_backend_manda_para_a_rede():
     m.andar(K.FONTE_MIN_MS / 1000)
     assert m.e()["solar"]["fonte"] == "solar"
     assert _trocas_de_fonte(m) == ["solar", "rede", "solar"]
+
+
+def test_vaga_solar_com_divisor_solto_fica_na_rede_e_nao_manda_bateria():
+    """Sem tensão da 18650 não se decide no escuro: rede (que sempre funciona),
+    e o lote leva só o painel - "0 V" no backend viraria "bateria vazia"."""
+    m = mesa_v21()
+    m.t.luz(0)
+    m.t.bateria(60)
+    m.t.plugar(4)
+    m.tag_na_vaga(A, 4)
+    m.andar(2)
+    assert m.e()["solar"]["fonte"] == "solar"
+    m.t.bancada.divisor_ligado = False
+    m.andar(1)
+    assert m.e()["solar"]["fonte"] == "rede" and m.vaga(4)["potencia_w"] > 7, "segue pela rede"
+    m.t.firmware.fila_fontes.clear()
+    m.andar(3)
+    assert {x["fonte"] for x in m.t.firmware.fila_fontes} == {"painel"}
+    m.t.bancada.divisor_ligado = True
+    m.andar(1)
+    assert m.e()["solar"]["fonte"] == "solar", "a tensão voltou: volta ao sol sem esperar FONTE_MIN_MS"
 
 
 def test_backend_pausa_a_vaga_solar_e_retoma_a_mesma_sessao():

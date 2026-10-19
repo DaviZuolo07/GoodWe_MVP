@@ -4,6 +4,34 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
+## 19/10/2026 — Davi · Chat V6 — Correções B1–B5 para o NEXT
+
+Override do contrato v1 de novo (autorizado): backend mexido e registrado para o Daniel. Detalhes em `docs/CORRECOES_NEXT_B1_B5.md`; contrato em `docs/contratos/experiencia_next.md`; estudo em `docs/MAPA_DE_ESTUDO.md`.
+
+### Feito
+1. **B2/B4** no alocador: vaga solar na rede vira modo rápido e entra na divisão; zero com motivo (`sem_potencia_disponivel`).
+2. **Achado:** porta do totem é carga fixa (relé) — o alocador não a divide. Vaga 4 no sol agora fica fora do barramento (antes ia 6,5 kW da 18650 para a conta da rede); pausada = 0; admissão continua contando a vaga 4 pela rede.
+3. **B3:** 5 INA219 = 4 vagas + **painel**; 18650 pelo ADC (GPIO 35); potência da bateria deduzida. Totem virtual e firmware (ADR-022 revisto).
+4. **B1:** roda no PC do Gustavo com o Supabase do Davi; `HTTP_TIMEOUT_MS` 8000; firewall/IP fixo/checklist no README.
+5. `preparar_totem.py`: limite 30 kW (com 20 a 3ª vaga ia para a fila); T4 com 10032 = 1 e 10024 ligado.
+6. **B5:** README (22 migrations, pytest, Totem Central, rede do estande, sem deploy).
+
+### Testado
+- pytest backend 108 e totem virtual 57 verdes; firmware compila (core 3.3.12, 83 % flash, 18 % RAM, sem avisos nossos).
+
+### NÃO testado
+- Firmware numa placa real; latência no hotspot; `preparar_totem.py` contra o banco real.
+
+### Quebrou / atenção
+- A troca solar → rede leva ~50 min com a 18650 cheia: ensaiar com ela em ~3,65 V.
+- Decisão em aberto: dividir de verdade no totem exigiria ciclar o relé (não feito).
+
+### Próximo
+1. Gustavo: rodar `preparar_totem.py --fisico --sem-env`, montar painel/divisor, calibrar, gravar.
+2. Daniel: revisar `demanda.py` (`fora_da_rede`) e `hardware_api.py` (`_aplicar_vaga_solar`).
+
+---
+
 ## 08/10/2026 — Davi · Chat V5 — Auditoria final do Next
 
 Override do contrato v1 de novo (autorizado por Davi): backend/db/admin mexidos e registrados para o Daniel. Detalhes em `docs/AUDITORIA_FINAL_next.md`.

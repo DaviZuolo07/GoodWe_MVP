@@ -17,12 +17,13 @@ namespace hal {
   void iniciar();                      // relés abertos e reversor na rede ANTES de qualquer outra coisa
   void rele(uint8_t porta, bool ligado);
   Medida lerIna(uint8_t porta);        // vagas 1..4: corrente >= 0
-  Medida lerBateria();                 // INA219 em série com a 18650: + descarregando, - carregando
+  Medida lerPainel();                  // INA219 entre o painel e o TP4056: corrente >= 0
+  float tensaoBateria();               // 18650 pelo ADC; 0 = leitura ausente (divisor solto), não "vazia"
   void selecionarFonte(bool solar);    // relé reversor da vaga 4 (false = rede)
   bool tagLida(char* uid, size_t tamanho);   // uma vez por aproximação, UID em hexa maiúsculo
   uint8_t botao();                     // 1..4 uma vez por aperto (com debounce), 0 = nada
   bool wifiOk();
   void lcd(const char* linha0, const char* linha1);   // só reescreve o que mudou
   void led(bool aceso);
-  bool sensorOk(uint8_t porta);        // 0 = sensor da bateria
+  bool sensorOk(uint8_t porta);        // 0 = sensor do painel
 }

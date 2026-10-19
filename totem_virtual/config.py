@@ -71,7 +71,7 @@ class Config:
     envio_ms: int = 6_000            # um lote a cada N ms
     comandos_ms: int = 2_000         # o handshake pode trocar este valor
     offline_corte_ms: int = 120_000  # ADR-020 P2
-    http_timeout_s: float = 3.0
+    http_timeout_s: float = 8.0
     painel_porta: int = 8765
     roteiro_espera_s: float = 90.0
     tags: dict = field(default_factory=dict)        # apelido -> uid
@@ -102,7 +102,7 @@ def carregar(caminho: Path | None = None) -> Config:
         offline_corte_ms=int(n("TOTEM_OFFLINE_CORTE_S", 120) * 1000),
         # 3 s é o do firmware. Backend longe do Supabase (notebook no Brasil,
         # banco no Canadá) leva ~5 s no handshake: suba aqui para testar.
-        http_timeout_s=n("TOTEM_HTTP_TIMEOUT_S", 3),
+        http_timeout_s=n("TOTEM_HTTP_TIMEOUT_S", 8),   # = HTTP_TIMEOUT_MS do firmware
         painel_porta=int(n("PAINEL_PORTA", 8765)),
         roteiro_espera_s=n("ROTEIRO_ESPERA_S", 90),
         tags=tags, app_contas=contas)

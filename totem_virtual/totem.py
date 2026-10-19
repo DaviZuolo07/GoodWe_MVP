@@ -152,7 +152,7 @@ class TotemVirtual:
                 "vagas": vagas,
                 "solar": {"luz": round(b.painel.luz * 100, 1), "fonte": b.fonte_selecionada(),
                           "fonte_backend": fw.fonte_backend,
-                          "painel": b.painel_visto(), "bateria": b.ler_bateria(),
+                          "painel": b.ler_painel(), "bateria": b.bateria_vista(),
                           "bateria_soc": round(b.bateria.soc, 2), "bateria_ok": fw.bateria_ok},
                 "eventos": list(fw.eventos)[-40:],
                 "trocas": [{k: x.get(k) for k in ("n", "t_ms", "seq", "metodo", "rota", "status",

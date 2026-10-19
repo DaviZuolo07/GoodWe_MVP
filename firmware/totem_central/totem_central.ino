@@ -20,7 +20,7 @@
  *   sozinha. A mesma tag na mesma vaga encerra. Cada vaga tem o seu relógio.
  *
  * REGRAS QUE NÃO SE NEGOCIAM
- *   - Nada de delay(): tudo com millis(). Só o HTTP bloqueia (timeout de 3 s).
+ *   - Nada de delay(): tudo com millis(). Só o HTTP bloqueia (timeout de 8 s).
  *   - Ao ligar, todo relé ABERTO. Relé só fecha por ordem do backend
  *     (acao "ligar", comando liberar, rele_esperado do handshake).
  *   - Abre também pelas travas: de sessão (deve_liberar false) e offline

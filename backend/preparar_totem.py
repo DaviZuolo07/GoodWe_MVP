@@ -7,8 +7,10 @@ Rodar de dentro de backend/, com o backend/.env preenchido e o db/17 aplicado:
     python preparar_totem.py
 
 Faz, sem duplicar nada se rodar de novo (idempotente):
-  1. condomínio "Estande Next (totem)" - limite 20 kW, sem horário de ponta
-  2. 4 vagas do totem: 7,5 kW, bancada, hardware (escala 1:1000, ADR-017)
+  1. condomínio "Estande Next (totem)" - limite 30 kW, sem horário de ponta
+  2. 4 vagas do totem: 7,5 kW, bancada, hardware (escala 1:1000, ADR-017);
+     T4 é a solar: modo FV (10032 = 1) e garantir mínimo (10024) ligado, para
+     ir para a REDE - e não pausar - quando a 18650 chega no mínimo (10030)
   3. a placa v2 com as 4 portas: fator 1000, porta solar 4, virtual
   4. 3 moradores de teste com celular 1:1000 (15 kWh / 7,5 kW) e tag pessoal:
        Ana Totem  (R$ 100)   Bia Totem  (R$ 100)   Caio Totem (R$ 0)
@@ -69,12 +71,16 @@ def condominio(sb):
     sb.table("condominios").upsert({
         "id": ESTANDE, "nome": "Estande Next (totem)", "endereco": "FIAP - Next 2026",
         "perfil": "bancada",          # cadastro: só celular, sem bloco/apto (db/19)
-        "limite_potencia_kw": 20,
+        # 4 vagas USB x 7,5 kW (escala) = 30 kW: as quatro cabem na rede ao
+        # mesmo tempo. As vagas são carga FIXA (relé liga/desliga): com menos
+        # que isso a admissão manda a última para "aguardando energia" - baixe
+        # para 22,5 no painel do gestor, ao vivo, para mostrar a fila.
+        "limite_potencia_kw": 30,
         # ponta 00:00-00:00 = nunca: o valor da demonstração não muda com a hora
         "ponta_inicio": "00:00", "ponta_fim": "00:00",
         "fv_potencia_kwp": 10, "preco_solar_kwh": 0.75, "custo_solar_kwh": 0.35,
     }).execute()
-    _ok("condomínio 'Estande Next (totem)' - limite 20 kW, sem ponta (SIMULADO)")
+    _ok("condomínio 'Estande Next (totem)' - limite 30 kW, sem ponta (SIMULADO)")
 
 
 def vagas(sb):
@@ -85,13 +91,17 @@ def vagas(sb):
             "modelo": f"Totem Central - vaga {n}" + (" (solar)" if n == 4 else "") + " - maquete 1:1000",
             "tipo": "DC", "conector": "USB", "tensao_v": 5, "corrente_maxima_a": 3,
             "potencia_maxima_kw": 7.5, "tarifa_kwh": 1.15, "perfil": "bancada", "origem": "hardware",
-            "bateria_soc_minimo": 20, "garantir_minimo": False,
+            "bateria_soc_minimo": 20,                 # 10030
+            # Vaga solar: FV (10032) + garantir mínimo (10024). Sem o 10024 a
+            # vaga PAUSA quando a 18650 acaba, em vez de seguir pela rede.
+            "modo_carga": 1 if n == 4 else 0,
+            "garantir_minimo": n == 4,
         }
         if existente:
             sb.table("carregadores").update(dados).eq("id", cid).execute()
         else:
             sb.table("carregadores").insert({"id": cid, "status": "offline", **dados}).execute()
-    _ok("4 vagas T1..T4 de 7,5 kW (bancada, escala 1:1000; T4 = solar)")
+    _ok("4 vagas T1..T4 de 7,5 kW (bancada, escala 1:1000; T4 = solar, FV + garantir mínimo)")
 
 
 def placa(sb, virtual: bool) -> dict:

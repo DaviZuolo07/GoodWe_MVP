@@ -87,6 +87,19 @@ CURVA_18650 = [(0, 3.00), (5, 3.30), (10, 3.45), (20, 3.60), (30, 3.68), (40, 3.
                (50, 3.80), (60, 3.87), (70, 3.95), (80, 4.02), (90, 4.10), (100, 4.20)]
 
 
+# ADC do ESP32 (GPIO 35, ADC1) atrás de um divisor 10k + 10k: a tensão chega
+# pela metade, e `analogReadMilliVolts` devolve mV inteiros. Média de 16
+# amostras, então o degrau efetivo fica em ~2 mV na tensão da bateria.
+DIVISOR_BATERIA = 2.0
+V_BATERIA_AUSENTE = 2.00         # abaixo disto não é 18650: divisor solto ou invertido
+
+
+def adc_18650(tensao_v: float) -> float:
+    """O que o firmware lê da 18650 pelo ADC (quantizado no mV do pino)."""
+    mv_pino = round(max(0.0, tensao_v) / DIVISOR_BATERIA * 1000)
+    return round(mv_pino / 1000 * DIVISOR_BATERIA, 3)
+
+
 def tensao_aberta_18650(soc: float) -> float:
     soc = max(0.0, min(100.0, soc))
     for (s0, v0), (s1, v1) in zip(CURVA_18650, CURVA_18650[1:]):

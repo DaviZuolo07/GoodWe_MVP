@@ -10,7 +10,7 @@ Hardware alvo (ADR-022): 1 ESP32, 1 LCD **16x2**, 1 leitor RFID, 4 botões, 4 va
 
 ## 1. Regras gerais
 
-1. **Nada de `delay()`.** Toda espera é `millis() - marca >= prazo`. A única chamada que bloqueia é o HTTP, com timeout de 3 s.
+1. **Nada de `delay()`.** Toda espera é `millis() - marca >= prazo`. A única chamada que bloqueia é o HTTP, com timeout de 8 s (`HTTP_TIMEOUT_MS`; era 3 s até 19/10/2026 — o backend consulta o Supabase dentro da requisição e o handshake leva ~5 s do Brasil).
 2. **Ao ligar, todo relé aberto** e o reversor da vaga 4 em `rede` (bobina desligada).
 3. **O relé só fecha por ordem do backend.** `autorizado: true` sozinho **não** fecha (pode vir com `aguardando_energia`).
 4. **O totem não inventa estado de vaga.** Mostra o `estado` que o backend informou; sem ele, usa `carregando` (relé fechado) ou `livre` (relé aberto).

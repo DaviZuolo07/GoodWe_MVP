@@ -375,7 +375,7 @@ void Totem::medir(uint32_t agora) {
     if (v.rele) v.energiaWh += v.medida.potencia_w * dt / 3600000.0;
     if (v.temPedido && !antes(agora, v.pedidoAteMs)) v.temPedido = false;
   }
-  bateria_ = hal::lerBateria();
+  medirSolar();
 
   if (agora - tAmostra_ < AMOSTRA_MS) return;
   tAmostra_ = agora;
@@ -386,10 +386,31 @@ void Totem::medir(uint32_t agora) {
     filaLeituras_.empurra({v.porta, v.rele, agora, v.medida.potencia_w, (float)v.energiaWh,
                            v.medida.tensao_v, v.medida.corrente_a});
   }
-  // INA219 em série com a 18650 (ADR-022 D2): COM SINAL, + descarregando,
-  // - carregando. O painel não tem sensor: não vai "painel" no lote.
-  if (vagas_[PORTA_SOLAR].existe)
-    filaFontes_.empurra({agora, bateria_.potencia_w, bateria_.tensao_v, bateria_.corrente_a});
+  // Duas fontes por amostra: o painel MEDIDO e a 18650 com o balanço
+  // DEDUZIDO. Sem tensão (divisor solto), a bateria não vai no lote: o
+  // backend não decide no escuro, e "0 V" viraria "bateria vazia".
+  if (vagas_[PORTA_SOLAR].existe) {
+    filaFontes_.empurra({agora, true, painel_.potencia_w, painel_.tensao_v, painel_.corrente_a});
+    if (bateria_.tensao_v > 0)
+      filaFontes_.empurra({agora, false, bateria_.potencia_w, bateria_.tensao_v, bateria_.corrente_a});
+  }
+}
+
+// ADR-022 revisto (19/10): 5 INA219 = 4 vagas + PAINEL. A 18650 fica com a
+// tensão (ADC) e a corrente dela é DEDUZIDA: o que a vaga 4 consome e o
+// painel não entrega, sai da bateria. Sinal do contrato: + descarregando,
+// - carregando. Na rede, a vaga não toca na bateria: tudo o que o painel faz
+// é carregá-la. Ignora as perdas do TP4056 e do MT3608 (~10%): é o balanço
+// APARENTE, e é declarado assim. Espelho de totem_virtual/firmware.py.
+void Totem::medirSolar() {
+  painel_ = hal::lerPainel();
+  float vBat = hal::tensaoBateria();
+  const Vaga& v4 = vagas_[PORTA_SOLAR];
+  float consumo4 = v4.rele ? v4.medida.potencia_w : 0.0f;
+  float balanco = fonteSolar_ ? (consumo4 - painel_.potencia_w) : -painel_.potencia_w;
+  bateria_.tensao_v = vBat;
+  bateria_.potencia_w = balanco;
+  bateria_.corrente_a = vBat > 0.1f ? balanco / vBat : 0.0f;
 }
 
 // ===========================================================================
@@ -410,6 +431,9 @@ void Totem::virar(bool solar, uint32_t agora, bool forcada) {
 void Totem::fonteSolar(uint32_t agora) {
   if (agora - tTroca_ < TROCA_FONTE_MS) return;   // medida estabilizando
   float vBateria = bateria_.tensao_v;
+  // Sem leitura (divisor solto): não decide no escuro. A rede é a fonte que
+  // sempre funciona; volta ao sol assim que a tensão voltar.
+  if (vBateria <= 0) { virar(false, agora, false); return; }
   if (!bateriaOk_ && !fonteSolar_ && vBateria >= V_BATERIA_VOLTA) {
     bateriaOk_ = true;
     evento("bateria solar recuperada");
@@ -459,7 +483,7 @@ String Totem::montarLote(uint32_t agora, uint16_t& n, uint16_t& m) {
       for (uint16_t i = 0; i < m; i++) {
         const LeituraFonte& f = filaFontes_[i];
         JsonObject o = fontes.add<JsonObject>();
-        o["fonte"] = "bateria";
+        o["fonte"] = f.painel ? "painel" : "bateria";
         o["t_ms"] = f.tMs;
         o["potencia_w"] = serialized(String(f.potenciaW, 3));
         o["tensao_v"] = serialized(String(f.tensaoV, 3));

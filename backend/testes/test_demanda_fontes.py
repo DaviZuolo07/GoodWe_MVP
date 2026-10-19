@@ -112,6 +112,117 @@ def test_modo_fv_sem_fv_no_condominio_vira_rapido():
     assert demanda.item_de(hca(modo_carga=2), {}, 30, {"fv_potencia_kwp": 10}, "s", 0)["modo"] == 1
 
 
+# ---------------------------------------------------------------------------
+# 1b. O cenário do estande: 3 vagas na rede + a vaga solar que fica sem sol
+# ---------------------------------------------------------------------------
+
+def bancada(i, demanda_kw=7.4, **extra):
+    """Vaga USB do totem: perfil de bancada, logo SEM mínimo de 6 A."""
+    return carro(i, demanda_kw, minimo_kw=0.0, **extra)
+
+
+def test_vaga_solar_na_rede_entra_na_divisao_igual():
+    """
+    Três vagas na tomada (so_rede) e a vaga 4 no sol. Quando o sol acaba e o
+    reversor vai para a rede, as QUATRO dividem o quadro igualmente.
+    """
+    rede = [carro(i, so_rede=True) for i in range(3)]
+    com_sol = demanda.distribuir_fontes(20, 7.4, rede + [carro(3, 7.4, modo=1)])["itens"]
+    assert com_sol["c3"]["alocado_solar_kw"] == 7.4 and com_sol["c3"]["alocado_rede_kw"] == 0
+
+    # O sol acabou e o 10032 ainda diz "FV": a vaga 4 fica parada (antes do B2).
+    so_fv = demanda.distribuir_fontes(20, 0, rede + [carro(3, 7.4, modo=1)])["itens"]
+    assert so_fv["c3"]["alocado_kw"] == 0 and so_fv["c3"]["pausado_motivo"] == demanda.PAUSA_SEM_SOL
+
+    # Com o reversor na rede, `modo_efetivo` devolve 0 e ela disputa em igualdade.
+    agora_na_rede = demanda.distribuir_fontes(20, 0, rede + [carro(3, 7.4, modo=0)])
+    alocado = {k: v["alocado_kw"] for k, v in agora_na_rede["itens"].items()}
+    assert alocado == {"c0": 5.0, "c1": 5.0, "c2": 5.0, "c3": 5.0}
+    assert agora_na_rede["rede_kw"] == 20.0, "a soma fecha exatamente no limite"
+    assert all(v["pausado_motivo"] is None for v in agora_na_rede["itens"].values())
+
+
+def test_modo_vaga_solar_rede_vira_modo_rapido_no_item():
+    """O fio que faltava: o estado do reversor (sessão) chega ao alocador."""
+    c = hca(modo_carga=1)
+    cond = {"fv_potencia_kwp": 10}
+    assert demanda.item_de(c, {}, 30, cond, "s", 0)["modo"] == 1
+    assert demanda.item_de(c, {}, 30, cond, "s", 0, modo_vaga_solar="solar")["modo"] == 1
+    na_rede = demanda.item_de(c, {}, 30, cond, "s", 0, modo_vaga_solar=demanda.VAGA_SOLAR_REDE)
+    assert na_rede["modo"] == 0, "reversor na rede: disputa a rede como qualquer vaga"
+    assert na_rede["so_rede"] is True, "o painel está carregando a 18650, não a vaga"
+    # Pausada por falta de sol continua em modo FV: o relé está aberto.
+    assert demanda.item_de(c, {}, 30, cond, "s", 0, modo_vaga_solar="pausada")["modo"] == 1
+
+
+def test_bancada_sem_potencia_nao_sai_como_atendida():
+    """
+    B4: na bancada o mínimo é 0, então o laço de pausa não marcava quem ficou
+    com zero. O relato passa a dizer o motivo - sem mudar a divisão.
+    """
+    # Uma carga fixa já tomou o quadro inteiro: não sobra nada para a vaga.
+    tomado = [carro(0, 7.4, controlavel=False)]
+    r = demanda.distribuir_fontes(7.4, 0, tomado + [bancada(1)])["itens"]
+    assert r["c1"]["alocado_kw"] == 0
+    assert r["c1"]["pausado_motivo"] == demanda.PAUSA_SEM_POTENCIA
+    # Em modo FV sem sol o motivo continua sendo a falta de sol, não o limite.
+    fv = demanda.distribuir_fontes(7.4, 0, tomado + [bancada(1, modo=1)])["itens"]
+    assert fv["c1"]["pausado_motivo"] == demanda.PAUSA_SEM_SOL
+    # Quem recebe alguma coisa continua sem motivo nenhum.
+    ok = demanda.distribuir_fontes(22.2, 0, [bancada(i) for i in range(4)])["itens"]
+    assert all(abs(x["alocado_kw"] - 5.55) < 1e-9 and x["pausado_motivo"] is None for x in ok.values())
+
+
+def test_relato_de_zero_nao_mexe_na_admissao():
+    """`avaliar_admissao` só olha PAUSA_LIMITE: o motivo novo não recusa ninguém."""
+    recebe, motivo = demanda.avaliar_admissao(7.4, [carro(0, 7.4, controlavel=False)], bancada(1))
+    assert motivo is None and recebe == 0, "bancada sem mínimo: admite, mesmo em zero"
+
+
+def usb(n, **extra):
+    """Porta USB do totem físico: relé liga/desliga, logo carga FIXA."""
+    return {"id": f"t{n}", "numero": n, "origem": "hardware", "perfil": "bancada",
+            "potencia_maxima_kw": 7.5, "tipo": "DC", **extra}
+
+
+def totem(modo4, medida4=7.5):
+    """3 vagas USB na tomada + a vaga 4 solar, cada uma medindo 7,5 kW (escala)."""
+    cond = {"fv_potencia_kwp": 1.0}
+    its = [demanda.item_de(usb(i), {}, 30, cond, f"s{i}", i, 7.5, so_rede=True) for i in (1, 2, 3)]
+    its.append(demanda.item_de(usb(4, modo_carga=1, garantir_minimo=True), {}, 30, cond, "s4", 4,
+                               medida4, modo_vaga_solar=modo4))
+    return its
+
+
+def test_vaga_solar_do_totem_no_sol_fica_fora_do_barramento():
+    """
+    Relé fixo não se divide: se contabiliza. Com o reversor no sol, a vaga 4 é
+    toda solar (painel + 18650) e não ocupa um kW da rede; antes, o que o
+    painel não cobria era lançado na REDE (6,5 de 7,5 kW) - a 18650 sumia da conta.
+    """
+    r = demanda.distribuir_fontes(30, 1.0, totem("solar"))
+    assert r["itens"]["s4"]["alocado_solar_kw"] == 7.5 and r["itens"]["s4"]["alocado_rede_kw"] == 0
+    assert r["rede_kw"] == 22.5 and r["estouro_kw"] == 0
+    assert r["solar_absorvido_kw"] == 1.0, "o painel gerou 1 kW; o resto é a 18650 (sol guardado)"
+
+    na_rede = demanda.distribuir_fontes(30, 1.0, totem("rede"))
+    assert na_rede["itens"]["s4"]["alocado_solar_kw"] == 0 and na_rede["rede_kw"] == 30.0, \
+        "reversor na rede: as quatro no barramento; o painel carrega a 18650"
+    assert na_rede["solar_nao_aproveitado_kw"] == 1.0
+
+    pausada = demanda.distribuir_fontes(30, 0, totem("pausada", medida4=0))
+    assert pausada["itens"]["s4"]["alocado_kw"] == 0 and pausada["rede_kw"] == 22.5, \
+        "pausada: relé aberto, não puxa de fonte nenhuma"
+
+
+def test_admissao_conta_a_vaga_solar_do_totem_pela_rede():
+    """O sol pode acabar no meio: para admitir, a vaga 4 no sol conta como rede."""
+    ativos = totem("solar")
+    nova = demanda.item_de(usb(5), {}, 30, {"fv_potencia_kwp": 1.0}, "s5", 5)
+    assert demanda.avaliar_admissao(30, ativos, nova) == (None, "limite"), "22,5 + 7,5 + 7,5 > 30"
+    assert demanda.avaliar_admissao(37.5, ativos, nova)[1] is None
+
+
 def test_admissao_conta_so_a_rede():
     ativos = [carro(0)]
     _, motivo = demanda.avaliar_admissao(2.5, ativos, carro(1))

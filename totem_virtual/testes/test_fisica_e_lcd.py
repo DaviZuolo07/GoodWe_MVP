@@ -84,16 +84,16 @@ def test_vaga_4_e_solar_ou_rede_pelo_reversor():
 
     b.selecionar_fonte("solar")
     b.avancar(0.2)
-    assert b.ler_ina(4)["potencia_w"] > 7 and b.ler_bateria()["potencia_w"] > 7, \
+    assert b.ler_ina(4)["potencia_w"] > 7 and b.bateria_vista()["potencia_w"] > 7, \
         "na solar, a 18650 fornece (MT3608): potência positiva"
     b.selecionar_fonte("rede")
     b.avancar(0.2)
-    assert b.ler_ina(4)["potencia_w"] > 7 and b.ler_bateria()["potencia_w"] == 0, \
+    assert b.ler_ina(4)["potencia_w"] > 7 and b.bateria_vista()["potencia_w"] == 0, \
         "na rede, a bateria não fornece nada: as duas nunca se somam"
 
     b.painel.luz = 1.0
     b.avancar(0.2)
-    assert b.ler_bateria()["potencia_w"] < 0, "com sol, o painel carrega a bateria: potência negativa"
+    assert b.bateria_vista()["potencia_w"] < 0, "com sol, o painel carrega a bateria: potência negativa"
 
     b.bateria.soc = 0
     b.selecionar_fonte("solar")

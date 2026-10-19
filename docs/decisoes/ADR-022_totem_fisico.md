@@ -17,7 +17,7 @@
 | Módulo relé de 4 canais | um canal por vaga, no +5 V de cada USB |
 | **1 relé reversor SPDT** (módulo de 1 canal, NA/NF/COM) | **fonte da vaga 4**: NF = barramento (rede), NA = saída do MT3608 (solar) |
 | Painel 5 V 1 W → TP4056 → 18650 2000 mAh → MT3608 (5 V) | subsistema solar, **dedicado à vaga 4**, nunca no barramento |
-| **5 × INA219** | 4 vagas + 1 na bateria solar |
+| **5 × INA219** | 4 vagas + 1 na bateria solar — **revisto em 19/10: 4 vagas + 1 no painel**, bateria pelo ADC (fim deste arquivo) |
 | MFRC522 (SPI) | leitor de tag |
 | **LCD 16x2** com módulo I2C (PCF8574) | tela |
 | 4 botões NA | escolha da vaga |
@@ -100,3 +100,47 @@ Relé ativo em LOW por padrão (`RELE_ATIVO_EM_LOW`), como os módulos com optoa
 | P3 | Vai-e-volta rede ↔ solar: na rede a bateria descansa, a tensão sobe e o SOC estimado pula acima de 10030 + 5 | Medir o SOC só com a bateria descarregando, ou exigir um tempo mínimo em `rede`. O totem segura 30 s do lado dele |
 | P4 | `tela` com até 4 linhas de 20; o LCD é 16x2 | O totem re-quebra e pagina. Se der, linhas de até 16 e no máximo 2 (o totem continua aceitando o formato atual) |
 | P5 | Corte local da bateria vai para a rede mesmo com o 10024 desligado | É proteção de hardware e só acontece abaixo de 3,30 V (bem abaixo dos 20% do 10030). Se preferir pausa nesse caso, o handshake precisa mandar o 10024 para o totem |
+
+---
+
+## Revisão de 19/10/2026 — D2 trocado: o 5º INA219 vai para o PAINEL
+
+**Contexto.** O pilar "o INA219 confere quanto vai para cada vaga **e quanto o
+painel está gerando**" não era cumprido: com 4 vagas + bateria, a geração solar
+do alocador era a curva simulada de céu limpo. O backend já aceitava
+`fonte: "painel"` (`_gravar_geracao`, `origem = 'medido'`), mas nenhuma placa
+mandava. Sexto sensor não há: são 5.
+
+**Decisão (Davi).** 5 INA219 = **4 vagas + 1 no painel**, no `Wire1` 0x40,
+entre o painel e o TP4056 (mede a geração), calibrado em 16 V / 400 mA. A
+**18650 perde o sensor**: a tensão vem do ADC do ESP32 (GPIO 35, ADC1, divisor
+10k + 10k, 100 nF), e a potência é **deduzida**:
+
+```
+reversor no sol:   bateria_w = consumo da vaga 4 − painel_w
+reversor na rede:  bateria_w = − painel_w        (o painel só carrega a 18650)
+```
+
+Mesmo sinal do contrato (+ descarregando). Ignora as perdas do TP4056/MT3608
+(~10 %): é o balanço **aparente**, e é declarado assim.
+
+**Regras novas.**
+- Tensão abaixo de `V_BATERIA_AUSENTE` (2,0 V) = leitura **ausente**, não
+  "vazia". Sem ela, a vaga 4 fica na **rede** e a bateria **não vai no lote**
+  (o backend devolveria "bateria vazia" de um divisor solto).
+- O lote leva duas fontes por amostra: `painel` e `bateria`.
+
+**Rejeitado — só mover o INA219 da bateria para o painel.** `hal::medir()`
+devolve zero sem sensor: 0 V < corte → a vaga 4 ia para a rede em 1 s e nunca
+voltava, e o backend recebia SOC 0. A demonstração solar sumia.
+
+**O backend não muda** para isso: `soc_pela_tensao_18650()`,
+`decidir_vaga_solar()` e `_contexto_fontes()` recebem a mesma tensão; e
+`painel_w + bateria_w` continua sendo o que a vaga 4 recebe do lado solar
+(fração solar = 1 no sol, 0 na rede).
+
+`P1` dos pontos para o Daniel deixa de valer: agora o totem físico **manda**
+`painel`. Implementação: `totem_virtual/bancada.py` (`ler_painel`,
+`tensao_bateria`), `totem_virtual/firmware.py` (`_medir_solar`) e o espelho em
+`firmware/totem_central/` (`hal::lerPainel`, `hal::tensaoBateria`,
+`Totem::medirSolar`). Registro completo: `docs/CORRECOES_NEXT_B1_B5.md`.

@@ -93,6 +93,10 @@ DIAGNOSTICO = {
 }
 
 
+def medida_zero() -> dict:
+    return {"tensao_v": 0.0, "corrente_a": 0.0, "potencia_w": 0.0}
+
+
 class Vaga:
     """O que o firmware guarda de cada vaga (um struct no C++)."""
     def __init__(self, porta: int):
@@ -158,6 +162,8 @@ class Firmware:
         self.fonte_backend = None                  # "solar" | "rede" (porta solar na telemetria)
         self.queda_desde = None
         self.bateria_ok = True
+        self.painel = medida_zero()            # INA219 do painel (Wire1)
+        self.bateria = medida_zero()           # 18650: tensão do ADC + balanço deduzido
         self._evento("placa ligou: reles abertos")
 
     # ===================================================================
@@ -436,6 +442,7 @@ class Firmware:
                 v.energia_wh += v.medida["potencia_w"] * dt_ms / 3_600_000.0
             if v.pedido_ate_ms is not None and agora >= v.pedido_ate_ms:
                 v.pedido_ate_ms = v.pedido_de = None
+        self._medir_solar()
 
         if agora - self.t_amostra < self.cfg.amostra_ms:
             return
@@ -450,11 +457,33 @@ class Firmware:
                 "energia_wh": round(v.energia_wh, 4), "tensao_v": v.medida["tensao_v"],
                 "corrente_a": v.medida["corrente_a"], "rele_ligado": v.rele})
         if self.vagas[K.PORTA_SOLAR].existe:
-            # INA219 em série com a 18650 (ADR-022 D2): COM SINAL, + descarregando,
-            # - carregando. O painel não tem sensor: não vai "painel" no lote.
-            m = self.hal.ler_bateria()
-            self.fila_fontes.append({"fonte": "bateria", "t_ms": agora, "potencia_w": m["potencia_w"],
-                                     "tensao_v": m["tensao_v"], "corrente_a": m["corrente_a"]})
+            # Duas fontes por amostra: o painel MEDIDO e a 18650 com o balanço
+            # DEDUZIDO. Sem tensão (divisor solto), a bateria não vai no lote:
+            # o backend não decide no escuro, e "0 V" viraria "bateria vazia".
+            fontes = [("painel", self.painel)]
+            if self.bateria["tensao_v"] > 0:
+                fontes.append(("bateria", self.bateria))
+            for nome, m in fontes:
+                self.fila_fontes.append({"fonte": nome, "t_ms": agora, "potencia_w": m["potencia_w"],
+                                         "tensao_v": m["tensao_v"], "corrente_a": m["corrente_a"]})
+
+    def _medir_solar(self) -> None:
+        """
+        ADR-022 revisto (19/10): 5 INA219 = 4 vagas + PAINEL. A 18650 perde o
+        sensor e fica com a tensão (ADC). A corrente dela é DEDUZIDA: o que a
+        vaga 4 consome e o painel não entrega, sai da bateria. Mesmo sinal do
+        contrato: + descarregando, - carregando. Na rede, a vaga não toca na
+        bateria: tudo o que o painel faz é carregá-la. Ignora as perdas do
+        TP4056 e do MT3608 (~10%): é o balanço APARENTE, declarado como tal.
+        """
+        self.painel = self.hal.ler_painel()
+        v_bateria = self.hal.tensao_bateria()
+        v4 = self.vagas[K.PORTA_SOLAR]
+        consumo4 = v4.medida["potencia_w"] if v4.rele else 0.0
+        gerado = self.painel["potencia_w"]
+        balanco = (consumo4 - gerado) if self.fonte == "solar" else -gerado
+        self.bateria = {"tensao_v": v_bateria, "potencia_w": round(balanco, 3),
+                        "corrente_a": round(balanco / v_bateria, 4) if v_bateria > 0.1 else 0.0}
 
     # ===================================================================
     # Vaga 4: solar OU rede, pelo relé reversor (ADR-022 D1)
@@ -471,7 +500,12 @@ class Firmware:
     def _fonte_solar(self, agora: int) -> None:
         if agora - self.t_troca < K.TROCA_FONTE_MS:
             return                                 # medida estabilizando
-        v_bateria = self.hal.ler_bateria()["tensao_v"]
+        v_bateria = self.bateria["tensao_v"]
+        if v_bateria <= 0:
+            # Sem leitura (divisor solto): não decide no escuro. A rede é a
+            # fonte que sempre funciona; volta ao sol assim que a tensão voltar.
+            self._virar("rede", agora, forcada=False)
+            return
         if not self.bateria_ok and self.fonte == "rede" and v_bateria >= K.V_BATERIA_VOLTA:
             self.bateria_ok = True
             self._evento("bateria solar recuperada")

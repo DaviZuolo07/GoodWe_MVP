@@ -45,6 +45,23 @@ nunca em paralelo). As portas vizinhas da mesma placa entram com
 `so_rede = True`: não recebem sol atribuído. A política da bateria da porta
 solar (Modbus 10030 + 10024) é `decidir_vaga_solar()`, função pura.
 
+Quando essa política vira o reversor para a REDE (`modo_vaga_solar = "rede"`),
+a vaga deixa de ser "só sol" para o alocador: ela entra como modo RÁPIDO e
+disputa a rede em igualdade com as outras. É o cenário do estande - três vagas
+na tomada, a quarta no sol; o sol acaba, e as QUATRO passam a dividir o quadro
+igualmente. Sem isso, o 10032 gravado no carregador a manteria parada (ou só no
+mínimo do 10024) com o reversor já na rede.
+
+Isso vale para ponto MODULÁVEL (HCA G2: o alocado iria no 10029). As portas
+USB do totem são carga FIXA - o relé só liga ou desliga, e o celular puxa o
+que quiser -, então nelas o alocador não divide: CONTABILIZA. Com o reversor
+no SOL (`modo_vaga_solar = "solar"`) a vaga está fisicamente fora do
+barramento: entra com `fora_da_rede = True`, é toda solar (painel + 18650) e
+não ocupa um kW da rede. Pausada, o relé está aberto: demanda zero. A gestão
+que o totem faz de verdade é a ADMISSÃO (quem não cabe espera em
+"aguardando energia"), e a admissão continua contando a vaga solar pela rede,
+porque o sol pode acabar no meio.
+
 HONESTIDADE
 -----------
 Os parâmetros são armazenados e simulados; o sistema não fala Modbus RS485
@@ -67,6 +84,18 @@ EPS = 1e-9
 
 PAUSA_LIMITE = "limite_da_rede"
 PAUSA_SEM_SOL = "sem_excedente_fv"      # status 10 do registrador 10017
+# Pediu potência e recebeu zero num ponto SEM mínimo (perfil de bancada, onde
+# não vale a regra dos 6 A). Sem isto, a vaga ficava em 0 kW com
+# `pausado_motivo = None` e o alocador relatava "atendida" uma vaga parada.
+# É um motivo SÓ DE RELATO: não entra na admissão (ver `avaliar_admissao`).
+PAUSA_SEM_POTENCIA = "sem_potencia_disponivel"
+
+# Estado físico do reversor da vaga solar (ADR-022 D1), gravado na sessão em
+# `modo_vaga_solar` por `decidir_vaga_solar`. Com o reversor na REDE, a vaga é
+# alimentada pelo barramento e disputa a rede em igualdade com as outras.
+VAGA_SOLAR_REDE = "rede"
+VAGA_SOLAR_SOL = "solar"
+VAGA_SOLAR_PAUSADA = "pausada"
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +139,19 @@ def excedente_solar(cond: dict | None) -> tuple[float, str | None]:
     return max(0.0, float(linha.get("potencia_kw") or 0)), linha.get("origem") or "simulado"
 
 
-def modo_efetivo(charger: dict, cond: dict | None) -> int:
+def modo_efetivo(charger: dict, cond: dict | None, modo_vaga_solar: str | None = None) -> int:
     """
     10032: 0 rápido, 1 FV, 2 FV + bateria. Sem bateria modelada, 2 vale 1
     (a API nem deixa gravar 2). Sem FV no condomínio, todo modo vira rápido.
+
+    `modo_vaga_solar` é o estado FÍSICO do reversor da vaga solar. Com ele em
+    "rede", o painel não alimenta mais a vaga: ela está no barramento, como
+    qualquer outra, e tem de entrar no water-filling da rede em IGUALDADE —
+    senão o 10032 gravado no carregador a manteria em "só sol" e ela ficaria
+    parada (ou só no mínimo do 10024) com o reversor já na rede.
     """
+    if modo_vaga_solar == VAGA_SOLAR_REDE:
+        return 0
     modo = int(charger.get("modo_carga") or 0)
     if modo == 0 or not fv_ativo(cond):
         return 0
@@ -122,7 +159,8 @@ def modo_efetivo(charger: dict, cond: dict | None) -> int:
 
 
 def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id: str,
-            ordem: int, medida_kw: float = 0.0, so_rede: bool = False) -> dict:
+            ordem: int, medida_kw: float = 0.0, so_rede: bool = False,
+            modo_vaga_solar: str | None = None) -> dict:
     """Um ponto em uso visto pelo alocador."""
     teto = teto_kw(charger, veiculo)
     hardware = charger.get("origem") == "hardware"
@@ -132,6 +170,8 @@ def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id
     # (modulado ou não), pelo que a bateria aceitaria.
     usar_medida = (hardware or minusculo) and medida_kw > 0
     demanda = medida_kw if usar_medida else potencia_no_soc(teto, soc)
+    if fixa and modo_vaga_solar == VAGA_SOLAR_PAUSADA:
+        demanda = 0.0                 # relé aberto: não puxa nada de nenhuma fonte
     return {
         "id": item_id,
         "carregador_id": charger.get("id"),
@@ -139,10 +179,14 @@ def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id
         "controlavel": not fixa,
         "demanda_kw": round(demanda, 4),
         "minimo_kw": 0.0 if fixa else minimo_kw(charger, veiculo),
-        "modo": modo_efetivo(charger, cond),
+        "modo": modo_efetivo(charger, cond, modo_vaga_solar),
         "garantir_minimo": bool(charger.get("garantir_minimo")),
         "ordem": ordem,
-        "so_rede": bool(so_rede),
+        # Com o reversor na rede, o painel está carregando a 18650, não a vaga:
+        # atribuir sol a ela contaria a mesma energia duas vezes.
+        "so_rede": bool(so_rede) or modo_vaga_solar == VAGA_SOLAR_REDE,
+        # Relé fixo com o reversor no SOL: fora do barramento, nada da rede.
+        "fora_da_rede": fixa and modo_vaga_solar == VAGA_SOLAR_SOL,
     }
 
 
@@ -166,7 +210,8 @@ def _sessoes_ativas(condominio_id: str, cond: dict | None = None) -> list[dict]:
     for ordem, s in enumerate(sessoes):
         it = item_de(por_id[s["carregador_id"]], s.get("veiculos") or {},
                      float(s.get("percentual_bateria_atual") or 0), cond, s["id"], ordem,
-                     float(s.get("potencia_atual_kw") or 0), so_rede=s["carregador_id"] in so_rede)
+                     float(s.get("potencia_atual_kw") or 0), so_rede=s["carregador_id"] in so_rede,
+                     modo_vaga_solar=s.get("modo_vaga_solar"))
         it["alocado_atual"] = s.get("potencia_alocada_kw")
         it["alocado_solar_atual"] = s.get("potencia_alocada_solar_kw")
         itens.append(it)
@@ -255,10 +300,16 @@ def distribuir_fontes(limite_rede_kw: float, solar_kw: float, itens: list[dict])
 
     # 1. Fixas: levam o que pedem. Sol primeiro, depois rede - mesmo que estoure.
     #    `so_rede` (porta vizinha da vaga solar na bancada) não recebe sol.
+    #    `fora_da_rede` (vaga solar do totem com o reversor no sol) é toda
+    #    solar: o que o painel não cobre sai da 18650, nunca do barramento.
     for it in (i for i in norm if not i["controlavel"]):
-        do_sol = 0.0 if it.get("so_rede") else min(it["demanda_kw"], sol)
-        sol -= do_sol
-        da_rede = it["demanda_kw"] - do_sol
+        if it.get("fora_da_rede"):
+            do_sol, da_rede = it["demanda_kw"], 0.0
+            sol -= min(do_sol, sol)
+        else:
+            do_sol = 0.0 if it.get("so_rede") else min(it["demanda_kw"], sol)
+            sol -= do_sol
+            da_rede = it["demanda_kw"] - do_sol
         rede -= da_rede
         out[it["id"]].update(alocado_solar_kw=do_sol, alocado_rede_kw=da_rede)
     estouro = max(0.0, -rede)
@@ -283,6 +334,13 @@ def distribuir_fontes(limite_rede_kw: float, solar_kw: float, itens: list[dict])
     for it in ativos:
         do_sol, da_rede = tentativa[it["id"]]
         out[it["id"]].update(alocado_solar_kw=do_sol, alocado_rede_kw=da_rede)
+        # Ponto SEM mínimo (perfil de bancada: o USB não tem a regra dos 6 A)
+        # que pediu potência e recebeu zero. O laço acima não o pausa, porque
+        # o piso dele é zero e "zero >= zero" passa - então ele saía daqui com
+        # `pausado_motivo = None`, como se estivesse carregando. Só o RELATO
+        # muda; a divisão acima é exatamente a mesma.
+        if it["demanda_kw"] > EPS and do_sol + da_rede <= EPS:
+            out[it["id"]]["pausado_motivo"] = PAUSA_SEM_SOL if it["modo"] == 1 else PAUSA_SEM_POTENCIA
 
     for x in out.values():
         x["alocado_solar_kw"] = round(x["alocado_solar_kw"], 4)
@@ -308,7 +366,9 @@ def avaliar_admissao(limite_rede_kw: float, itens: list[dict], nova: dict) -> tu
     Pura. (kW que a recarga nova receberia, motivo da recusa ou None).
     Simula SÓ com a rede: o sol nunca é capacidade garantida (ADR-016 P3).
     """
-    todos = list(itens) + [nova]
+    # A vaga solar que hoje está no sol pode cair para a rede a qualquer
+    # momento: para admitir, ela conta pela rede como qualquer outra.
+    todos = [{**i, "fora_da_rede": False} for i in itens] + [{**nova, "fora_da_rede": False}]
     r = distribuir_fontes(limite_rede_kw, 0.0, todos)
     recebe = r["itens"][nova["id"]]["alocado_kw"]
     norm = _normalizar(nova, len(todos))

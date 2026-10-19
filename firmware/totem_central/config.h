@@ -24,11 +24,23 @@ constexpr uint8_t PINO_RFID_SS  = 5;    // MFRC522: SCK 18, MISO 19, MOSI 23 (SP
 constexpr uint8_t PINO_RFID_RST = 4;
 
 constexpr uint8_t PINO_SDA = 21, PINO_SCL = 22;               // Wire: LCD + INA219 das vagas
-constexpr uint8_t PINO_SDA_SOLAR = 17, PINO_SCL_SOLAR = 16;   // Wire1: INA219 da bateria
+constexpr uint8_t PINO_SDA_SOLAR = 17, PINO_SCL_SOLAR = 16;   // Wire1: INA219 do PAINEL
 
 constexpr uint8_t ENDERECO_LCD = 0x27;                        // PCF8574 (alguns vêm em 0x3F)
 constexpr uint8_t ENDERECO_INA[5] = {0, 0x40, 0x41, 0x44, 0x45};  // sem solda, A0, A1, A0+A1
-constexpr uint8_t ENDERECO_INA_SOLAR = 0x40;                  // sozinho no Wire1, sem solda
+constexpr uint8_t ENDERECO_INA_PAINEL = 0x40;                 // sozinho no Wire1, sem solda.
+                                                              // Entre o painel e o TP4056: mede a GERAÇÃO
+
+// Bateria 18650 pelo ADC (ADR-022 revisto em 19/10: são só 5 INA219, e o
+// 5º foi para o painel). Divisor 10k + 10k nos terminais da 18650, ANTES do
+// MT3608, com 100 nF do pino ao GND. GND da 18650 = GND do ESP32.
+constexpr uint8_t PINO_ADC_BATERIA = 35;   // ADC1_CH7, só entrada. NUNCA um pino do
+                                           // ADC2: ele não funciona com o WiFi ligado
+constexpr float   DIVISOR_BATERIA  = 2.0f; // (R1 + R2) / R2 com 10k + 10k
+constexpr float   AJUSTE_ADC       = 1.000f;   // CALIBRAR: tensão do multímetro / tensão lida
+constexpr uint8_t AMOSTRAS_ADC     = 16;   // média, para tirar o ruído
+constexpr float   V_BATERIA_AUSENTE = 2.00f;   // abaixo disto não é 18650: divisor solto.
+                                               // "Ausente" não decide nada (vai para a rede)
 
 // Módulos com optoacoplador ligam com LOW. Troque para 0 se o seu ligar com HIGH.
 #define RELE_ATIVO_EM_LOW      1
@@ -57,7 +69,9 @@ constexpr uint32_t FONTE_MIN_MS       = 30000;   // forçada para a rede: fica p
 constexpr uint32_t QUEDA_MS           = 1000;    // tensão baixa precisa durar isto
 constexpr uint32_t PAGINA_MS          = 2000;    // LCD 16x2: uma página de 2 linhas
 constexpr uint32_t ALTERNA_MS         = 3000;    // tela de espera: convite <-> quadro
-constexpr uint32_t HTTP_TIMEOUT_MS    = 3000;    // a ÚNICA espera que bloqueia
+constexpr uint32_t HTTP_TIMEOUT_MS    = 8000;    // a ÚNICA espera que bloqueia. Era 3000:
+                                                 // o PC consulta o Supabase (Canadá) DENTRO da
+                                                 // requisição e o handshake leva ~5 s do Brasil
 constexpr uint32_t DIVERGENTE_MS      = 10000;   // servidor acha que carrega e o relé está aberto
 constexpr uint32_t RECONCILIAR_MS     = 30000;   // no máximo um handshake de reconciliação por isto
 

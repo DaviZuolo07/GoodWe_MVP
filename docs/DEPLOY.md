@@ -1,5 +1,9 @@
 # Publicar o ChargeOps
 
+> **Fora do escopo desde 19/10/2026.** No NEXT tudo roda local, no PC do
+> Gustavo (README §3). Este guia fica só como histórico, para quando o projeto
+> virar estrutura real.
+
 O projeto está PREPARADO para publicar; nada foi publicado. Este guia leva do
 repositório a quatro endereços no ar. Tempo estimado: uma tarde.
 

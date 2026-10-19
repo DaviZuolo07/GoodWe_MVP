@@ -3,9 +3,11 @@ bancada.py - O "hardware" do totem, de mentira.
 ===============================================
 
 Hardware alvo (ADR-022): 1 ESP32, 1 LCD 16x2, 1 leitor RFID, 4 botões,
-4 vagas com relé + INA219 e 1 INA219 em série com a bateria solar. A vaga 4
-é solar: um relé reversor escolhe a bateria (painel -> TP4056 -> 18650 ->
-MT3608) OU a rede (barramento de 5 V). O contato nunca liga as duas.
+4 vagas com relé + INA219 e 1 INA219 entre o painel e o TP4056 (mede a
+GERAÇÃO). A tensão da 18650 vem do ADC do ESP32 por um divisor resistivo
+(ADR-022 revisto em 19/10: são só 5 INA219). A vaga 4 é solar: um relé
+reversor escolhe a bateria (painel -> TP4056 -> 18650 -> MT3608) OU a rede
+(barramento de 5 V). O contato nunca liga as duas.
 
 Este arquivo tem duas faces:
 
@@ -56,7 +58,7 @@ class Bancada:
         self._reles = {p: False for p in PORTAS}
         self._medidas = {p: (0.0, 0.0) for p in PORTAS}              # (V, A) reais
         self._bateria_vi = (0.0, 0.0)                               # (V, A com sinal)
-        self._painel_vi = (0.0, 0.0)                                # só para a página
+        self._painel_vi = (0.0, 0.0)                                # (V, A) entre painel e TP4056
         self._fonte = "rede"
         self._tags, self._botoes = deque(maxlen=4), deque(maxlen=8)
         self.celulares: dict[int, fisica.CelularVirtual | None] = {p: None for p in PORTAS}
@@ -64,6 +66,7 @@ class Bancada:
         self.bateria = fisica.Bateria18650()
         self.lcd = Lcd()
         self.wifi = True
+        self.divisor_ligado = True          # MUNDO: o divisor da 18650 pode soltar
         self.avancar(0.0)
 
     # ===================================================================
@@ -82,8 +85,13 @@ class Bancada:
     def ler_ina(self, porta: int) -> dict:                     # ina[p].getBusVoltage_V() / getCurrent_mA()
         return fisica.ina219(*self._medidas[porta])
 
-    def ler_bateria(self) -> dict:                             # inaSolar (Wire1): em série com a 18650
-        return fisica.ina219(*self._bateria_vi, assinado=True)  # + descarregando, - carregando
+    def ler_painel(self) -> dict:                              # inaPainel (Wire1 0x40): painel -> TP4056
+        return fisica.ina219(*self._painel_vi)                  # o painel só fornece: corrente >= 0
+
+    def tensao_bateria(self) -> float:                         # analogReadMilliVolts(35) x divisor
+        """Tensão da 18650 pelo ADC. 0 = ausente (divisor solto), nunca "vazia"."""
+        v = fisica.adc_18650(self._bateria_vi[0]) if self.divisor_ligado else 0.0
+        return v if v >= fisica.V_BATERIA_AUSENTE else 0.0
 
     def selecionar_fonte(self, nome: str) -> None:             # digitalWrite(PINO_REVERSOR, nome == solar)
         if nome not in FONTES:
@@ -187,6 +195,7 @@ class Bancada:
         v_painel = self.painel.tensao_v(carga_painel)
         self._painel_vi = (v_painel, carga_painel / v_painel if v_painel > 0.1 else 0.0)
 
-    def painel_visto(self) -> dict:
-        """MUNDO, só para a página: o painel não tem sensor no totem (ADR-022 D2)."""
-        return fisica.ina219(*self._painel_vi)
+    def bateria_vista(self) -> dict:
+        """MUNDO, só para a página e os testes: a 18650 NÃO tem INA219 no totem.
+        O firmware só vê a tensão (ADC) e deduz o balanço."""
+        return fisica.ina219(*self._bateria_vi, assinado=True)  # + descarregando, - carregando

@@ -13,7 +13,7 @@
 //   BACKEND informou; sem ele, vale o relé (fechado = carregando).
 //
 // NADA DE delay(): tudo é "já passaram X ms desde a marca?". A única espera
-// que bloqueia é o HTTP, com timeout de 3 s.
+// que bloqueia é o HTTP, com timeout de HTTP_TIMEOUT_MS (8 s).
 // ============================================================================
 #pragma once
 #include <Arduino.h>
@@ -55,6 +55,7 @@ struct Leitura {
 };
 struct LeituraFonte {
   uint32_t tMs;
+  bool painel;                         // true = painel (medido) · false = bateria (deduzida)
   float potenciaW, tensaoV, correnteA;
 };
 
@@ -103,6 +104,7 @@ class Totem {
   void enviarTag(uint8_t porta, uint32_t agora);
   // medição, fonte, telemetria, comandos, travas, tela
   void medir(uint32_t agora);
+  void medirSolar();
   void virar(bool solar, uint32_t agora, bool forcada);
   void fonteSolar(uint32_t agora);
   String montarLote(uint32_t agora, uint16_t& n, uint16_t& m);
@@ -158,5 +160,6 @@ class Totem {
   bool quedaAtiva_ = false;
   uint32_t quedaDesde_ = 0;
   bool bateriaOk_ = true;
-  Medida bateria_;                     // última leitura do INA219 da 18650
+  Medida painel_;                      // INA219 do painel (Wire1)
+  Medida bateria_;                     // 18650: tensão do ADC + balanço DEDUZIDO
 };
