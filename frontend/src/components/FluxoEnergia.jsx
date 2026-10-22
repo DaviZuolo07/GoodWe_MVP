@@ -57,6 +57,8 @@ function Diagrama({ largura, altura, chargers, sessoesPorPonto, fracao, emUsoKw,
       {/* Tronco: rede -> quadro -> barramento */}
       <path className="fio" d={`M${xRede + 9} ${yTronco}H${xQuadro - raio}`} />
       <path className="fio" d={`M${xQuadro + raio} ${yTronco}H${xFim}`} />
+      {/* Sem recarga a rede segue energizada até o quadro: corrente lenta e fraca */}
+      {!fluindo && <path className="corrente corrente-ociosa" d={`M${xRede + 9} ${yTronco}H${xQuadro - raio}`} />}
       {fluindo && (
         <>
           <path className="corrente" d={`M${xRede + 9} ${yTronco}H${xQuadro - raio}`} />
@@ -117,7 +119,8 @@ function FluxoEnergia({ chargers, sessions, condominio, selecionadoId }) {
   const props = { chargers, sessoesPorPonto, fracao, emUsoKw, selecionadoId }
 
   return (
-    <section className="mb-4 overflow-hidden rounded-panel border border-line bg-panel" aria-label="Fluxo de energia do condomínio">
+    <section className="relative mb-4 overflow-hidden rounded-panel border border-line bg-panel" aria-label="Fluxo de energia do condomínio">
+      <span className="condutor" style={{ '--cond-dur': '8s' }} aria-hidden="true" />
       <div className="flex flex-col gap-1 px-5 pt-4 sm:flex-row sm:items-baseline sm:justify-between">
         <h2 className="text-sm font-medium text-ink">Energia no condomínio, agora</h2>
         <p className="text-xs text-mute">

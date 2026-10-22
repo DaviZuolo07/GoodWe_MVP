@@ -690,3 +690,368 @@ html {
 .pino-mapa.pino-ativo { box-shadow: 0 0 0 6px color-mix(in oklab, var(--color-flux) 35%, transparent), 0 6px 16px rgb(0 0 0 / 0.45); }
 .leaflet-container { background: var(--color-panel); font-family: inherit; }
 .leaflet-control-attribution { font-size: 10px; }
+
+
+/* ===========================================================================
+   ENERGIA SEMPRE ACESA — camada visual (outubro/2026, pedido do Davi)
+   ---------------------------------------------------------------------------
+   Só aparência. Nada aqui lê ou muda dado: são elementos decorativos
+   (aria-hidden, pointer-events: none) e pseudo-elementos.
+
+   1. .condutor       anel de energia correndo pela borda de um painel
+   2. .topbar/.trilho  fio vivo na base da barra superior e na lateral
+   3. acabamento futurista: marca metálica, botões, campos, KPIs, mapa
+   4. a corrente não para nem com "menos movimento" ligado no sistema
+   =========================================================================== */
+
+/* --- 1. Condutor: um <span class="condutor"> dentro de um painel relative.
+   Herda o raio do pai. ::before = traço nítido, ::after = brilho difuso.
+   Dois pulsos (um forte, um fraco, meia volta atrás) giram pela borda.
+   --cond-dur e --cond-atraso deixam cada painel num ritmo próprio. ------- */
+.condutor {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.condutor::before,
+.condutor::after {
+  content: "";
+  position: absolute;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--gw-giro),
+    transparent 0deg 118deg,
+    rgb(229 53 43 / 0.55) 150deg,
+    rgb(255 106 69 / 0.75) 172deg,
+    transparent 180deg 290deg,
+    var(--color-flux) 330deg,
+    var(--color-flare) 352deg,
+    #fff 358deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  animation: gw-giro var(--cond-dur, 6s) linear infinite;
+  animation-delay: var(--cond-atraso, 0s);
+}
+.condutor::before {
+  inset: 0;
+  padding: 1.5px;
+}
+.condutor::after {
+  inset: 0;
+  padding: 5px;
+  filter: blur(4px);
+  opacity: 0.55;
+}
+/* Ponto ocioso (carregador sem recarga): a rede está ali, mas mais calma. */
+.condutor-suave { opacity: 0.38; --cond-dur: 9s; }
+.condutor-suave::after { opacity: 0.25; }
+
+[data-tema="claro"] .condutor::before,
+[data-tema="claro"] .condutor::after {
+  background: conic-gradient(
+    from var(--gw-giro),
+    transparent 0deg 118deg,
+    rgb(212 42 32 / 0.35) 150deg,
+    rgb(239 90 52 / 0.5) 172deg,
+    transparent 180deg 290deg,
+    var(--color-flux) 330deg,
+    var(--color-flare) 356deg,
+    transparent 360deg
+  );
+}
+[data-tema="claro"] .condutor::after { opacity: 0.3; }
+
+/* --- 2. Fios retos: tracejado correndo (a mesma corrente do diagrama, com o
+   ritmo do login) + um pulso branco-quente que atravessa de tempos em tempos. */
+@keyframes gw-fio-x { to { background-position: 28px 0; } }
+@keyframes gw-fio-y { to { background-position: 0 28px; } }
+@keyframes gw-pulso-x {
+  from { background-position: -30% 0; }
+  to   { background-position: 130% 0; }
+}
+@keyframes gw-pulso-y {
+  from { background-position: 0 -30%; }
+  to   { background-position: 0 130%; }
+}
+
+.topbar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1.5px;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(90deg, var(--color-flux) 0 4px, transparent 4px 14px);
+  background-size: 14px 100%;
+  animation: gw-fio-x 1.3s linear infinite;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 70%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 8%, #000 70%, transparent);
+  filter: drop-shadow(0 0 3px rgb(229 53 43 / 0.9));
+}
+.topbar::after {
+  height: 2px;
+  bottom: -1.5px;
+  background: linear-gradient(90deg, transparent, rgb(255 106 69 / 0.9) 40%, #fff 50%, rgb(255 106 69 / 0.9) 60%, transparent)
+              0 0 / 260px 100% no-repeat;
+  animation: gw-pulso-x 4.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  filter: drop-shadow(0 0 6px rgb(255 106 69 / 0.9));
+}
+
+.trilho::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -1px;
+  bottom: 0;
+  width: 1.5px;
+  pointer-events: none;
+  z-index: 1;
+  background-image: repeating-linear-gradient(180deg, var(--color-flux) 0 4px, transparent 4px 14px);
+  background-size: 100% 14px;
+  animation: gw-fio-y 1.3s linear infinite;
+  -webkit-mask-image: linear-gradient(180deg, #000, #000 55%, transparent 96%);
+          mask-image: linear-gradient(180deg, #000, #000 55%, transparent 96%);
+  filter: drop-shadow(0 0 3px rgb(229 53 43 / 0.9));
+}
+.trilho::after {
+  width: 2px;
+  right: -1.5px;
+  z-index: 1;
+  background: linear-gradient(180deg, transparent, rgb(255 106 69 / 0.9) 40%, #fff 50%, rgb(255 106 69 / 0.9) 60%, transparent)
+              0 0 / 100% 220px no-repeat;
+  animation: gw-pulso-y 5.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation-delay: -1.8s;
+  filter: drop-shadow(0 0 6px rgb(255 106 69 / 0.9));
+}
+[data-tema="claro"] .topbar::before,
+[data-tema="claro"] .trilho::before { filter: none; opacity: 0.7; }
+
+/* --- 3. Acabamento futurista ------------------------------------------- */
+
+/* Marca GOODWE: vermelho metálico com um reflexo que passa devagar. */
+@keyframes gw-reflexo {
+  0%, 62% { background-position: 160% 0; }
+  100%    { background-position: -60% 0; }
+}
+.marca {
+  background-image: linear-gradient(100deg,
+    var(--color-flux) 0%, var(--color-flux) 40%, #ffd2c4 50%, var(--color-flare) 56%, var(--color-flux) 66%, var(--color-flux) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gw-reflexo 7s ease-in-out infinite;
+}
+[data-tema="claro"] .marca {
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
+  animation: none;
+}
+
+/* Botão principal: chapa com luz no topo e um reflexo que corre no hover. */
+.brilho-flux {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background-image: linear-gradient(180deg, rgb(255 255 255 / 0.16), transparent 55%);
+  letter-spacing: 0.01em;
+}
+.brilho-flux::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, rgb(255 255 255 / 0.35) 50%, transparent 70%);
+  transform: translateX(-130%);
+  transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.brilho-flux:hover:not(:disabled)::after { transform: translateX(130%); }
+.brilho-flux:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px rgb(255 106 69 / 0.55), 0 0 24px -2px rgb(229 53 43 / 0.65), 0 12px 32px -10px rgb(229 53 43 / 0.8);
+}
+
+/* Campos: ao focar, o contorno acende como um fio ligado. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+select:focus,
+textarea:focus {
+  box-shadow: 0 0 0 1px rgb(229 53 43 / 0.55), 0 0 18px -4px rgb(229 53 43 / 0.6);
+}
+
+/* Indicadores: número com leve luminescência, ícone em cápsula acesa e
+   contorno vermelho ao passar o mouse. */
+.kpi .num {
+  text-shadow: 0 0 22px rgb(255 255 255 / 0.12);
+}
+.kpi-icone {
+  box-shadow: inset 0 0 0 1px currentColor, 0 0 16px -4px currentColor;
+  --tw-ring-color: currentColor;
+}
+.kpi-icone svg { filter: drop-shadow(0 0 4px currentColor); }
+.kpi:hover {
+  box-shadow: var(--shadow-lift), 0 0 0 1px rgb(229 53 43 / 0.22), 0 0 36px -10px rgb(229 53 43 / 0.45);
+}
+[data-tema="claro"] .kpi .num { text-shadow: none; }
+[data-tema="claro"] .kpi-icone { box-shadow: inset 0 0 0 1px currentColor; }
+[data-tema="claro"] .kpi-icone svg { filter: none; }
+
+/* Navegação: o ícone do item ativo brilha; os outros acendem no hover. */
+.nav-ativo svg { filter: drop-shadow(0 0 6px rgb(229 53 43 / 0.75)); }
+.group:hover > svg { filter: drop-shadow(0 0 5px rgb(255 255 255 / 0.25)); }
+[data-tema="claro"] .nav-ativo svg,
+[data-tema="claro"] .group:hover > svg { filter: none; }
+
+/* Carbono do painel: a malha hexagonal deriva bem devagar, dando vida ao
+   fundo sem chamar atenção. */
+@keyframes gw-deriva {
+  to { background-position: 34px 59px; }
+}
+.ambient::after,
+.carbono::after {
+  animation: gw-deriva 24s linear infinite;
+}
+
+/* Tela de entrada: uma faixa de varredura desce pelo piso técnico. */
+@keyframes gw-varre {
+  from { transform: translateY(-100%); }
+  to   { transform: translateY(640%); }
+}
+.piso { overflow: hidden; }
+.piso::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 16%;
+  background: linear-gradient(180deg, transparent, rgb(229 53 43 / 0.035) 75%, rgb(255 106 69 / 0.16) 99%, transparent);
+  animation: gw-varre 7s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+[data-tema="claro"] .piso::after {
+  background: linear-gradient(180deg, transparent, rgb(212 42 32 / 0.05) 70%, rgb(212 42 32 / 0.14) 98%, transparent);
+}
+
+/* Diagrama do login: pacote de energia (traço longo e quente) que dispara
+   pelos fios por cima da corrente comum, e o anel do quadro girando. */
+@keyframes gw-pacote {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: -420; }
+}
+.pacote {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 14 406;
+  animation: gw-pacote var(--pacote-dur, 2.4s) cubic-bezier(0.55, 0, 0.45, 1) infinite;
+  animation-delay: var(--pacote-atraso, 0s);
+  filter: drop-shadow(0 0 4px var(--color-flare)) drop-shadow(0 0 8px var(--color-flux));
+}
+.pacote-sol { filter: drop-shadow(0 0 4px var(--color-queue)) drop-shadow(0 0 8px var(--color-queue)); }
+@keyframes gw-gira {
+  to { transform: rotate(360deg); }
+}
+.gira {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gw-gira var(--gira-dur, 9s) linear infinite;
+}
+[data-tema="claro"] .pacote { stroke: var(--color-flare); filter: none; }
+
+/* Diagrama do dashboard: a rede chega energizada mesmo sem recarga - uma
+   corrente lenta e fraca só no trecho rede -> quadro. */
+.corrente-ociosa {
+  opacity: 0.45;
+  animation-duration: 3.4s;
+}
+
+/* Mapa: vinheta e grade técnica por cima dos azulejos, abaixo dos pinos
+   (o Leaflet põe os azulejos em z 200 e os pinos em z 600). */
+.mapa-hud::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 450;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 50% 50%, transparent 55%, rgb(6 6 7 / 0.55) 100%),
+    linear-gradient(to right, rgb(229 53 43 / 0.05) 1px, transparent 1px) 0 0 / 64px 64px,
+    linear-gradient(to bottom, rgb(229 53 43 / 0.05) 1px, transparent 1px) 0 0 / 64px 64px;
+}
+[data-tema="claro"] .mapa-hud::after {
+  background: radial-gradient(120% 90% at 50% 50%, transparent 60%, rgb(23 28 35 / 0.18) 100%);
+}
+/* Base de reserva do OpenStreetMap no tema escuro: escurecida por filtro. */
+.tiles-noite {
+  filter: invert(1) hue-rotate(180deg) brightness(0.82) contrast(0.92) saturate(0.6);
+}
+/* .leaflet-container na frente: o CSS do Leaflet chega depois (página lazy) */
+.leaflet-container .leaflet-bar a {
+  background-color: var(--color-panel);
+  color: var(--color-ink);
+  border-color: var(--color-line);
+}
+.leaflet-container .leaflet-bar a:hover { background-color: var(--color-raise); color: var(--color-flare); }
+.leaflet-control-attribution {
+  background: color-mix(in oklab, var(--color-void) 70%, transparent) !important;
+  color: var(--color-dim);
+}
+.leaflet-container .leaflet-control-attribution a { color: var(--color-mute); }
+
+/* Botão do assistente: um anel tracejado em órbita. */
+.orbita {
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+  border: 1.5px dashed rgb(255 106 69 / 0.65);
+  pointer-events: none;
+  animation: gw-gira 9s linear infinite;
+  filter: drop-shadow(0 0 4px rgb(229 53 43 / 0.7));
+}
+[data-tema="claro"] .orbita { filter: none; }
+
+/* Barra de rolagem: o polegar acende ao passar o mouse. */
+.scroll-slim::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--color-flux), var(--color-flare));
+}
+
+/* --- 4. A corrente nunca para -------------------------------------------
+   O bloco de "menos movimento" lá em cima zera TODA animação quando o
+   sistema operacional está com efeitos de animação desligados (comum em PC
+   de laboratório) - era por isso que o login aparecia parado. A energia é
+   a assinatura do produto, então estas animações, todas finas e lentas,
+   seguem rodando. Entradas, deslizes e trocas de página continuam
+   respeitando a preferência. */
+@media (prefers-reduced-motion: reduce) {
+  .corrente { animation-duration: var(--fluxo-dur, 1.6s) !important; animation-iteration-count: infinite !important; }
+  .corrente-ociosa { animation-duration: 3.4s !important; }
+  .pacote { animation-duration: var(--pacote-dur, 2.4s) !important; animation-iteration-count: infinite !important; }
+  .gira { animation-duration: var(--gira-dur, 9s) !important; animation-iteration-count: infinite !important; }
+  .orbita { animation-duration: 9s !important; animation-iteration-count: infinite !important; }
+  .flux-bar { animation-duration: 2.6s !important; animation-iteration-count: infinite !important; }
+  .halo, .pulsa { animation-duration: 2.4s !important; animation-iteration-count: infinite !important; }
+  .dot-live { animation-duration: 2s !important; animation-iteration-count: infinite !important; }
+  .aurora { animation: gw-aurora 12s ease-in-out infinite !important; }
+  .marca { animation-duration: 7s !important; animation-iteration-count: infinite !important; }
+  .condutor::before,
+  .condutor::after { animation-duration: var(--cond-dur, 6s) !important; animation-iteration-count: infinite !important; }
+  .condutor-suave::before,
+  .condutor-suave::after { animation-duration: 9s !important; }
+  .carregando-borda::before { animation-duration: 3.2s !important; animation-iteration-count: infinite !important; }
+  .topbar::before,
+  .trilho::before { animation-duration: 1.3s !important; animation-iteration-count: infinite !important; }
+  .topbar::after { animation-duration: 4.6s !important; animation-iteration-count: infinite !important; }
+  .trilho::after { animation-duration: 5.2s !important; animation-iteration-count: infinite !important; }
+  .piso::after { animation-duration: 7s !important; animation-iteration-count: infinite !important; }
+  .ambient::after,
+  .carbono::after { animation-duration: 24s !important; animation-iteration-count: infinite !important; }
+}
+
+/* .kpi > * vira relative; o condutor precisa continuar absoluto. */
+.kpi > .condutor { position: absolute; }

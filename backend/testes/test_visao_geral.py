@@ -87,9 +87,14 @@ def test_sem_tabela_admins_globais_ninguem_e_global(monkeypatch):
     assert ADMIN.get("/gestor/geral/resumo", headers=cab_admin("u-admin")).status_code == 403
 
 
-def test_login_do_admin_diz_se_e_global():
+def test_login_do_admin_diz_se_e_global_so_depois_do_codigo():
+    from seguranca import codigo_totp
     r = ADMIN.post("/admin/login", json={"nome": "Admin Global", "senha": SENHA}).json()
-    assert r["success"] and r["global"] is True
+    assert r["success"] and r["global"] is False and r["mfa_cadastro_necessario"] is True
+    token = {"Authorization": f"Bearer {r['token']}"}
+    segredo = ADMIN.post("/admin/mfa/iniciar", headers=token).json()["segredo"]
+    r = ADMIN.post("/admin/mfa/confirmar", json={"codigo": codigo_totp(segredo)}, headers=token).json()
+    assert r["success"] and r["mfa"] is True and r["global"] is True
     r = ADMIN.post("/admin/login", json={"nome": "Gestor Comum", "senha": SENHA}).json()
     assert r["success"] and r["global"] is False
 

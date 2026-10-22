@@ -18,7 +18,12 @@ Faz, sem duplicar nada se rodar de novo (idempotente):
      (o .env anterior, se existir, vira .env.bak). O .env NÃO vai para o git.
 
 Opções:
-    --fisico        a placa é o ESP32 real (grava 'medido'); padrão: virtual ('simulado')
+    --next          TOTEM NEXT de 22/10 (o que vai para a banca): ESP32 SEM INA219 e
+                    SEM solar. 4 vagas iguais, divisão por tempo ligada (Modbus 10025,
+                    o water-filling cicla os relés), sem porta solar, sem FV no
+                    estande. A energia vem do modelo de carga do ESP32: rótulo
+                    'simulado' (dispositivos.virtual = true), nunca 'medido'.
+    --fisico        a placa é o ESP32 com 5 INA219 (ADR-022, grava 'medido'); padrão: virtual ('simulado')
     --senha X       senha das contas de teste (padrão abaixo; são contas SIMULADAS)
     --sem-env       só imprime, não grava o totem_virtual/.env
 
@@ -67,7 +72,7 @@ def checar_banco(sb):
     _ok("migration 19 presente")
 
 
-def condominio(sb):
+def condominio(sb, next_sem_sensor: bool = False):
     sb.table("condominios").upsert({
         "id": ESTANDE, "nome": "Estande Next (totem)", "endereco": "FIAP - Next 2026",
         "perfil": "bancada",          # cadastro: só celular, sem bloco/apto (db/19)
@@ -78,40 +83,53 @@ def condominio(sb):
         "limite_potencia_kw": 30,
         # ponta 00:00-00:00 = nunca: o valor da demonstração não muda com a hora
         "ponta_inicio": "00:00", "ponta_fim": "00:00",
-        "fv_potencia_kwp": 10, "preco_solar_kwh": 0.75, "custo_solar_kwh": 0.35,
+        # Totem Next sem painel: sem FV (o alocador não promete sol que não existe).
+        "fv_potencia_kwp": 0 if next_sem_sensor else 10, "preco_solar_kwh": 0.75, "custo_solar_kwh": 0.35,
+        # Na ponta o quadro do estande cai pela metade: 30 -> 15 kW = 2 celulares
+        # cheios, ou 4 a 50% do tempo (divisão por tempo). Ponta 00:00-00:00 =
+        # desligada; o painel liga a janela ao vivo para mostrar.
+        "ponta_fator_limite": 0.5,
     }).execute()
-    _ok("condomínio 'Estande Next (totem)' - limite 30 kW, sem ponta (SIMULADO)")
+    _ok("condomínio 'Estande Next (totem)' - limite 30 kW (15 na ponta), sem ponta ligada"
+        + (", sem FV" if next_sem_sensor else "") + " (SIMULADO)")
 
 
-def vagas(sb):
+def vagas(sb, next_sem_sensor: bool = False):
     for n, cid in VAGAS.items():
+        solar = n == 4 and not next_sem_sensor
         existente = sb.table("carregadores").select("id").eq("id", cid).execute().data
         dados = {
             "condominio_id": ESTANDE, "numero": f"T{n}",
-            "modelo": f"Totem Central - vaga {n}" + (" (solar)" if n == 4 else "") + " - maquete 1:1000",
+            "modelo": f"Totem Central - vaga {n}" + (" (solar)" if solar else "") + " - maquete 1:1000",
             "tipo": "DC", "conector": "USB", "tensao_v": 5, "corrente_maxima_a": 3,
             "potencia_maxima_kw": 7.5, "tarifa_kwh": 1.15, "perfil": "bancada", "origem": "hardware",
             "bateria_soc_minimo": 20,                 # 10030
             # Vaga solar: FV (10032) + garantir mínimo (10024). Sem o 10024 a
             # vaga PAUSA quando a 18650 acaba, em vez de seguir pela rede.
-            "modo_carga": 1 if n == 4 else 0,
-            "garantir_minimo": n == 4,
+            "modo_carga": 1 if solar else 0,
+            "garantir_minimo": solar,
+            # Modbus 10025: ligado = a placa divide por TEMPO (relé ciclado pelo
+            # water-filling, demanda.por_tempo). Só o totem Next faz isso; a
+            # placa com INA219 (ADR-022) é carga fixa.
+            "controle_dinamico": next_sem_sensor,
         }
         if existente:
             sb.table("carregadores").update(dados).eq("id", cid).execute()
         else:
             sb.table("carregadores").insert({"id": cid, "status": "offline", **dados}).execute()
-    _ok("4 vagas T1..T4 de 7,5 kW (bancada, escala 1:1000; T4 = solar, FV + garantir mínimo)")
+    _ok("4 vagas T1..T4 de 7,5 kW (bancada, escala 1:1000; "
+        + ("divisão por tempo ligada, sem vaga solar)" if next_sem_sensor
+           else "T4 = solar, FV + garantir mínimo)"))
 
 
-def placa(sb, virtual: bool) -> dict:
+def placa(sb, virtual: bool, next_sem_sensor: bool = False) -> dict:
     portas = sb.table("portas_dispositivo").select("dispositivo_id, numero, carregador_id") \
         .in_("carregador_id", list(VAGAS.values())).execute().data or []
     donos = {p["dispositivo_id"] for p in portas}
     if len(donos) > 1:
         sys.exit("As vagas do totem estão em placas diferentes. Apague as portas antigas antes:\n"
                  f"  delete from portas_dispositivo where carregador_id in {tuple(VAGAS.values())};")
-    ajustes = {"fator_escala": 1000, "virtual": virtual, "porta_solar": 4,
+    ajustes = {"fator_escala": 1000, "virtual": virtual, "porta_solar": None if next_sem_sensor else 4,
                "intervalo_telemetria_s": 2, "intervalo_comandos_s": 2}
     if donos:
         d = sb.table("dispositivos").select("*").eq("id", donos.pop()).execute().data[0]
@@ -130,8 +148,9 @@ def placa(sb, virtual: bool) -> dict:
         if n not in ja:
             sb.table("portas_dispositivo").insert(
                 {"dispositivo_id": d["id"], "numero": n, "carregador_id": cid}).execute()
-    _ok(f"portas 1-4 -> T1..T4 | fator 1000 | porta solar 4 | origem "
-        f"{'simulado (virtual)' if virtual else 'medido (ESP32)'}")
+    _ok(f"portas 1-4 -> T1..T4 | fator 1000 | porta solar {ajustes['porta_solar'] or 'nenhuma'} | origem "
+        + ("simulado (modelo de carga no ESP32, sem sensor)" if next_sem_sensor
+           else "simulado (virtual)" if virtual else "medido (ESP32)"))
     return d
 
 
@@ -172,9 +191,19 @@ def morador(sb, nome, tag, bonus, senha_hash) -> str:
     return uid
 
 
-def escrever_env(d: dict, senha: str, gravar: bool) -> None:
+def escrever_env(d: dict, senha: str, gravar: bool, next_sem_sensor: bool = False) -> None:
     from seguranca import chave_dispositivo
     chave = chave_dispositivo(d["id"], d.get("chave_versao") or 1).hex()
+    if next_sem_sensor:
+        # O ESP32 não lê .env: a chave vai compilada no segredos.h (fora do git).
+        id_placa = d["id"]
+        print("\n--- firmware/totem_next/segredos.h (copie; o arquivo NÃO vai para o git) ---")
+        print(f'#define DEVICE_ID      "{id_placa}"')
+        print(f'#define DEVICE_KEY_HEX "{chave}"')
+        print('#define BACKEND_URL    "http://<IP do notebook na rede do estande>:8000"')
+        print('#define WIFI_SSID      "<rede do estande>"')
+        print('#define WIFI_SENHA     "<senha da rede>"')
+        print("--- (a chave é derivada da DEVICE_MASTER_KEY deste backend/.env) ---\n")
     linhas = [
         "# Gerado por backend/preparar_totem.py - NÃO comitar.",
         "BACKEND_URL=http://127.0.0.1:8000",
@@ -198,7 +227,9 @@ def escrever_env(d: dict, senha: str, gravar: bool) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description="Prepara o banco real para o Totem Central.")
-    ap.add_argument("--fisico", action="store_true", help="a placa é o ESP32 real (origem 'medido')")
+    ap.add_argument("--next", action="store_true",
+                    help="totem Next: ESP32 sem INA219 e sem solar, divisão por tempo (origem 'simulado')")
+    ap.add_argument("--fisico", action="store_true", help="a placa é o ESP32 com INA219 (origem 'medido')")
     ap.add_argument("--senha", default=SENHA_PADRAO, help="senha das contas de teste")
     ap.add_argument("--sem-env", action="store_true", help="não grava o totem_virtual/.env")
     args = ap.parse_args()
@@ -215,14 +246,25 @@ def main():
     print("\nPreparando o Totem Central no banco (dados SIMULADOS de teste)\n")
     sb = provisionar._supabase()
     checar_banco(sb)
-    condominio(sb)
-    vagas(sb)
-    d = placa(sb, virtual=not args.fisico)
+    if args.next and args.fisico:
+        sys.exit("--next e --fisico não combinam: o totem Next não tem sensor (nunca grava 'medido').")
+    condominio(sb, args.next)
+    vagas(sb, args.next)
+    d = placa(sb, virtual=not args.fisico, next_sem_sensor=args.next)
     senha_hash = gerar_hash_senha(args.senha)
     for nome, tag, bonus in CONTAS:
         morador(sb, nome, tag, bonus, senha_hash)
-    escrever_env(d, args.senha, gravar=not args.sem_env)
+    escrever_env(d, args.senha, gravar=not args.sem_env, next_sem_sensor=args.next)
 
+    if args.next:
+        print(f"""
+Pronto (totem Next). Login no app: Ana Totem / Bia Totem / Caio Totem, senha {args.senha}
+  1. Cole o bloco acima em firmware/totem_next/segredos.h e grave a placa.
+  2. backend\\   uvicorn main:app --host 0.0.0.0 --port 8000   (0.0.0.0: o ESP32 vem pela rede)
+  3. Monitor serial a 115200: "handshake ok: 4 porta(s)".
+  Roteiro completo: docs/RODAR_NO_NOTEBOOK.md
+""")
+        return
     print(f"""
 Pronto. Login no app: Ana Totem / Bia Totem / Caio Totem, senha {args.senha}
 Próximos passos (cada um num terminal):

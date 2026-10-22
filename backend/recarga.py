@@ -519,10 +519,37 @@ def expirar_esperas() -> None:
 # Progresso (simulador e ESP32 passam pelo MESMO lugar)
 # ---------------------------------------------------------------------------
 
+_SERIE_AUSENTE = False
+
+
+def gravar_ponto_da_serie(s: dict, update: dict, origem_dado: str) -> None:
+    """
+    Um ponto do gráfico da recarga (db/23, `leituras_sessao`) - o mesmo para a
+    recarga simulada e para a do totem. NUNCA derruba a recarga: sem a
+    tabela, avisa uma vez e segue.
+    """
+    global _SERIE_AUSENTE
+    if _SERIE_AUSENTE:
+        return
+    try:
+        supabase.table("leituras_sessao").insert({
+            "sessao_id": s["id"],
+            "potencia_kw": update.get("potencia_atual_kw", 0),
+            "energia_kwh": update.get("energia_entregue_kwh", 0),
+            "percentual": update.get("percentual_bateria_atual", s.get("percentual_bateria_atual")),
+            "alocado_kw": s.get("potencia_alocada_kw"),
+            "tempo_restante_min": update.get("tempo_estimado_min", s.get("tempo_estimado_min")),
+            "origem": origem_dado,
+        }).execute()
+    except Exception as e:                                   # noqa: BLE001
+        _SERIE_AUSENTE = True
+        print(f"[RECARGA] série da recarga não gravada (rode o db/23): {type(e).__name__}: {str(e)[:120]}")
+
+
 def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: float,
                         potencia_kw: float, soc: float | None, tempo_min: int | None,
                         potencia_media_kw: float | None = None, fracao_solar: float = 0.0,
-                        origem_solar: str | None = None) -> str | None:
+                        origem_solar: str | None = None, origem_dado: str = "simulado") -> str | None:
     """
     Grava uma leitura na sessão e decide se ela acabou. Devolve o motivo do
     encerramento (e encerra) ou None.
@@ -570,6 +597,7 @@ def registrar_progresso(s: dict, v: dict, cond: dict | None, energia_total_kwh: 
 
     supabase.table("sessoes_recarga").update(update).eq("id", s["id"]) \
         .eq("status", "carregando").execute()
+    gravar_ponto_da_serie(s, update, origem_dado)
 
     merged = {**s, **update}
     alvo = float(s.get("alvo_percentual") or 100)

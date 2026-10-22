@@ -30,6 +30,8 @@ os.environ.setdefault("SUPABASE_KEY", "sb_secret_teste_local")
 os.environ.setdefault("CHAT_MODO", "regras")
 # Chave-mestra descartável do protocolo v2 (a de verdade mora no backend/.env).
 os.environ.setdefault("DEVICE_MASTER_KEY", "ab" * 32)
+# O painel não sobe sem a chave do segundo fator (ele é obrigatório sempre).
+os.environ.setdefault("ADMIN_MFA_KEY", "chave-de-teste-com-mais-de-32-caracteres-ok")
 
 
 def usar_supabase_falso():

@@ -12,7 +12,9 @@ O que separa as duas, em camadas (cada uma segura sozinha):
   1. Rotas       /gestor/* e /admin/* só existem AQUI. Na API pública dão 404.
   2. Token       audiência própria: o token do morador é recusado aqui, e o
                  do gestor é recusado lá.
-  3. Login       /admin/login: senha + conta de gestor + código do autenticador.
+  3. Login       /admin/login (senha) ou /admin/google (operador aprovado) +
+                 conta de gestor + código do autenticador, SEMPRE. Sem o
+                 código, o token só serve para cadastrar o autenticador.
   4. CORS        só a origem do painel (ADMIN_ORIGINS). A origem do app do
                  morador não entra na lista.
   5. Papel       `tipo_usuario = 'gestor'` relido do banco a cada chamada.
@@ -30,18 +32,21 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import endurecimento
-from config import ADMIN_MFA_OBRIGATORIO, ADMIN_ORIGIN_REGEX, ADMIN_ORIGINS, PRODUCAO
+from config import ADMIN_ORIGIN_REGEX, ADMIN_ORIGINS
 from hardware_api import router_admin as hardware_admin_router
 from rotas_admin import auditar, router as admin_router
 from rotas_geral import router as geral_router
 from rotas_gestor import router as gestor_router
+from rotas_operadores import router as operadores_router
+from rotas_sessoes import router as sessoes_router
 from seguranca import ip_do_cliente, mfa_configurado, validar_token_admin
 
-if PRODUCAO and ADMIN_MFA_OBRIGATORIO and not mfa_configurado():
+# O segundo fator é obrigatório SEMPRE: sem a chave que cifra o segredo do
+# autenticador, ninguém consegue cadastrá-lo e o painel ficaria inútil.
+if not mfa_configurado():
     raise RuntimeError(
-        "API administrativa em produção sem ADMIN_MFA_KEY. Gere com "
-        "`python provisionar.py chave-mfa` e cadastre o gestor com "
-        "`python provisionar.py gestor-mfa --nome \"...\"`.")
+        "API administrativa sem ADMIN_MFA_KEY no backend/.env. Gere com "
+        "`python provisionar.py chave-mfa`, cole no .env e suba de novo.")
 
 app = FastAPI(title="GoodWe ChargeOps - API administrativa", **endurecimento.opcoes_fastapi())
 
@@ -85,6 +90,8 @@ app.add_middleware(
 )
 
 app.include_router(admin_router)
+app.include_router(operadores_router)
+app.include_router(sessoes_router)
 app.include_router(gestor_router)
 app.include_router(geral_router)
 app.include_router(hardware_admin_router)

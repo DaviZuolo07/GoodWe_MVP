@@ -26,7 +26,6 @@ from fastapi.testclient import TestClient          # noqa: E402
 import endurecimento                               # noqa: E402
 import main                                        # noqa: E402
 import main_admin                                  # noqa: E402
-import rotas_admin                                 # noqa: E402
 import rotas_conta                                 # noqa: E402
 import seguranca                                   # noqa: E402
 from seguranca import (codigo_totp, emitir_token, emitir_token_admin,  # noqa: E402
@@ -166,23 +165,53 @@ def test_mfa_cadastro_exigencia_e_codigo_de_uso_unico():
     assert ADMIN.post("/admin/mfa/iniciar", headers=cab(r.json()["token"])).status_code == 409
 
 
-def test_mfa_obrigatorio_recusa_gestor_sem_cadastro(monkeypatch):
-    monkeypatch.setattr(rotas_admin, "ADMIN_MFA_OBRIGATORIO", True)
+def test_senha_sem_segundo_fator_nao_le_nem_altera_nada():
+    """A falha de 22/10: nome + senha (sem MFA) abriam o painel inteiro."""
+    fake.t("admins_globais").append({"usuario_id": "u-g"})
     r = login_admin()
-    assert r.status_code == 403 and "gestor-mfa" in r.json()["detail"]
+    assert r.status_code == 200
+    corpo = r.json()
+    assert corpo["mfa"] is False and corpo["mfa_cadastro_necessario"] is True
+    assert corpo["global"] is False, "nem 'é admin global?' é respondido antes do código"
+    token = corpo["token"]
+    for metodo, caminho in (("GET", "/gestor/painel"), ("GET", "/gestor/geral/resumo"),
+                            ("GET", "/admin/auditoria"), ("GET", "/admin/operadores"),
+                            ("GET", "/gestor/sessoes"), ("PATCH", "/gestor/condominio")):
+        r = ADMIN.request(metodo, caminho, headers=cab(token),
+                          json={"limite_potencia_kw": 1} if metodo == "PATCH" else None)
+        assert r.status_code == 403 and r.json()["detail"].startswith("mfa_pendente"), caminho
+    # O que ele PODE: saber quem é e cadastrar o autenticador.
+    assert ADMIN.get("/admin/me", headers=cab(token)).json()["mfa"] is False
+    assert ADMIN.post("/admin/mfa/iniciar", headers=cab(token)).status_code == 200
+
+
+def test_token_sem_mfa_e_curto():
+    sem = emitir_token_admin("u-g", mfa=False)
+    com = emitir_token_admin("u-g", mfa=True)
+    assert sem["expira_em"] < com["expira_em"]
+
+
+def test_conta_criada_sem_senha_nao_entra_por_senha():
+    # Operador aprovado (Google) não tem credencial: nome + qualquer senha = recusa.
+    fake.t("usuarios").append({"id": "u-op", "nome": "Operador Google", "tipo_usuario": "gestor",
+                               "condominio_id": COND, "saldo": 0})
+    assert login_admin(nome="Operador Google").status_code == 401
 
 
 # --- 5. Auditoria ------------------------------------------------------------------
 
 def test_auditoria_registra_acesso_recusa_e_alteracao():
     login_admin(senha="errada-errada")
-    token = login_admin().json()["token"]
+    segredo = _cadastrar_mfa()
+    fake.t("gestor_mfa")[0]["ultimo_passo"] -= 2
+    token = login_admin(codigo=codigo_totp(segredo)).json()["token"]
     assert ADMIN.patch("/gestor/condominio", json={"limite_potencia_kw": 25},
                        headers=cab(token)).status_code == 200
     ADMIN.post("/gestor/simular-demanda", json={"carros": 3}, headers=cab(token))
     acoes = [(a["acao"], a.get("detalhe")) for a in fake.t("auditoria_admin")]
     assert ("login_recusado", "senha: Gestora Teste") in acoes
-    assert ("login", "sem_mfa") in acoes
+    assert ("login", "pwd: cadastro do autenticador pendente") in acoes
+    assert ("login", "pwd+mfa") in acoes
     assert ("alteracao", "PATCH /gestor/condominio") in acoes
     assert not any("simular" in (d or "") for _, d in acoes), "simulação não altera nada"
     r = ADMIN.get("/admin/auditoria", headers=cab(token))

@@ -10,7 +10,8 @@ export default defineConfig(({ mode }) => {
   return {
   // A página só pode conversar com a API administrativa. Nada de Supabase,
   // nada da API do morador.
-  plugins: [react(), tailwindcss(), csp({ conectar: [env.VITE_ADMIN_API_URL] })],
+  plugins: [react(), tailwindcss(), csp({ conectar: [env.VITE_ADMIN_API_URL],
+                                          google: Boolean(env.VITE_GOOGLE_CLIENT_ID) })],
   // 127.0.0.1 de propósito: em desenvolvimento o painel não fica exposto na
   // rede local (o app do morador usa --host para o celular; este não).
   server: { port: 5174, strictPort: true, host: '127.0.0.1' },

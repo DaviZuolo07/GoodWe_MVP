@@ -117,15 +117,16 @@ function TopStats({ chargers, sessions, condominio, filaCount, sessoesHoje }) {
 
   return (
     <div className="mb-8 grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4 lg:mb-10">
-      {cards.map((card) => (
+      {cards.map((card, i) => (
         <div
           key={card.label}
           className="kpi group rounded-panel border border-line bg-panel p-3.5 transition duration-200 sm:p-5
                      hover:-translate-y-0.5 hover:border-line hover:bg-raise/50 hover:shadow-lift"
         >
+          <span className="condutor" style={{ '--cond-dur': `${6 + i * 0.7}s`, '--cond-atraso': `${-i * 1.6}s` }} aria-hidden="true" />
           <div className="mb-3 flex items-center gap-2 sm:mb-4 sm:gap-3">
             <span
-              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-chip sm:h-9 sm:w-9 ${card.fundo} ${card.cor}`}
+              className={`kpi-icone flex h-7 w-7 shrink-0 items-center justify-center rounded-chip sm:h-9 sm:w-9 ${card.fundo} ${card.cor}`}
             >
               <Icone nome={card.icone} className="h-[18px] w-[18px]" />
             </span>

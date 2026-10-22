@@ -33,17 +33,18 @@ def usuario_logado(usuario_id: str = Depends(usuario_atual)) -> dict:
     return u
 
 
-def gestor_logado(claims: dict = Depends(admin_atual)) -> dict:
+def gestor_identificado(claims: dict = Depends(admin_atual)) -> dict:
     """
-    Só existe na API ADMINISTRATIVA (main_admin.py). Três condições, todas
-    conferidas no servidor a cada chamada:
+    O gestor do token, SEM exigir o segundo fator. Só três rotas usam isto:
+    /admin/me, /admin/mfa/iniciar e /admin/mfa/confirmar - o caminho para
+    cadastrar o autenticador no primeiro acesso. Todo o resto usa
+    `gestor_logado`, que exige o código.
 
+    Conferido no servidor a cada chamada:
       1. o token é o administrativo (audiência própria - o do morador não serve);
       2. a conta ainda existe;
       3. a conta ainda é de gestor AGORA, no banco - quem foi rebaixado perde
          o acesso na chamada seguinte, sem esperar o token vencer.
-
-    Nada disso depende do que o navegador diz sobre si mesmo.
     """
     u = um(supabase.table("usuarios").select(CAMPOS_PUBLICOS).eq("id", claims["sub"]).execute())
     if not u:
@@ -52,7 +53,22 @@ def gestor_logado(claims: dict = Depends(admin_atual)) -> dict:
     if u.get("tipo_usuario") != "gestor":
         raise HTTPException(status_code=403, detail="Área restrita ao gestor do condomínio.")
     u["saldo"] = round(float(u.get("saldo") or 0), 2)
-    u["_mfa"] = "otp" in (claims.get("amr") or [])
+    amr = claims.get("amr") or []
+    u["_mfa"] = "otp" in amr
+    u["_metodo"] = "google" if "google" in amr else "pwd"
+    return u
+
+
+def gestor_logado(u: dict = Depends(gestor_identificado)) -> dict:
+    """
+    Só existe na API ADMINISTRATIVA (main_admin.py). Além das três checagens
+    de `gestor_identificado`, exige o SEGUNDO FATOR no token, sempre - não há
+    modo "opcional". Senha (ou Google) sem o código do autenticador não lê
+    nem altera nada: só cadastra o autenticador.
+    """
+    if not u["_mfa"]:
+        raise HTTPException(status_code=403, detail="mfa_pendente: cadastre o app autenticador "
+                                                    "e entre com o código para continuar.")
     return u
 
 

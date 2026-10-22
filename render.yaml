@@ -45,7 +45,6 @@ services:
       - { key: AMBIENTE, value: producao }
       - { key: SERVICO, value: admin }
       - { key: PROXIES_CONFIAVEIS, value: "1" }
-      - { key: ADMIN_MFA, value: obrigatorio }
       - { key: ADMIN_JWT_TTL_MIN, value: "30" }
       - { key: FUSO_HORARIO, value: America/Sao_Paulo }
       - { key: SUPABASE_URL, sync: false }

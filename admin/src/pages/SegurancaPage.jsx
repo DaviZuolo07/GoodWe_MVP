@@ -8,6 +8,10 @@ const ACOES = {
   alteracao: { rotulo: 'Alteração', cor: 'text-ink' },
   mfa_iniciado: { rotulo: 'Cadastro do segundo fator iniciado', cor: 'text-queue' },
   mfa_ativado: { rotulo: 'Segundo fator ativado', cor: 'text-live' },
+  operador_pedido: { rotulo: 'Pedido de operador (Google)', cor: 'text-queue' },
+  operador_aprovado: { rotulo: 'Operador aprovado', cor: 'text-live' },
+  operador_recusado: { rotulo: 'Operador recusado', cor: 'text-mute' },
+  operador_revogado: { rotulo: 'Operador revogado', cor: 'text-flux' },
 }
 
 function quando(iso) {
@@ -15,7 +19,7 @@ function quando(iso) {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })
 }
 
-function CadastroMfa({ onAtivado }) {
+export function CadastroMfa({ onAtivado }) {
   const [dados, setDados] = useState(null)       // { segredo, uri }
   const [qr, setQr] = useState('')
   const [codigo, setCodigo] = useState('')
@@ -43,10 +47,10 @@ function CadastroMfa({ onAtivado }) {
 
   return (
     <section className="rounded-panel border border-queue/40 bg-queue/5 p-5 sm:p-6">
-      <h2 className="text-lg font-semibold text-ink">Ative o segundo fator</h2>
+      <h2 className="text-lg font-semibold text-ink">Primeiro acesso: cadastre o app autenticador</h2>
       <p className="mt-1 max-w-2xl text-sm leading-relaxed text-mute">
-        Hoje esta conta entra só com a senha. Com o segundo fator, entrar passa a exigir também um código que
-        muda a cada 30 segundos no seu celular — quem descobrir a senha não entra sem ele.
+        O painel não mostra nenhum dado antes disso. A partir de agora, entrar exige também um código que muda a
+        cada 30 segundos no seu celular — quem descobrir a senha (ou a conta Google) não entra sem ele.
       </p>
       {erro && <p role="alert" className="mt-4 rounded-lg border border-flux/40 bg-flux/10 px-4 py-2 text-sm text-flux">{erro}</p>}
 
@@ -82,7 +86,7 @@ function CadastroMfa({ onAtivado }) {
   )
 }
 
-function SegurancaPage({ mfa, onMfaAtivado }) {
+function SegurancaPage() {
   const [eventos, setEventos] = useState(null)
   const [erro, setErro] = useState('')
 
@@ -91,22 +95,18 @@ function SegurancaPage({ mfa, onMfaAtivado }) {
     catch (e) { setErro(e.message) }
   }, [])
 
-  useEffect(() => { carregar() }, [carregar, mfa])
+  useEffect(() => { carregar() }, [carregar])
 
   return (
     <div className="space-y-8">
-      {mfa ? (
-        <section className="rounded-panel border border-line bg-panel p-5 sm:p-6">
-          <h2 className="text-lg font-semibold text-ink">Segundo fator ativo</h2>
-          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-mute">
-            Esta conta só entra com senha e código do app autenticador. Para trocar de celular, peça a quem
-            administra o servidor — a troca não é feita por esta tela, para que uma sessão aberta não consiga
-            substituir o seu segundo fator.
-          </p>
-        </section>
-      ) : (
-        <CadastroMfa onAtivado={onMfaAtivado} />
-      )}
+      <section className="rounded-panel border border-line bg-panel p-5 sm:p-6">
+        <h2 className="text-lg font-semibold text-ink">Segundo fator ativo</h2>
+        <p className="mt-1 max-w-2xl text-sm leading-relaxed text-mute">
+          Esta conta só entra com o primeiro fator (senha ou Google) e o código do app autenticador. Para trocar de
+          celular, peça a quem administra o servidor (python provisionar.py gestor-mfa --trocar) — a troca não é
+          feita por esta tela, para que uma sessão aberta não consiga substituir o seu segundo fator.
+        </p>
+      </section>
 
       <section>
         <div className="mb-3 flex items-end justify-between gap-3">

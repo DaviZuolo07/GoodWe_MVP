@@ -596,6 +596,7 @@ export function BotaoChat({ onClick, escondido }) {
                  hover:scale-105 hover:bg-flare active:scale-95"
     >
       <span className="absolute inset-0 rounded-full bg-flux opacity-40 transition-transform duration-500 group-hover:scale-125 group-hover:opacity-0" />
+      <span className="orbita" aria-hidden="true" />
       <svg viewBox="0 0 24 24" className="relative h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <path d="M13 2.5 4.8 13.8H11l-1 7.7 8.2-11.3H12l1-7.7Z" />
       </svg>

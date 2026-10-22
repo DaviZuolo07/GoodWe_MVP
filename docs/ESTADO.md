@@ -4,6 +4,31 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
+## 22/10/2026 — Davi · Chat V7 — Totem Next sem sensor, painel seguro, rodar no notebook
+
+Pedido do Davi para a banca de 23/10 (backend, db, admin, frontend e firmware: registrado para o Daniel). Roteiro do dia: `docs/RODAR_NO_NOTEBOOK.md`.
+
+### Feito
+1. **Segurança do painel:** segundo fator SEMPRE obrigatório (`ADMIN_MFA=opcional` não existe mais; nome + senha abriam tudo). Sem o código, o token (10 min) só abre `/admin/me` e `/admin/mfa/*`. `provisionar.py admin-global` só recebe o nome (senha gerada uma vez, não recria nem promove conta); saíram `--senha`, `--nova-senha` e `senha-gestor`; `senhas-demo` não toca gestor.
+2. **Operadores pelo Google** (`rotas_operadores.py`, db/23): pedido → aprovação do admin da plataforma → conta de gestor presa ao condomínio, sem senha, com MFA. Revogar corta na hora.
+3. **Divisão por tempo (water-filling no relé):** porta de relé com o 10025 ligado é modulável (`demanda.por_tempo`); a `fracao` vai para a placa; mínimo de 20% da vaga; previsão de término usa a fração.
+4. **Firmware `firmware/totem_next/`:** sem INA219/solar, pinos da fiação real, modelo de carga do celular (rótulo `simulado`), rodízio McNaughton numa janela de 30 s, LCD com fim previsto e tomada derivada. Compila (83% flash) e o modelo passa no teste de PC.
+5. **Série de toda recarga** (`leituras_sessao`, db/23) + `/recargas/{id}/serie`; % real do celular (`/recargas/{id}/bateria`, Battery API do Android).
+6. **Painel:** abas Sessões (detalhe com gráfico, local, usuário, demanda, energia da tomada), Sala Next (cadastros, celulares, recargas, vagas, limite e "pico agora"), Operadores.
+7. `preparar_totem.py --next`. Auditoria das 22 migrations (nenhuma alterada) e quadro de chaves no roteiro.
+
+### Testado
+- pytest backend 121 e totem virtual 57 verdes; lint/build do app e do painel; firmware compila sem aviso nosso; `teste_carga.cpp` (zig c++) TUDO PASSOU.
+
+### NÃO testado
+- Firmware numa placa; Google com um Client ID real; db/23 no Supabase real; navegador (só build).
+
+### Próximo
+1. Davi: rodar o db/23; seguir `docs/RODAR_NO_NOTEBOOK.md`; rotacionar as chaves se o `.env` viajou.
+2. Daniel: revisar `rotas_admin.py`, `rotas_operadores.py`, `rotas_sessoes.py`, `serie.py`, `demanda.por_tempo` e o db/23.
+
+---
+
 ## 19/10/2026 — Davi · Chat V6 — Correções B1–B5 para o NEXT
 
 Override do contrato v1 de novo (autorizado): backend mexido e registrado para o Daniel. Detalhes em `docs/CORRECOES_NEXT_B1_B5.md`; contrato em `docs/contratos/experiencia_next.md`; estudo em `docs/MAPA_DE_ESTUDO.md`.

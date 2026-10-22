@@ -11,6 +11,12 @@ O login daqui é mais exigente que o do morador:
   2. a conta É de gestor      (conferido no banco, não no navegador)
   3. código do autenticador   (TOTP de 6 dígitos; cada código vale uma vez)
 
+O passo 3 é SEMPRE exigido - não existe mais modo "opcional". Conta que ainda
+não cadastrou o autenticador (primeiro acesso de quem o provisionar.py criou)
+recebe um token curto que só abre /admin/me e /admin/mfa/*: cadastra o app,
+confirma com um código e só então o painel mostra algum dado. Antes, com
+ADMIN_MFA=opcional (o padrão fora do Docker), nome + senha abriam tudo.
+
 Respostas de erro NÃO dizem qual das três falhou antes da senha estar certa:
 "credenciais inválidas" vale para nome inexistente, senha errada e conta que
 não é de gestor. Só depois da senha correta o servidor pede o código - senão
@@ -25,8 +31,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from config import ADMIN_MFA_OBRIGATORIO, agora_iso, supabase, um
-from identidade import CAMPOS_PUBLICOS, gestor_logado
+from config import agora_iso, supabase, um
+from identidade import CAMPOS_PUBLICOS, gestor_identificado, gestor_logado
 from rotas_conta import NOME_VALIDO
 from rotas_geral import eh_admin_global
 from seguranca import (SENHA_MAX, cifrar_segredo_mfa, conferir_senha, conferir_totp,
@@ -74,10 +80,33 @@ def _mfa_do(usuario_id: str) -> dict | None:
     try:
         return um(supabase.table("gestor_mfa").select("*").eq("usuario_id", usuario_id).execute())
     except Exception as e:                                   # noqa: BLE001
-        # Tabela ausente (db/18 não rodou). Tratar como "sem MFA" abriria a
-        # porta em produção: o chamador decide pelo ADMIN_MFA_OBRIGATORIO.
+        # Tabela ausente (db/18 não rodou): "sem MFA" aqui NÃO abre nada - o
+        # token sai sem `otp` e `gestor_logado` recusa todas as rotas de dados.
         print(f"[ADMIN] não consegui ler gestor_mfa: {type(e).__name__}: {str(e)[:120]}")
         return None
+
+
+def concluir_entrada(usuario: dict, codigo: str | None, ip: str, metodo: str, recusar) -> dict:
+    """
+    Último passo de QUALQUER entrada no painel (senha ou Google): o segundo
+    fator. Com o autenticador ativo, exige o código; sem ele, devolve o token
+    curto que só serve para cadastrá-lo. `recusar(motivo, usuario, detalhe=...)`
+    é de quem chamou (cada entrada tem os seus limitadores).
+    """
+    mfa = _mfa_do(usuario["id"])
+    ativo = bool(mfa and mfa.get("ativado_em"))
+    if ativo:
+        if not codigo:
+            # Primeiro fator correto e ainda falta o código: não conta como falha.
+            return {"success": False, "mfa_necessario": True}
+        if not _conferir_codigo(mfa, codigo):
+            recusar("codigo", usuario, detalhe="Código inválido ou já usado. Espere o próximo.")
+    auditar("login", usuario=usuario, ip=ip,
+            detalhe=f"{metodo}+mfa" if ativo else f"{metodo}: cadastro do autenticador pendente")
+    return {"success": True, "gestor": _publico(usuario), "mfa": ativo,
+            "mfa_cadastro_necessario": not ativo,
+            "global": eh_admin_global(usuario["id"]) if ativo else False,
+            **emitir_token_admin(usuario["id"], mfa=ativo, metodo=metodo)}
 
 
 def _conferir_codigo(mfa: dict, codigo: str | None) -> bool:
@@ -131,25 +160,10 @@ def login(payload: LoginAdmin, request: Request):
         # Senha certa, mas é conta de morador: a MESMA resposta de senha errada.
         recusar("nao_gestor", usuario)
 
-    mfa = _mfa_do(usuario["id"])
-    ativo = bool(mfa and mfa.get("ativado_em"))
-    if ativo:
-        if not payload.codigo:
-            # Senha correta e ainda falta o código: não conta como falha.
-            return {"success": False, "mfa_necessario": True}
-        if not _conferir_codigo(mfa, payload.codigo):
-            recusar("codigo", usuario, detalhe="Código inválido ou já usado. Espere o próximo.")
-    elif ADMIN_MFA_OBRIGATORIO:
-        auditar("login_recusado", usuario=usuario, ip=ip, detalhe="mfa_nao_cadastrado")
-        raise HTTPException(status_code=403, detail=(
-            "Esta conta ainda não tem o segundo fator cadastrado. Peça a quem administra o "
-            "servidor para rodar: python provisionar.py gestor-mfa --nome \"<seu nome>\""))
-
-    limitador_admin_nome.limpar(chave_nome)
-    auditar("login", usuario=usuario, ip=ip, detalhe="mfa" if ativo else "sem_mfa")
-    return {"success": True, "gestor": _publico(usuario), "mfa": ativo,
-            "global": eh_admin_global(usuario["id"]),
-            **emitir_token_admin(usuario["id"], mfa=ativo)}
+    resposta = concluir_entrada(usuario, payload.codigo, ip, "pwd", recusar)
+    if resposta.get("success"):
+        limitador_admin_nome.limpar(chave_nome)
+    return resposta
 
 
 def _publico(u: dict) -> dict:
@@ -157,15 +171,16 @@ def _publico(u: dict) -> dict:
 
 
 @router.get("/me")
-def eu(gestor: dict = Depends(gestor_logado)):
+def eu(gestor: dict = Depends(gestor_identificado)):
     c = um(supabase.table("condominios").select("id, nome, endereco")
            .eq("id", gestor.get("condominio_id")).execute()) if gestor.get("condominio_id") else None
     return {"gestor": _publico(gestor), "condominio": c, "mfa": gestor["_mfa"],
-            "global": eh_admin_global(gestor["id"])}
+            # Sem o segundo fator, nem "é admin global?" é respondido.
+            "global": eh_admin_global(gestor["id"]) if gestor["_mfa"] else False}
 
 
 @router.post("/mfa/iniciar")
-def mfa_iniciar(request: Request, gestor: dict = Depends(gestor_logado)):
+def mfa_iniciar(request: Request, gestor: dict = Depends(gestor_identificado)):
     """
     Gera o segredo e devolve o endereço otpauth:// UMA vez. Fica pendente até
     o gestor provar, em /mfa/confirmar, que o app está gerando o código certo.
@@ -189,7 +204,7 @@ def mfa_iniciar(request: Request, gestor: dict = Depends(gestor_logado)):
 
 
 @router.post("/mfa/confirmar")
-def mfa_confirmar(payload: CodigoMfa, request: Request, gestor: dict = Depends(gestor_logado)):
+def mfa_confirmar(payload: CodigoMfa, request: Request, gestor: dict = Depends(gestor_identificado)):
     mfa = _mfa_do(gestor["id"])
     if not mfa:
         raise HTTPException(status_code=404, detail="Comece pelo cadastro do segundo fator.")
@@ -203,7 +218,8 @@ def mfa_confirmar(payload: CodigoMfa, request: Request, gestor: dict = Depends(g
         .eq("usuario_id", gestor["id"]).execute()
     auditar("mfa_ativado", usuario=gestor, ip=ip_do_cliente(request))
     # Token novo, já com amr = otp. O antigo vence sozinho em minutos.
-    return {"success": True, "mfa": True, **emitir_token_admin(gestor["id"], mfa=True)}
+    return {"success": True, "mfa": True, "global": eh_admin_global(gestor["id"]),
+            **emitir_token_admin(gestor["id"], mfa=True, metodo=gestor["_metodo"])}
 
 
 @router.get("/auditoria")

@@ -62,6 +62,18 @@ que o totem faz de verdade é a ADMISSÃO (quem não cabe espera em
 "aguardando energia"), e a admissão continua contando a vaga solar pela rede,
 porque o sol pode acabar no meio.
 
+DIVISÃO POR TEMPO NO TOTEM NEXT (22/10/2026)
+-------------------------------------------
+Sem INA219 e sem solar, as 4 portas do totem passam a ser DIVIDIDAS: com o
+10025 (controle dinâmico) ligado, a porta de relé entra como modulável
+(`por_tempo`). O alocador faz o mesmo water-filling de sempre e a fração
+`alocado / demanda` vai para a placa na resposta da telemetria (`fracao`).
+O ESP32 fecha o relé dessa fração de uma janela de 30 s e ESCALONA as vagas
+uma depois da outra (embrulho de McNaughton): a qualquer instante, a soma das
+vagas fechadas cabe no limite. Ex.: limite 22,5 kW, 4 celulares de 7,5 kW ->
+75% para cada; a cada instante 3 relés fechados e 1 aberto, em rodízio.
+Desligando o 10025 no painel, a porta volta a ser carga fixa (admissão).
+
 HONESTIDADE
 -----------
 Os parâmetros são armazenados e simulados; o sistema não fala Modbus RS485
@@ -78,6 +90,7 @@ from config import SOLAR_VALIDADE_MIN, agora, supabase, um
 from fisica import MINIMO_MONOFASICO_KW, em_horario_de_ponta, minimo_kw, potencia_no_soc, teto_kw
 
 MINIMO_CONTROLAVEL_KW = MINIMO_MONOFASICO_KW      # referência (ponto de 7 kW)
+MINIMO_FRACAO_POR_TEMPO = 0.2   # porta dividida por tempo: menos de 20% do teto = pausa/fila
 LIMIAR_CARGA_FIXA_KW = 0.1
 TOLERANCIA_GRAVACAO_KW = 0.01
 EPS = 1e-9
@@ -158,6 +171,25 @@ def modo_efetivo(charger: dict, cond: dict | None, modo_vaga_solar: str | None =
     return 1
 
 
+def por_tempo(charger: dict) -> bool:
+    """
+    Porta de RELÉ (ESP32) com o controle dinâmico ligado (Modbus 10025): a
+    placa não modula corrente, então divide a potência por TEMPO - liga e
+    desliga o relé numa janela, e cada vaga fica ligada a fração que o
+    water-filling lhe deu (ESP32: `Totem::divisao`). Para o alocador ela é
+    MODULÁVEL como um HCA G2; o que muda é só como a placa executa.
+    Com o 10025 desligado, a porta volta a ser carga fixa (só admissão).
+    """
+    return charger.get("origem") == "hardware" and charger.get("controle_dinamico") is True
+
+
+def fracao_de_tempo(alocado_kw: float | None, demanda_kw: float) -> float:
+    """Quanto da janela o relé fica fechado: o que foi liberado / o que a bateria pede."""
+    if alocado_kw is None or demanda_kw <= EPS:
+        return 1.0
+    return round(max(0.0, min(1.0, float(alocado_kw) / demanda_kw)), 4)
+
+
 def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id: str,
             ordem: int, medida_kw: float = 0.0, so_rede: bool = False,
             modo_vaga_solar: str | None = None) -> dict:
@@ -165,20 +197,26 @@ def item_de(charger: dict, veiculo: dict, soc: float, cond: dict | None, item_id
     teto = teto_kw(charger, veiculo)
     hardware = charger.get("origem") == "hardware"
     minusculo = teto < LIMIAR_CARGA_FIXA_KW
-    fixa = hardware or minusculo or charger.get("controle_dinamico") is False
-    # Relé do ESP32 e cargas minúsculas entram pelo que estão MEDINDO; carro
-    # (modulado ou não), pelo que a bateria aceitaria.
-    usar_medida = (hardware or minusculo) and medida_kw > 0
+    fixa = (hardware and not por_tempo(charger)) or minusculo or charger.get("controle_dinamico") is False
+    # Relé fixo e cargas minúsculas entram pelo que estão MEDINDO; carro
+    # (modulado ou não) e porta dividida por tempo, pelo que a bateria
+    # aceitaria - a medida de uma porta que cicla oscila entre 0 e o cheio.
+    usar_medida = fixa and (hardware or minusculo) and medida_kw > 0
     demanda = medida_kw if usar_medida else potencia_no_soc(teto, soc)
     if fixa and modo_vaga_solar == VAGA_SOLAR_PAUSADA:
         demanda = 0.0                 # relé aberto: não puxa nada de nenhuma fonte
+    minimo = 0.0 if fixa else minimo_kw(charger, veiculo)
+    if not fixa and por_tempo(charger):
+        # Fatia de relé pequena demais não carrega nada útil (e só faz o relé
+        # estalar): abaixo disto a última a chegar PAUSA e a nova vai para a fila.
+        minimo = max(minimo, teto * MINIMO_FRACAO_POR_TEMPO)
     return {
         "id": item_id,
         "carregador_id": charger.get("id"),
         "carregador_numero": charger.get("numero"),
         "controlavel": not fixa,
         "demanda_kw": round(demanda, 4),
-        "minimo_kw": 0.0 if fixa else minimo_kw(charger, veiculo),
+        "minimo_kw": round(minimo, 4),
         "modo": modo_efetivo(charger, cond, modo_vaga_solar),
         "garantir_minimo": bool(charger.get("garantir_minimo")),
         "ordem": ordem,
