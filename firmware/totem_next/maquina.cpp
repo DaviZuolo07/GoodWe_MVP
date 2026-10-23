@@ -1,9 +1,13 @@
 #include "maquina.h"
 
 #include <WiFi.h>
+<<<<<<< HEAD
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdlib.h>
+=======
+#include <stdarg.h>
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
 #include "segredos.h"
 
@@ -93,10 +97,13 @@ void Totem::setup() {
   WiFi.begin(WIFI_SSID, WIFI_SENHA);
   evento("placa ligou: reles abertos (boot %lu, firmware %s, sem sensor: modelo de carga)",
          (unsigned long)enlace_.boot(), FIRMWARE_VERSAO);
+<<<<<<< HEAD
   evento("%u vaga(s) neste firmware%s%s", (unsigned)PORTAS,
          USAR_RELE ? "" : " | SEM RELE (modelo apenas)",
          ACELERAR > 1.0f ? " | MODELO ACELERADO: energia e projecao, nao medida" : "");
   evento("monitor serial (Nova linha): t <UID> = tag | b [vaga] = botao | s = status");
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 }
 
 void Totem::loop() {
@@ -108,7 +115,10 @@ void Totem::loop() {
   telemetria(agora);
   comandos(agora);
   travaOffline(agora);
+<<<<<<< HEAD
   statusSerial(agora);
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
   desenhar(agora);
   hal::led(online());
 }
@@ -214,12 +224,19 @@ void Totem::aplicarHandshake(JsonVariantConst dados, uint32_t agora) {
   int maxLote = dados["max_leituras_lote"] | 0;
   if (maxLote > 0) loteMax_ = min<int>(MAX_LEITURAS_LOTE, maxLote);
   for (uint8_t p = 1; p <= PORTAS; p++) vagas_[p].existe = false;
+<<<<<<< HEAD
   uint8_t n = 0, usadas = 0;
+=======
+  uint8_t n = 0;
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
   for (JsonVariantConst p : dados["portas"].as<JsonArrayConst>()) {
     n++;
     uint8_t porta = p["porta"] | 0;
     if (porta < 1 || porta > PORTAS) continue;
+<<<<<<< HEAD
     usadas++;
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     Vaga& v = vagas_[porta];
     v.existe = true;
     v.divergente = false;
@@ -234,6 +251,7 @@ void Totem::aplicarHandshake(JsonVariantConst dados, uint32_t agora) {
     if (e != DESCONHECIDO) mudarEstado(v, e, agora);
     pedido(v, p["pedido"], agora);
   }
+<<<<<<< HEAD
   evento("handshake ok: %u porta(s) no backend, %u nesta placa", n, usadas);
   // Os dois números têm de bater. Backend com mais portas que o firmware = vaga
   // que o painel mostra e nenhum relé atende: rode preparar_totem.py --vagas N.
@@ -241,6 +259,9 @@ void Totem::aplicarHandshake(JsonVariantConst dados, uint32_t agora) {
     evento("ATENCAO: o backend tem %u porta(s) e este firmware tem PORTAS = %u "
            "(backend/preparar_totem.py --vagas %u, ou mude o PORTAS em config.h)",
            n, (unsigned)PORTAS, (unsigned)PORTAS);
+=======
+  evento("handshake ok: %u porta(s)", n);
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 }
 
 // ===========================================================================
@@ -336,7 +357,10 @@ void Totem::interface(uint32_t agora) {
   char tag[33];
   bool temTag = hal::tagLida(tag, sizeof(tag));
   uint8_t botao = hal::botao();
+<<<<<<< HEAD
   lerSerial(tag, sizeof(tag), temTag, botao);   // plano B: tag e botão pelo computador
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
   if (ui_ == INICIANDO) {
     if (link_ != PRONTO) return;                  // ainda sem servidor: ignora tag e botão
@@ -478,6 +502,7 @@ void Totem::medir(uint32_t agora) {
   uint8_t bobinas = 0;
   for (uint8_t p = 1; p <= PORTAS; p++) {
     Vaga& v = vagas_[p];
+<<<<<<< HEAD
     // ACELERAR = 1 em operação: o modelo anda com o relógio. Acima disso é
     // time-lapse de demonstração (config.h), e a energia vira projeção.
     float dtModelo = dtS * ACELERAR;
@@ -486,11 +511,22 @@ void Totem::medir(uint32_t agora) {
     v.tensaoV = carga::tensaoNaPorta(FISICA, w);
     v.correnteA = v.tensaoV > 0.1f ? w / v.tensaoV : 0.0f;
     if (v.fechado) { v.energiaWh += w * dtModelo / 3600.0; usbW += w; bobinas++; }
+=======
+    float w = v.celular.avancar(FISICA, dtS, v.fechado);   // 0 com o contato aberto
+    v.potenciaW = w;
+    v.tensaoV = carga::tensaoNaPorta(FISICA, w);
+    v.correnteA = v.tensaoV > 0.1f ? w / v.tensaoV : 0.0f;
+    if (v.fechado) { v.energiaWh += w * dtS / 3600.0; usbW += w; bobinas++; }
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     if (v.temPedido && !antes(agora, v.pedidoAteMs)) v.temPedido = false;
   }
   // Da TOMADA (derivado): o USB passa pela fonte de 5 V, mais a placa e as bobinas.
   tomadaW_ = usbW / EFICIENCIA_FONTE + P_BASE_W + bobinas * P_BOBINA_RELE_W;
+<<<<<<< HEAD
   tomadaWh_ += tomadaW_ * dtS * ACELERAR / 3600.0;
+=======
+  tomadaWh_ += tomadaW_ * dtS / 3600.0;
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
   if (agora - tAmostra_ < AMOSTRA_MS) return;
   tAmostra_ = agora;
@@ -690,8 +726,12 @@ void Totem::desenhar(uint32_t agora) {
     strncpy(l1, tela_.daPagina(pagina, 1), sizeof(l1));
   } else if (ui_ == ESCOLHA_VAGA) {
     int32_t resta = ((int32_t)TIMEOUT_ESCOLHA_MS - (int32_t)(agora - tUi_) + 999) / 1000;
+<<<<<<< HEAD
     if (PORTAS == 1) strcpy(l0, "Aperte o botao");
     else snprintf(l0, sizeof(l0), "Escolha vaga 1-%u", (unsigned)PORTAS);
+=======
+    strcpy(l0, "Escolha vaga 1-4");
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     snprintf(l1, sizeof(l1), "Tempo: %2ld s", (long)max<int32_t>(0, resta));
   } else if (ui_ == INICIANDO) {
     strcpy(l0, "GoodWe ChargeOps");
@@ -713,6 +753,7 @@ void Totem::desenhar(uint32_t agora) {
       else if (comPedido) snprintf(l1, sizeof(l1), "Vaga %u: aproxime", comPedido);
       else strcpy(l1, "Aproxime cartao");
     } else if (pagina == 1) {
+<<<<<<< HEAD
       // Quadro das vagas. Com PORTAS = 1 o nome da vaga cabe por extenso; com
       // mais, duas por linha ("1:CARGA 2:LIVRE"). Nunca lê além de PORTAS:
       // escrever "3:" e "4:" fixos passava do fim do vetor com menos vagas.
@@ -732,6 +773,12 @@ void Totem::desenhar(uint32_t agora) {
                              fim[i] ? " " : "", p, r[p]);
         }
       }
+=======
+      char r[PORTAS + 1][8];
+      for (uint8_t p = 1; p <= PORTAS; p++) rotulo(vagas_[p], r[p]);
+      snprintf(l0, sizeof(l0), "1:%-5s 2:%-5s", r[1], r[2]);
+      snprintf(l1, sizeof(l1), "3:%-5s 4:%-5s", r[3], r[4]);
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     } else if (pagina < 2 + nAtivas) {
       const Vaga& v = vagas_[ativas[pagina - 2]];
       snprintf(l0, sizeof(l0), "V%u %3.0f%% %4.1fW", v.porta, v.celular.soc, v.celular.pedida(FISICA));
@@ -745,6 +792,7 @@ void Totem::desenhar(uint32_t agora) {
   }
   hal::lcd(l0, l1);
 }
+<<<<<<< HEAD
 
 // ===========================================================================
 // Monitor serial: comandos e estado das vagas
@@ -822,3 +870,5 @@ void Totem::statusSerial(uint32_t agora) {
            v.energiaWh, v.fracao * 100.0f, (long)v.tempoMin);
   }
 }
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93

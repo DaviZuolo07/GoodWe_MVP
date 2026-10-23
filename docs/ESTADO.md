@@ -4,6 +4,7 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
+<<<<<<< HEAD
 ## 23/10/2026 — Davi · Chat V8 — Totem de UMA vaga, com o relé liberando energia
 
 A montagem física que funcionou tem **uma** vaga (o Gustavo está com ela), e o relé
@@ -51,6 +52,8 @@ vagas, em vez de supor quatro. Contrato de integração: `docs/UMA_VAGA.md`.
 
 ---
 
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 ## 22/10/2026 — Davi · Chat V7 — Totem Next sem sensor, painel seguro, rodar no notebook
 
 Pedido do Davi para a banca de 23/10 (backend, db, admin, frontend e firmware: registrado para o Daniel). Roteiro do dia: `docs/RODAR_NO_NOTEBOOK.md`.

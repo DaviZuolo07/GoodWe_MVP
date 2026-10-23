@@ -62,20 +62,35 @@ static void sincronizar() {
   CONFERE(c.soc == 55.0f, "o %% do celular corrige o modelo");
 }
 
+<<<<<<< HEAD
 static void divisao(const char* nome, const float* f, uint8_t picoEsperado, uint8_t vagas = 4) {
   carga::Fatia fatias[5][2];
   uint8_t n[5];
   carga::escalonar(f, vagas, 2000.0f / 30000.0f, 0.97f, fatias, n);
   for (uint8_t p = 1; p <= vagas; p++) {
+=======
+static void divisao(const char* nome, const float* f, uint8_t picoEsperado) {
+  carga::Fatia fatias[5][2];
+  uint8_t n[5];
+  carga::escalonar(f, 4, 2000.0f / 30000.0f, 0.97f, fatias, n);
+  for (uint8_t p = 1; p <= 4; p++) {
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     float soma = 0;
     for (uint8_t i = 0; i < n[p]; i++) soma += fatias[p][i].fim - fatias[p][i].ini;
     float alvo = f[p] >= 0.97f ? 1.0f : f[p] <= 0 ? 0.0f : (f[p] < 2.0f / 30 ? 2.0f / 30 : f[p]);
     CONFERE(fabsf(soma - alvo) < 1e-4, "%s: vaga %u fica %.3f da janela (queria %.3f)", nome, p, soma, alvo);
   }
+<<<<<<< HEAD
   uint8_t pico = carga::picoSimultaneo(fatias, n, vagas);
   CONFERE(pico == picoEsperado, "%s: pico de %u vagas juntas (esperado %u)", nome, pico, picoEsperado);
   printf("  %-26s pico %u |", nome, pico);
   for (uint8_t p = 1; p <= vagas; p++) {
+=======
+  uint8_t pico = carga::picoSimultaneo(fatias, n, 4);
+  CONFERE(pico == picoEsperado, "%s: pico de %u vagas juntas (esperado %u)", nome, pico, picoEsperado);
+  printf("  %-26s pico %u |", nome, pico);
+  for (uint8_t p = 1; p <= 4; p++) {
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     printf(" %u:", p);
     for (uint8_t i = 0; i < n[p]; i++) printf("[%.2f-%.2f)", fatias[p][i].ini, fatias[p][i].fim);
   }
@@ -97,6 +112,7 @@ int main() {
   divisao("ponta (50%)", ponta, 2);
   divisao("2 vagas, 1 cheio (50%)", duas_vagas, 1);
   divisao("frações diferentes", desigual, 2);
+<<<<<<< HEAD
 
   // UMA VAGA (a montagem de 23/10). O water-filling de um ponto só é o teto
   // do estande: fração 1 = relé fechado direto; 0,5 = 15 s de cada 30 s.
@@ -108,6 +124,8 @@ int main() {
   divisao("uma vaga, ponta (50%)", so_uma_ponta, 1, 1);
   divisao("uma vaga, fatia minima", so_uma_migalha, 1, 1);
 
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
   printf(falhas ? "\n%d FALHA(S)\n" : "\nTUDO PASSOU\n", falhas);
   return falhas ? 1 : 0;
 }

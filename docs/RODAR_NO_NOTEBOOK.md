@@ -11,6 +11,7 @@ Roteiro para levantar **tudo** num computador que não é o do Davi: app do usu�
   totem                ESP32 na mesma rede Wi-Fi 2,4 GHz, falando com a :8000
 ```
 
+<<<<<<< HEAD
 > **UMA VAGA (23/10).** O totem montado tem **uma** vaga, e o relé dela **libera
 > energia de verdade**. O banco e o firmware já vêm assim: `preparar_totem.py
 > --next` cria uma vaga e `PORTAS = 1` em `firmware/totem_next/config.h`. Os dois
@@ -18,6 +19,8 @@ Roteiro para levantar **tudo** num computador que não é o do Davi: app do usu�
 > (`--vagas 4` e `PORTAS = 4`). Detalhes e contrato de integração:
 > [docs/UMA_VAGA.md](UMA_VAGA.md).
 
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 ---
 
 ## 0. O que vai no zip e o que NÃO vai
@@ -37,20 +40,28 @@ O repositório é **público**. Um `.env` que passou por zip, e-mail ou grupo de
 - [ ] **Node 22+**. Depois: `npm install` em `frontend/` e em `admin/`
 - [ ] **Arduino IDE 2** com a placa **esp32 (Espressif) 3.3.12** e as bibliotecas ArduinoJson 7.4.3, MFRC522 1.4.12 e LiquidCrystal I2C 1.1.2. Também o driver USB do ESP32 (CP210x ou CH340, conforme a placa)
 - [ ] **Relógio do Windows sincronizado**: Configurações → Hora e idioma → Data e hora → **Sincronizar agora**. Sem isso, o ESP32 recebe `401 fora_da_janela` e o código do autenticador não confere (já aconteceu: o PC estava 249 s atrasado)
+<<<<<<< HEAD
 - [ ] Rede do estande em **2,4 GHz**: o ESP32 não enxerga 5 GHz. O notebook e o ESP32 precisam estar **na mesma rede**. Dois jeitos, nesta ordem de preferência:
   - **Hotspot do Windows (o que funcionou em 22/10).** O iPhone dá internet ao notebook e o notebook cria a rede: Configurações → Rede e Internet → **Hotspot móvel** → Editar → **Banda de rede: 2,4 GHz** → **Salvar**. Desligue **Economia de energia** (ela derruba o hotspot quando ninguém está conectado). O IP do notebook nessa rede é **192.168.137.1**. Se a banda voltar sozinha para "Qualquer um disponível", ligue o iPhone por **cabo USB** e compartilhe a conexão dele (o Wi-Fi fica livre para o 2,4 GHz)
   - **Hotspot do celular.** No iPhone, Ajustes → Acesso Pessoal → **Maximizar Compatibilidade** (sem isso ele fica só em 5 GHz)
 - [ ] IP do notebook nessa rede: `ipconfig` → Adaptador Wi-Fi → **Endereço IPv4** (ex.: `192.168.137.1`). Anote; ele vai no `segredos.h` do ESP32
+=======
+- [ ] Rede do estande em **2,4 GHz**: o ESP32 não enxerga 5 GHz. Um hotspot de celular serve. O notebook e o ESP32 precisam estar **na mesma rede**
+- [ ] IP do notebook nessa rede: `ipconfig` → Adaptador Wi-Fi → **Endereço IPv4** (ex.: `192.168.43.20`). Anote; ele vai no `segredos.h` do ESP32
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 - [ ] Firewall: libere as portas para a rede local (PowerShell **como administrador**):
   ```powershell
   New-NetFirewallRule -DisplayName "ChargeOps API 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private,Public
   New-NetFirewallRule -DisplayName "ChargeOps app 5173" -Direction Inbound -Protocol TCP -LocalPort 5173 -Action Allow -Profile Private,Public
   ```
+<<<<<<< HEAD
   Cancelar o aviso do Windows na primeira vez que o Python abre a porta cria uma regra de **bloqueio**, e bloqueio vence liberação. Confira e desative:
   ```powershell
   Get-NetFirewallRule -Action Block -Enabled True | ? DisplayName -match "python|node" | Disable-NetFirewallRule
   ```
 - [ ] Teste a rede **antes de ligar o ESP32**: num celular na mesma rede, abra `http://<IP do notebook>:8000/hardware/v2/hora`. Tem de voltar um JSON com `ts` e `iso`. Se não voltar, o ESP32 também não vai conectar
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
 ## 2. Os `.env` (com as contas do Davi)
 
@@ -163,6 +174,7 @@ Sem o Client ID, o botão do Google não aparece e o resto funciona normalmente.
 ## 8. Totem Next (ESP32 sem INA219 e sem solar)
 
 ```powershell
+<<<<<<< HEAD
 # de backend/   (uma vaga: o padrão. Para o totem de quatro, --vagas 4)
 python preparar_totem.py --next
 ```
@@ -171,11 +183,19 @@ O comando cria ou ajusta o estande (limite **7,5 kW = 1 × 7,5 kW** na escala 1:
 
 - [ ] Confira que `firmware/totem_next/config.h` tem `constexpr uint8_t PORTAS = 1;` — o mesmo número do `--vagas`
 - [ ] Grave a placa e abra o monitor serial a 115200. A linha a procurar é **`handshake ok: 1 porta(s) no backend, 1 nesta placa`**. Se os números diferirem, o próprio firmware avisa e diz o que corrigir
+=======
+# de backend/
+python preparar_totem.py --next
+```
+
+O comando cria ou ajusta o estande (limite 30 kW = 4 × 7,5 kW na escala 1:1000, ponta = metade), as 4 vagas com **divisão por tempo ligada**, a placa (sem porta solar, rotulada `simulado`) e 3 contas de teste com tag. Também imprime o bloco do `segredos.h`.
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
 Depois: `firmware/totem_next/README.md` (copiar o `segredos.h`, gravar e seguir a "primeira ligação"). O sketch antigo do Gustavo (1 tag fixa, 1 relé por vez, `delay`) foi descartado: ele não falava com o backend.
 
 **Tags reais:** a tag que ninguém cadastrou mostra o UID no LCD (`Tag D3F5BFD9`). A pessoa vincula esse UID no app (Configurações → cartão RFID) e passa de novo.
 
+<<<<<<< HEAD
 **Sem leitor ou sem botão?** O monitor serial (115200, com **Nova linha**) faz as duas coisas, e passa exatamente pelo mesmo caminho da tag de verdade:
 
 | Digite | Faz |
@@ -184,20 +204,31 @@ Depois: `firmware/totem_next/README.md` (copiar o `segredos.h`, gravar e seguir 
 | `b` | aperta o botão da vaga 1 (`b 2` para a vaga 2, quando houver) |
 | `s` | imprime o estado da vaga: %, W, Wh, tempo fechado e previsão de fim |
 
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 ## 9. Validar os dois pontos principais (roteiro da banca)
 
 ### 9.1 Controle de energia e telemetria em tempo real
 
 - [ ] App no celular → cadastro no **Estande Next** (cargo NEXT, só celular) → escolher o modelo do celular (a bateria e os watts vêm de `celulares.js`)
+<<<<<<< HEAD
 - [ ] Vincular a tag → tag no totem + botão → saldo **reservado** na Carteira → **relé fecha e o celular começa a carregar de verdade**
 - [ ] No app, o monitor mostra o %, a potência, **"Termina em X (por volta das HH:MM)"** e os **dois gráficos** (potência e bateria) andando a cada 5 s. O mesmo vale para uma recarga num **eletroposto simulado** de carro
 - [ ] Celular Android com o app aberto no Chrome: aparece **"lido do seu celular"** no % (o modelo se corrige pela bateria real). Precisa de HTTPS ou localhost: por IP, ative `chrome://flags` → *Insecure origins treated as secure* → `http://<IP>:5173`
 - [ ] Painel → **Sessões** → clicar na sessão → condomínio, usuário, celular, demanda, energia (entregue, na bateria, **da tomada**), conta, **de onde vêm os números** e os gráficos
 - [ ] Painel → **Sala Next** → cadastros, celulares, recargas e a vaga ao vivo, em W e Wh reais
+=======
+- [ ] Vincular a tag → tag no totem + botão da vaga → saldo **reservado** na Carteira → relé fecha
+- [ ] No app, o monitor mostra o %, a potência, **"Termina em X (por volta das HH:MM)"** e os **dois gráficos** (potência e bateria) andando a cada 5 s. O mesmo vale para uma recarga num **eletroposto simulado** de carro
+- [ ] Celular Android com o app aberto no Chrome: aparece **"lido do seu celular"** no % (o modelo se corrige pela bateria real)
+- [ ] Painel → **Sessões** → clicar na sessão → condomínio, usuário, celular, demanda, energia (entregue, na bateria, **da tomada**), conta, **de onde vêm os números** e os gráficos
+- [ ] Painel → **Sala Next** → cadastros, celulares, recargas, as 4 vagas ao vivo, em W e Wh reais
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 - [ ] A mesma tag de novo → encerra → recibo e **estorno** da diferença na Carteira
 
 ### 9.2 Demanda no horário de pico e water-filling (o foco)
 
+<<<<<<< HEAD
 Com **uma vaga**, o water-filling aparece na própria vaga: o quadro do estande é do tamanho dela, e baixar o limite vira **tempo de relé fechado**.
 
 - [ ] Celular carregando: limite **7,5 kW** → relé fechado direto, `fracao` 100%
@@ -212,6 +243,17 @@ Com **uma vaga**, o water-filling aparece na própria vaga: o quadro do estande 
 - [ ] Desligar **Divisão por tempo** na vaga (Sala Next) → ela vira carga fixa (só admissão); religar → volta a dividir
 
 > Com quatro vagas (`--vagas 4` e `PORTAS = 4`) é o mesmo roteiro com os números em quádruplo: limite 30 kW → 22,5 kW dá 75% para cada e três relés fechados em rodízio; na ponta, 15 kW dá 50% e dois relés.
+=======
+- [ ] 4 celulares nas 4 vagas: limite 30 kW → os 4 relés fechados, `fracao` 100%
+- [ ] Painel → **Sala Next → Demanda do estande** → **22,5 kW (75%)**, ou **Simular pico agora (2 h)**: a ponta divide o limite por 2, de 30 para 15 kW, e só existe em dia útil. A aba Operação mostra o condomínio-base da sua conta, não o estande. Em ≤ 10 s:
+  - serial do ESP32: `divisao por tempo (janela 30s): 1:75% 2:75% 3:75% 4:75%` (ou 50% na ponta)
+  - os relés **revezam**: sempre 3 fechados (2 na ponta), e o aberto roda. **Dá para ouvir**
+  - LCD: `2:75%` na vaga que espera a vez; página `Fim 32m T 75%`
+  - app: o gráfico de potência vira um "pente" e a linha tracejada mostra o liberado; a **previsão de término aumenta** (75% do tempo = mais minutos)
+  - Sala Next: "Tempo fechado 75%" em cada vaga
+- [ ] Desligar **Divisão por tempo** numa vaga (Sala Next) → ela vira carga fixa (só admissão); religar → volta a dividir
+- [ ] Limite de **5 kW** com 3 celulares carregando (1,67 kW cada, 22% do tempo) → a quarta tag vai para a **fila de energia** ("Vaga 4 na fila"): ela receberia menos que o mínimo de 1,5 kW (20% da vaga). Volte o limite a 30 kW: ela liga sozinha em ≤ 10 s
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
 ## 10. Como a demanda funciona (para responder a banca)
 
@@ -229,6 +271,7 @@ Com **uma vaga**, o water-filling aparece na própria vaga: o quadro do estande 
 
 **No totem (relé liga/desliga):** a mesma fração `alocado ÷ pedido` vira **tempo de relé fechado** numa janela de 30 s, em rodízio (McNaughton). A média de potência de cada vaga é a fração × a potência cheia. A soma, em qualquer instante, cabe no limite. É o water-filling executado em hardware.
 
+<<<<<<< HEAD
 **Exemplo de conta — UMA vaga** (estande 7,5 kW, 1 celular de 7,5 kW):
 
 | Situação | Limite | A vaga recebe | O relé, numa janela de 30 s |
@@ -240,6 +283,9 @@ Com **uma vaga**, o water-filling aparece na própria vaga: o quadro do estande 
 | limite 1 kW | 1 kW | 0 — **pausada** | aberto; tag nova vai para a fila |
 
 **Com quatro vagas** (estande 30 kW, 4 celulares de 7,5 kW):
+=======
+**Exemplo de conta** (estande, 30 kW, 4 celulares de 7,5 kW):
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
 | Situação | Limite | Cada vaga | Relés fechados ao mesmo tempo |
 |---|---|---|---|
@@ -253,11 +299,16 @@ Com **uma vaga**, o water-filling aparece na própria vaga: o quadro do estande 
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
+<<<<<<< HEAD
 | ESP32 `Sem Wi-Fi` | rede 5 GHz, nome ou senha diferentes | hotspot em 2,4 GHz (seção 1); o `WIFI_SSID` tem de ser igual ao nome da rede, com maiúsculas e espaços |
 | ESP32 `Conectando...` para sempre | IP errado no `BACKEND_URL`, firewall, uvicorn sem `--host 0.0.0.0` | `ipconfig`; regra de firewall da seção 1; abrir `http://<IP>:8000/hardware/v2/hora` no celular |
 | Serial: `ATENCAO: o backend tem N porta(s) e este firmware tem PORTAS = M` | o `--vagas` e o `PORTAS` não batem | `python preparar_totem.py --next --vagas M`, ou mude o `PORTAS` em `config.h` e grave de novo |
 | Arduino IDE: `ArduinoJson.h: No such file or directory` | biblioteca não instalada neste computador | Ferramentas → Gerenciar Bibliotecas → ArduinoJson, MFRC522, LiquidCrystal I2C |
 | `pytest` falha com `ModuleNotFoundError: servidor_v21` | sobraram `backend/testes/test_maquina_de_estados.py` e `test_roteiro.py` de uma versão antiga (já saíram do git; a versão atual mora em `totem_virtual/testes/`) | apague os dois arquivos: `del backend\testes\test_maquina_de_estados.py backend\testes\test_roteiro.py` |
+=======
+| ESP32 `Sem Wi-Fi` | rede 5 GHz ou senha errada | hotspot 2,4 GHz; conferir `segredos.h` |
+| ESP32 `Conectando...` para sempre | IP errado no `BACKEND_URL`, firewall, uvicorn sem `--host 0.0.0.0` | `ipconfig`; regra de firewall da seção 1; abrir `http://<IP>:8000/hardware/v2/hora` no celular |
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 | LCD `Relogio servidor` | relógio do notebook fora | Sincronizar agora; reiniciar o uvicorn |
 | LCD `Chave invalida` | `.env` com outra `DEVICE_MASTER_KEY` | `preparar_totem.py --next` de novo e regravar o `segredos.h` |
 | Placa reinicia em laço com o relé ligado | GPIO 12 (pino de boot) | IN2 no GPIO 16 (README do firmware) |

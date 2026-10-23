@@ -42,6 +42,7 @@ ESTANDE = preparar_totem.ESTANDE
 OUTRO = "c0000000-0000-0000-0000-0000000000aa"
 
 
+<<<<<<< HEAD
 def _preparar(monkeypatch, tmp_path, vagas: int = 4):
     """
     Prepara o estande com `vagas` vagas. O padrão do script é 1 (a montagem de
@@ -52,6 +53,13 @@ def _preparar(monkeypatch, tmp_path, vagas: int = 4):
     monkeypatch.setattr(provisionar, "_supabase", lambda: fake)
     monkeypatch.setattr(preparar_totem, "ENV_TOTEM", tmp_path / ".env")
     monkeypatch.setattr(sys, "argv", ["preparar_totem.py", "--next", "--vagas", str(vagas)])
+=======
+def _preparar(monkeypatch, tmp_path):
+    fake.limpar()
+    monkeypatch.setattr(provisionar, "_supabase", lambda: fake)
+    monkeypatch.setattr(preparar_totem, "ENV_TOTEM", tmp_path / ".env")
+    monkeypatch.setattr(sys, "argv", ["preparar_totem.py", "--next"])
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     preparar_totem.main()
     linhas = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     return dict(x.split("=", 1) for x in linhas if "=" in x and not x.startswith("#"))
@@ -160,6 +168,7 @@ def test_totem_next_recebe_fracao_e_modelo_e_grava_serie(monkeypatch, tmp_path):
     assert serie_1 and serie_1[-1]["origem"] == "simulado"
 
 
+<<<<<<< HEAD
 def test_uma_vaga_e_o_padrao_e_o_estande_inteiro_cabe_nela(monkeypatch, tmp_path):
     """
     A montagem de 23/10: UMA vaga, e o relé dela libera energia de verdade.
@@ -227,6 +236,8 @@ def test_sem_next_a_vaga_solar_exige_quatro(monkeypatch, tmp_path):
         preparar_totem.main()
 
 
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 def test_serie_e_percentual_do_celular_so_para_o_dono(monkeypatch, tmp_path):
     env = _preparar(monkeypatch, tmp_path)
     placa = PlacaV2(APP, env["DEVICE_ID"], env["DEVICE_KEY_HEX"])

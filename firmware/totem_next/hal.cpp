@@ -27,7 +27,11 @@ namespace hal {
 void iniciar() {
   // 1) Segurança primeiro: todo relé ABERTO. O digitalWrite vem ANTES do
   //    pinMode: o pino já nasce no nível "desligado" quando vira saída.
+<<<<<<< HEAD
   for (uint8_t p = 1; p <= PORTAS && USAR_RELE; p++) {
+=======
+  for (uint8_t p = 1; p <= PORTAS; p++) {
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     digitalWrite(PINO_RELE[p], nivel(false, RELE_ATIVO_EM_LOW));
     pinMode(PINO_RELE[p], OUTPUT);
     digitalWrite(PINO_RELE[p], nivel(false, RELE_ATIVO_EM_LOW));
@@ -55,7 +59,10 @@ void iniciar() {
 }
 
 void rele(uint8_t porta, bool ligado) {
+<<<<<<< HEAD
   if (!USAR_RELE) return;                      // bancada sem módulo de relé
+=======
+>>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
   if (porta >= 1 && porta <= PORTAS) digitalWrite(PINO_RELE[porta], nivel(ligado, RELE_ATIVO_EM_LOW));
 }
 
