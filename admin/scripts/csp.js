@@ -15,7 +15,10 @@
  * `frame-ancestors` (impedir que embutam o app num iframe) não funciona em
  * <meta>: vai como cabeçalho, em vercel.json e public/_headers.
  */
-export function csp({ conectar = [], imagens = [] } = {}) {
+export function csp({ conectar = [], imagens = [], google = false } = {}) {
+  // "Entrar com Google" (operador): o script, o iframe do botão e o estilo vêm
+  // de accounts.google.com/gsi - só eles, e só com VITE_GOOGLE_CLIENT_ID.
+  const gsi = google ? ' https://accounts.google.com/gsi/' : ''
   return {
     name: 'chargeops-csp',
     apply: 'build',
@@ -34,12 +37,13 @@ export function csp({ conectar = [], imagens = [] } = {}) {
       }
       const politica = [
         "default-src 'self'",
-        "script-src 'self'",
+        `script-src 'self'${google ? ' https://accounts.google.com/gsi/client' : ''}`,
         // React escreve estilos em atributo (style="width: 40%"): precisa do inline SÓ para estilo.
-        "style-src 'self' 'unsafe-inline'",
+        `style-src 'self' 'unsafe-inline'${gsi}`,
         `img-src 'self' data: blob: ${imagens.join(' ')}`.trim(),
         "font-src 'self'",
-        `connect-src 'self' ${[...origens].join(' ')}`.trim(),
+        `connect-src 'self' ${[...origens].join(' ')}${gsi}`.trim(),
+        ...(google ? [`frame-src${gsi}`] : []),
         "manifest-src 'self'",
         "worker-src 'self'",
         "object-src 'none'",

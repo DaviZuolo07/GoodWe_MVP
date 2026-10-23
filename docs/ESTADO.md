@@ -4,6 +4,78 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
+## 23/10/2026 — Davi · Chat V8 — Totem de UMA vaga, com o relé liberando energia
+
+A montagem física que funcionou tem **uma** vaga (o Gustavo está com ela), e o relé
+dela libera energia de verdade. O projeto passou a ser parametrizado pelo número de
+vagas, em vez de supor quatro. Contrato de integração: `docs/UMA_VAGA.md`.
+
+### Feito
+1. **Firmware `firmware/totem_next/`:** `PORTAS` (config.h) manda em tudo — `1` por
+   padrão, `4` volta ao totem de quatro vagas sem outra mudança. O handshake compara
+   com o número de portas do backend e **avisa no serial** se diferirem.
+2. **Bug corrigido:** a página do LCD com o quadro das vagas escrevia `3:` e `4:` fixos
+   e lia além do fim do vetor quando `PORTAS < 4`. Agora monta as linhas por `PORTAS`.
+3. **Comandos no monitor serial** (`t <UID>`, `b [vaga]`, `s`) e status automático a
+   cada 5 s: plano B quando o leitor ou o botão falham, e o jeito de conduzir a
+   demonstração sem tocar no totem. Passam pelo mesmo `POST /hardware/v2/rfid`.
+4. **`USAR_RELE`** (bancada sem o módulo de relé) e **`ACELERAR`** (time-lapse de
+   demonstração; `1.0` em operação, e acima disso a energia é declarada projeção).
+5. **`preparar_totem.py --vagas N`** (1 a 4; padrão 1 com `--next`): limite do estande
+   = 7,5 kW × vagas, e diminuir o número **apaga** as vagas que sobram, com as portas
+   da placa. Se tiverem histórico, ficam offline e fora da placa em vez de apagadas.
+   Sem `--next`, segue exigindo 4 (a vaga solar é a T4).
+6. **Docs:** `docs/UMA_VAGA.md` (novo: integração, fiação, contrato das rotas, o que é
+   real e o que é modelo), `docs/RODAR_NO_NOTEBOOK.md` (uma vaga, hotspot do Windows
+   em 2,4 GHz, teste do `/hora` antes de ligar a placa, regra de bloqueio do firewall,
+   roteiro de water-filling com uma vaga), README do firmware e README da raiz.
+
+### Testado
+- `pytest backend/testes` **124 verdes** (3 novos: uma vaga de ponta a ponta, diminuir
+  vagas, e `--vagas` sem `--next` recusado); `totem_virtual/testes` **57 verdes**.
+- `teste_carga.cpp` **TUDO PASSOU**, agora com 3 cenários de uma vaga.
+- Firmware compila sem erro **nem aviso** com `PORTAS` em 1, 2, 3 e 4.
+
+### NÃO testado
+- O firmware desta versão numa placa (o de 22/10 chegou a fazer handshake e telemetria
+  no notebook do estande; este mudou LCD, serial e `PORTAS`).
+- Relé liberando energia para um celular de verdade ponta a ponta.
+
+### Próximo
+1. Gravar o `totem_next` na placa montada e seguir a seção 9 do `RODAR_NO_NOTEBOOK.md`.
+2. Apagar do notebook os restos `backend/testes/test_maquina_de_estados.py` e
+   `test_roteiro.py` (saíram do git; a versão atual mora em `totem_virtual/testes/`).
+   São eles que quebram o `pytest` lá.
+3. Apagar a pasta `firmware/totem_demo/` do notebook: era a tentativa de 22/10 e foi
+   absorvida pelo `totem_next` (nunca entrou no git).
+
+---
+
+## 22/10/2026 — Davi · Chat V7 — Totem Next sem sensor, painel seguro, rodar no notebook
+
+Pedido do Davi para a banca de 23/10 (backend, db, admin, frontend e firmware: registrado para o Daniel). Roteiro do dia: `docs/RODAR_NO_NOTEBOOK.md`.
+
+### Feito
+1. **Segurança do painel:** segundo fator SEMPRE obrigatório (`ADMIN_MFA=opcional` não existe mais; nome + senha abriam tudo). Sem o código, o token (10 min) só abre `/admin/me` e `/admin/mfa/*`. `provisionar.py admin-global` só recebe o nome (senha gerada uma vez, não recria nem promove conta); saíram `--senha`, `--nova-senha` e `senha-gestor`; `senhas-demo` não toca gestor.
+2. **Operadores pelo Google** (`rotas_operadores.py`, db/23): pedido → aprovação do admin da plataforma → conta de gestor presa ao condomínio, sem senha, com MFA. Revogar corta na hora.
+3. **Divisão por tempo (water-filling no relé):** porta de relé com o 10025 ligado é modulável (`demanda.por_tempo`); a `fracao` vai para a placa; mínimo de 20% da vaga; previsão de término usa a fração.
+4. **Firmware `firmware/totem_next/`:** sem INA219/solar, pinos da fiação real, modelo de carga do celular (rótulo `simulado`), rodízio McNaughton numa janela de 30 s, LCD com fim previsto e tomada derivada. Compila (83% flash) e o modelo passa no teste de PC.
+5. **Série de toda recarga** (`leituras_sessao`, db/23) + `/recargas/{id}/serie`; % real do celular (`/recargas/{id}/bateria`, Battery API do Android).
+6. **Painel:** abas Sessões (detalhe com gráfico, local, usuário, demanda, energia da tomada), Sala Next (cadastros, celulares, recargas, vagas, limite e "pico agora"), Operadores.
+7. `preparar_totem.py --next`. Auditoria das 22 migrations (nenhuma alterada) e quadro de chaves no roteiro.
+
+### Testado
+- pytest backend 121 e totem virtual 57 verdes; lint/build do app e do painel; firmware compila sem aviso nosso; `teste_carga.cpp` (zig c++) TUDO PASSOU.
+
+### NÃO testado
+- Firmware numa placa; Google com um Client ID real; db/23 no Supabase real; navegador (só build).
+
+### Próximo
+1. Davi: rodar o db/23; seguir `docs/RODAR_NO_NOTEBOOK.md`; rotacionar as chaves se o `.env` viajou.
+2. Daniel: revisar `rotas_admin.py`, `rotas_operadores.py`, `rotas_sessoes.py`, `serie.py`, `demanda.por_tempo` e o db/23.
+
+---
+
 ## 19/10/2026 — Davi · Chat V6 — Correções B1–B5 para o NEXT
 
 Override do contrato v1 de novo (autorizado): backend mexido e registrado para o Daniel. Detalhes em `docs/CORRECOES_NEXT_B1_B5.md`; contrato em `docs/contratos/experiencia_next.md`; estudo em `docs/MAPA_DE_ESTUDO.md`.

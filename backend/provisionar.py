@@ -53,6 +53,12 @@ Rodar de dentro da pasta backend/, com o .env preenchido:
       Painel do gestor (ADR-023). Gera a ADMIN_MFA_KEY para o .env: é ela que
       cifra, no banco, o segredo do app autenticador de cada gestor.
 
+  python provisionar.py admin-global --nome "Davi Admin"
+      Cria a conta do admin da plataforma. Só o nome: a senha é GERADA e
+      aparece uma vez. No primeiro acesso o painel só deixa cadastrar o app
+      autenticador. Não há comando para escolher ou trocar senha de gestor, e
+      operador de condomínio não nasce aqui (pede acesso pelo Google).
+
   python provisionar.py gestor-mfa --nome "Nome do Gestor" [--trocar]
       Cadastra o segundo fator do gestor: grava o segredo CIFRADO e mostra,
       UMA vez, o endereço para o app autenticador (Google/Microsoft
@@ -139,7 +145,8 @@ def cmd_senhas_demo(args):
         sys.exit(e.detail)
 
     sb = _supabase()
-    usuarios = sb.table("usuarios").select("id, nome").execute().data or []
+    # Gestor fica de fora: senha de conta do painel só nasce no admin-global.
+    usuarios = sb.table("usuarios").select("id, nome").neq("tipo_usuario", "gestor").execute().data or []
     com_senha = {
         c["usuario_id"]
         for c in (sb.table("credenciais_usuario").select("usuario_id").execute().data or [])
@@ -644,8 +651,8 @@ def cmd_gestor_mfa(args):
 
     if args.remover:
         sb.table("gestor_mfa").delete().eq("usuario_id", u["id"]).execute()
-        print(f"Segundo fator removido de '{u['nome']}'. Com ADMIN_MFA=obrigatorio a conta "
-              "fica sem acesso ao painel até um novo cadastro.")
+        print(f"Segundo fator removido de '{u['nome']}'. No próximo login o painel pede o "
+              "cadastro de um app autenticador novo, antes de mostrar qualquer dado.")
         return
     if atual and atual[0].get("ativado_em") and not args.trocar:
         sys.exit(f"'{u['nome']}' já tem segundo fator ativo. Use --trocar para substituir.")
@@ -686,7 +693,7 @@ def cmd_gestor_mfa(args):
         print("  Não confere. Confira a chave no app (letra a letra) e tente o próximo código.")
     print("\nO segundo fator ficou PENDENTE (não ativado): a chave do app não bate com a do servidor.")
     print("Apague a conta no app autenticador e rode este comando de novo.")
-    print("Em desenvolvimento (ADMIN_MFA=opcional) o login no painel segue só com a senha.\n")
+    print("Sem o segundo fator ativo, o painel só deixa cadastrá-lo (nenhum dado aparece).\n")
 
 
 def cmd_testar_mfa(args):
@@ -768,76 +775,50 @@ def _senha_forte() -> str:
 
 def cmd_admin_global(args):
     """
-    Cria (ou promove) a conta de quem opera a plataforma: gestor + linha em
-    `admins_globais` (db/20). Sem --senha, gera uma forte e mostra UMA vez.
+    Cria a conta de quem opera a plataforma: gestor + linha em `admins_globais`
+    (db/20). Recebe SÓ o nome: a senha é gerada aqui, forte, e aparece UMA vez.
+
+    Não existe opção para escolher a senha, nem para promover uma conta que já
+    existe, nem outro comando que troque senha de gestor: a única senha de
+    painel que este script produz é a do nascimento da conta. Mesmo com ela,
+    o painel não mostra nada antes do app autenticador (rotas_admin.py).
+    Operador de condomínio não nasce aqui: pede acesso pelo Google e é
+    aprovado no painel (rotas_operadores.py).
     """
-    from seguranca import gerar_hash_senha, validar_forca_senha
+    from seguranca import conferir_senha, gerar_hash_senha, validar_forca_senha
     from fastapi import HTTPException
 
     sb = _supabase()
-    achados = sb.table("usuarios").select("id, nome, tipo_usuario").ilike("nome", args.nome).execute().data
-    senha = args.senha or (None if achados and not args.nova_senha else _senha_forte())
-    if senha:
-        try:
-            validar_forca_senha(senha, args.nome)
-        except HTTPException as e:
-            sys.exit(e.detail)
-
-    if achados:
-        u = achados[0]
-        if u["tipo_usuario"] != "gestor":
-            sb.table("usuarios").update({"tipo_usuario": "gestor", "papel": "Administrador"}) \
-                .eq("id", u["id"]).execute()
-        print(f"Conta existente: {u['nome']}")
-    else:
-        u = sb.table("usuarios").insert({
-            "nome": args.nome, "papel": "Administrador", "tipo_usuario": "gestor",
-            "condominio_id": args.condominio, "bloco_apto": "Administração", "saldo": 0,
-        }).execute().data[0]
-        print(f"Conta criada: {u['nome']}")
-    if senha:
-        sb.table("credenciais_usuario").upsert({"usuario_id": u["id"],
-                                                "senha_hash": gerar_hash_senha(senha)}).execute()
-    try:
-        sb.table("admins_globais").upsert({"usuario_id": u["id"]}).execute()
-    except Exception as e:                                   # noqa: BLE001
-        sys.exit(f"admins_globais não existe ({type(e).__name__}). Rode o db/20 e repita.")
-
-    print("Acesso à Visão geral: liberado.")
-    if senha and not args.senha:
-        print(f"\n  Senha gerada (aparece UMA vez, guarde no gerenciador de senhas):  {senha}\n")
-    print(f"Próximo passo: python provisionar.py gestor-mfa --nome \"{u['nome']}\"")
-
-
-def cmd_senha_gestor(args):
-    """Troca a senha de uma conta de gestor por uma forte gerada (ou --senha)."""
-    from seguranca import gerar_hash_senha, validar_forca_senha
-    from fastapi import HTTPException
-
-    sb = _supabase()
-    achados = sb.table("usuarios").select("id, nome, tipo_usuario").ilike("nome", args.nome).execute().data
-    if not achados or achados[0]["tipo_usuario"] != "gestor":
-        sys.exit(f"Nenhum gestor chamado '{args.nome}'.")
-    senha = args.senha or _senha_forte()
+    if sb.table("usuarios").select("id").ilike("nome", args.nome).execute().data:
+        sys.exit(f"Já existe uma conta chamada '{args.nome}'. Este comando só CRIA contas novas.\n"
+                 "Perdeu a senha? Apague a conta no Supabase (Table Editor -> usuarios) e rode de "
+                 "novo: nasce outra senha e o painel pede um app autenticador novo.")
+    senha = _senha_forte()
     try:
         validar_forca_senha(senha, args.nome)
     except HTTPException as e:
         sys.exit(e.detail)
-    from datetime import datetime, timezone
-    from seguranca import conferir_senha
-    uid = achados[0]["id"]
-    sb.table("credenciais_usuario").upsert({
-        "usuario_id": uid, "senha_hash": gerar_hash_senha(senha),
-        "atualizado_em": datetime.now(timezone.utc).isoformat()}).execute()
-    # Lê de volta e confere com o MESMO código do login: "trocada" só aparece
-    # se o banco realmente tem esta senha.
-    gravada = sb.table("credenciais_usuario").select("senha_hash").eq("usuario_id", uid).execute().data
+    try:
+        sb.table("admins_globais").select("usuario_id").limit(1).execute()
+    except Exception as e:                                   # noqa: BLE001
+        sys.exit(f"admins_globais não existe ({type(e).__name__}). Rode o db/20 e repita.")
+
+    u = sb.table("usuarios").insert({
+        "nome": args.nome, "papel": "Administrador", "tipo_usuario": "gestor",
+        "condominio_id": args.condominio, "bloco_apto": "Administração", "saldo": 0,
+    }).execute().data[0]
+    sb.table("credenciais_usuario").upsert({"usuario_id": u["id"],
+                                            "senha_hash": gerar_hash_senha(senha)}).execute()
+    sb.table("admins_globais").upsert({"usuario_id": u["id"]}).execute()
+    # Lê de volta e confere com o MESMO código do login.
+    gravada = sb.table("credenciais_usuario").select("senha_hash").eq("usuario_id", u["id"]).execute().data
     if not gravada or not conferir_senha(gravada[0]["senha_hash"], senha):
-        sys.exit("FALHOU: o banco não ficou com a senha nova. Nada mudou.")
-    print(f"Senha de '{achados[0]['nome']}' trocada e conferida no banco "
-          f"({len(senha)} caracteres).")
-    if not args.senha:
-        print(f"  Nova senha (aparece UMA vez):  {senha}")
+        sys.exit("FALHOU: o banco não ficou com a senha. Apague a conta e rode de novo.")
+
+    print(f"Conta criada: {u['nome']} (admin da plataforma)")
+    print(f"\n  Senha (aparece UMA vez, guarde no gerenciador de senhas):  {senha}\n")
+    print("Primeiro acesso: entre no painel com nome + senha. Ele mostra SÓ o cadastro do app\n"
+          "autenticador (QR code); nenhum dado aparece antes de você confirmar um código.")
 
 
 def cmd_testar_senha(args):
@@ -860,7 +841,8 @@ def cmd_testar_senha(args):
         print("CONFERE: esta é a senha do banco. Se o painel recusa, o navegador está "
               "preenchendo OUTRA senha salva - apague o campo e digite (ou cole) esta.")
     else:
-        print(f"NÃO CONFERE ({len(senha)} caracteres digitados). Defina uma nova com senha-gestor.")
+        print(f"NÃO CONFERE ({len(senha)} caracteres digitados). Para uma conta de gestor, a "
+              "saída é apagar a conta no Supabase e rodar o admin-global de novo.")
 
 
 # ---------------------------------------------------------------------------
@@ -934,19 +916,11 @@ def main():
     tm.add_argument("--nome", required=True, help="nome de login do gestor")
     tm.set_defaults(fn=cmd_testar_mfa)
 
-    a = sub.add_parser("admin-global")
+    a = sub.add_parser("admin-global", help="cria a conta do admin da plataforma (senha gerada, 1 vez)")
     a.add_argument("--nome", required=True, help="nome de login (ex.: 'Davi Admin')")
     a.add_argument("--condominio", default="11111111-1111-1111-1111-111111111111",
                    help="condomínio-base da conta (o painel do gestor abre nele)")
-    a.add_argument("--senha", help="sem isto, gera uma senha forte e mostra uma vez")
-    a.add_argument("--nova-senha", action="store_true", dest="nova_senha",
-                   help="conta já existe: gera senha nova mesmo assim")
     a.set_defaults(fn=cmd_admin_global)
-
-    sg = sub.add_parser("senha-gestor")
-    sg.add_argument("--nome", required=True)
-    sg.add_argument("--senha", help="sem isto, gera uma senha forte e mostra uma vez")
-    sg.set_defaults(fn=cmd_senha_gestor)
 
     sub.add_parser("verificar").set_defaults(fn=cmd_verificar)
 

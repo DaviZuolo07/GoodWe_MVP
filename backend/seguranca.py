@@ -199,6 +199,9 @@ def usuario_atual(authorization: str = Header(None)) -> str:
 
 AUDIENCIA_ADMIN = "chargeops-admin"
 TTL_ADMIN_MIN = int(os.getenv("ADMIN_JWT_TTL_MIN", "30"))
+# Token de quem ainda NÃO provou o segundo fator: só serve para cadastrá-lo
+# (identidade.gestor_identificado). Curto de propósito.
+TTL_ADMIN_SEM_MFA_MIN = 10
 
 
 def _jwk_privada(bruto: str, nome: str):
@@ -217,17 +220,18 @@ def _chaves_admin():
     return _chaves()
 
 
-def emitir_token_admin(usuario_id: str, mfa: bool) -> dict:
+def emitir_token_admin(usuario_id: str, mfa: bool, metodo: str = "pwd") -> dict:
+    """`metodo`: como provou o primeiro fator - "pwd" (senha) ou "google" (operador)."""
     kid, privada, _ = _chaves_admin()
     agora = int(time.time())
-    expira = agora + TTL_ADMIN_MIN * 60
+    expira = agora + (TTL_ADMIN_MIN if mfa else min(TTL_ADMIN_MIN, TTL_ADMIN_SEM_MFA_MIN)) * 60
     token = jwt.encode(
         {
             "sub": str(usuario_id),
             "aud": AUDIENCIA_ADMIN,
             "papel": "gestor",
-            # Como a pessoa provou quem é (RFC 8176): senha, e código do app.
-            "amr": ["pwd", "otp"] if mfa else ["pwd"],
+            # Como a pessoa provou quem é (RFC 8176): primeiro fator, e código do app.
+            "amr": [metodo, "otp"] if mfa else [metodo],
             "iat": agora,
             "exp": expira,
         },

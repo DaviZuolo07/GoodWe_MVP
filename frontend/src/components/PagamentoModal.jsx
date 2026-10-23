@@ -522,7 +522,6 @@ function PagamentoModal({ charger, sessao, veiculos, onClose, onSucesso, onAcomp
           </p>
           <MonitorRecarga
             sessaoId={sessaoPreparada?.id}
-            temSensor={temSensor}
             compacto
             onEncerrada={(s) => {
               onSaldo?.()

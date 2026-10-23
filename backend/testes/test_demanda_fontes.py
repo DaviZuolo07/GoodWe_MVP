@@ -342,7 +342,10 @@ def entrar_gestor(nome):
     """O gestor entra pela API ADMINISTRATIVA (ADR-023): outro app, outro token."""
     r = ADMIN.post("/admin/login", json={"nome": nome, "senha": SENHA})
     assert r.status_code == 200 and r.json().get("success"), r.text
-    return {"Authorization": f"Bearer {r.json()['token']}"}
+    # A senha confere; o segundo fator (obrigatório) é coberto em
+    # test_admin_isolamento - aqui o token sai como depois do código.
+    from seguranca import emitir_token_admin
+    return {"Authorization": f"Bearer {emitir_token_admin(r.json()['gestor']['id'], mfa=True)['token']}"}
 
 
 def sessao_ativa(**extra):

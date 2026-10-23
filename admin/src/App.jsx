@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 import Entrar from './pages/Entrar.jsx'
+import NextPage from './pages/NextPage.jsx'
+import OperadoresPage from './pages/OperadoresPage.jsx'
 import PainelPage from './pages/PainelPage.jsx'
-import SegurancaPage from './pages/SegurancaPage.jsx'
+import SegurancaPage, { CadastroMfa } from './pages/SegurancaPage.jsx'
+import SessoesPage from './pages/SessoesPage.jsx'
 import VisaoGeralPage from './pages/VisaoGeralPage.jsx'
 import { definirAoExpirar, definirToken } from './lib/api.js'
 import { aplicarTema, lerTema } from './lib/tema.js'
 
 const ABAS = [
   { id: 'geral', rotulo: 'Visão geral', soGlobal: true },
+  { id: 'sessoes', rotulo: 'Sessões' },
+  { id: 'next', rotulo: 'Sala Next' },
   { id: 'painel', rotulo: 'Operação' },
+  { id: 'operadores', rotulo: 'Operadores', soGlobal: true },
   { id: 'seguranca', rotulo: 'Acesso e segurança' },
 ]
 
@@ -23,8 +29,9 @@ function App() {
   const entrar = useCallback((dados) => {
     definirToken(dados.token)
     setAviso('')
-    // Sem segundo fator: começa por cadastrá-lo. Admin da plataforma abre na Visão geral.
-    setAba(!dados.mfa ? 'seguranca' : dados.global ? 'geral' : 'painel')
+    // Sem segundo fator, nada abre além do cadastro dele (o backend recusa o
+    // resto). Admin da plataforma abre na Visão geral.
+    setAba(dados.global ? 'geral' : 'sessoes')
     setSessao({ gestor: dados.gestor, expiraEm: dados.expira_em, mfa: Boolean(dados.mfa),
                 global: Boolean(dados.global) })
   }, [])
@@ -56,6 +63,23 @@ function App() {
 
   if (!sessao) return <Entrar onEntrar={entrar} aviso={aviso} />
 
+  if (!sessao.mfa) {
+    // Primeiro acesso: SÓ o cadastro do app autenticador. Nenhuma aba, nenhum dado.
+    return (
+      <div className="carbono flex min-h-screen items-center justify-center bg-void p-4 font-display text-ink">
+        <div className="w-full max-w-3xl">
+          <p className="marca mb-6 text-center text-2xl font-bold leading-none tracking-[0.08em] text-flux">GOODWE</p>
+          <CadastroMfa onAtivado={(dados) => {
+            definirToken(dados.token)
+            setAba(dados.global ? 'geral' : 'sessoes')
+            setSessao((s) => ({ ...s, mfa: true, global: Boolean(dados.global), expiraEm: dados.expira_em }))
+          }} />
+          <button type="button" onClick={() => sair()} className="mt-4 w-full text-sm text-mute hover:text-ink">Sair</button>
+        </div>
+      </div>
+    )
+  }
+
   const min = Math.floor((restante ?? 0) / 60)
   const seg = String((restante ?? 0) % 60).padStart(2, '0')
 
@@ -75,9 +99,6 @@ function App() {
                       className={`relative shrink-0 rounded-chip px-3.5 py-2 text-sm transition-colors ${
                         aba === a.id ? 'nav-ativo text-ink' : 'text-mute hover:bg-raise/60 hover:text-ink'}`}>
                 {a.rotulo}
-                {a.id === 'seguranca' && !sessao.mfa && (
-                  <span className="ml-2 inline-block h-2 w-2 rounded-full bg-queue align-middle" aria-label="pendente" />
-                )}
               </button>
             ))}
           </nav>
@@ -98,16 +119,11 @@ function App() {
 
       <main className="mx-auto w-full max-w-[1360px] px-4 py-7 lg:px-9 lg:py-9">
         {aba === 'geral' && sessao.global && <VisaoGeralPage />}
+        {aba === 'sessoes' && <SessoesPage />}
+        {aba === 'next' && <NextPage />}
         {aba === 'painel' && <PainelPage />}
-        {aba === 'seguranca' && (
-          <SegurancaPage
-            mfa={sessao.mfa}
-            onMfaAtivado={(dados) => {
-              definirToken(dados.token)
-              setSessao((s) => ({ ...s, mfa: true, expiraEm: dados.expira_em }))
-            }}
-          />
-        )}
+        {aba === 'operadores' && sessao.global && <OperadoresPage />}
+        {aba === 'seguranca' && <SegurancaPage />}
       </main>
     </div>
   )

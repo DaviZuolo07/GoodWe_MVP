@@ -168,12 +168,14 @@ if PRODUCAO:
 # internet, qualquer script cria contas e gasta a cota do assistente.
 CODIGO_CADASTRO = (os.getenv("CODIGO_CADASTRO") or "").strip()
 
-# Segundo fator do gestor: "obrigatorio" recusa o login de quem ainda não
-# cadastrou o app autenticador; "opcional" deixa entrar só com a senha quem
-# não cadastrou (quem cadastrou SEMPRE precisa do código). Em produção o
-# padrão é obrigatório.
-ADMIN_MFA = (os.getenv("ADMIN_MFA") or ("obrigatorio" if PRODUCAO else "opcional")).strip().lower()
-ADMIN_MFA_OBRIGATORIO = ADMIN_MFA != "opcional"
+# Segundo fator do gestor: OBRIGATÓRIO SEMPRE (rotas_admin.py). A variável
+# ADMIN_MFA de versões antigas ("opcional") deixava nome + senha abrirem o
+# painel inteiro; ela não é mais lida. Quem ainda não cadastrou o app
+# autenticador recebe um token que só serve para cadastrá-lo.
+if (os.getenv("ADMIN_MFA") or "").strip().lower() == "opcional":
+    print("[CONFIG] AVISO: ADMIN_MFA=opcional não existe mais - o segundo fator do painel é "
+          "obrigatório. Apague a linha do .env.")
+GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
 
 # --- Fuso ----------------------------------------------------------------
 # Horário de ponta é local. O `tzdata` do requirements garante que isto

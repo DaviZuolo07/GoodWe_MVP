@@ -75,7 +75,8 @@ GoodWe_MVP/
 ├── admin/                   painel do gestor (React, porta 5174)
 ├── db/                      migrations 01 -> 22 (98 = reset total, 99 = limpeza)
 ├── firmware/
-│   ├── totem_central/       firmware do totem do NEXT (4 vagas + solar)
+│   ├── totem_next/          firmware do totem da banca (PORTAS vagas, sem sensor)
+│   ├── totem_central/       firmware do totem com 5 INA219 + solar (referência)
 │   └── chargeops_esp32/     placa v1 (um ponto só), mantida como estava
 ├── totem_virtual/           o totem inteiro em Python: referência testada do firmware
 ├── docs/                    contratos, ADRs, estado, mapa de estudo
@@ -210,6 +211,11 @@ entra pelo app do morador.
 cd backend
 python preparar_totem.py --fisico --sem-env
 ```
+
+> **Totem da banca (sem INA219, uma vaga):** o comando é
+> `python preparar_totem.py --next` — uma vaga, limite 7,5 kW, divisão por tempo
+> ligada. Veja [`docs/UMA_VAGA.md`](docs/UMA_VAGA.md). O passo abaixo é o do
+> totem_central, com 5 INA219 e vaga solar.
 
 Cria (ou acerta, se já existir) o condomínio **"Estande Next (totem)"** —
 limite **30 kW** (4 vagas × 7,5 kW na escala ×1000), sem horário de ponta — as

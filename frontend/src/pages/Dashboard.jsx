@@ -167,7 +167,6 @@ function PainelCarregador({ charger, sessaoAtiva, ehMinhaSessao, onFechar, onIni
             <MonitorRecarga
               sessaoId={sessaoAtiva.id}
               sessaoInicial={sessaoAtiva}
-              temSensor={charger.origem === 'hardware'}
               compacto
             />
           ) : (
@@ -619,7 +618,8 @@ function Dashboard({ sessao: sessaoInicial, onLogout }) {
                       ))}
                     </div>
                   ) : chargers.length === 0 ? (
-                    <div className="rounded-panel border border-dashed border-line bg-panel/40 px-6 py-14 text-center">
+                    <div className="relative rounded-panel border border-dashed border-line bg-panel/40 px-6 py-14 text-center">
+                      <span className="condutor" style={{ '--cond-dur': '7s' }} aria-hidden="true" />
                       <p className="font-medium text-ink">Nenhum carregador neste local</p>
                       <p className="mt-1.5 text-sm text-dim">
                         Cadastre um carregador no banco para que ele apareça aqui.

@@ -46,7 +46,6 @@ services:
       AMBIENTE: producao
       SERVICO: admin
       PROXIES_CONFIAVEIS: "0"
-      ADMIN_MFA: obrigatorio
       FRONTEND_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
       ADMIN_ORIGINS: http://localhost:8081,http://127.0.0.1:8081
     ports: ["8001:8001"]

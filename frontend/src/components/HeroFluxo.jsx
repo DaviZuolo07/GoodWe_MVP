@@ -42,12 +42,20 @@ function HeroFluxo({ className = '' }) {
         <path className="corrente" d="M88 214H170Q190 214 190 194V192" />
         <path className="fio" d="M190 176H222" />
         <path className="corrente" d="M190 176H222" />
+        {/* Pacotes de energia: disparam do sol e da rede até o quadro */}
+        <path className="pacote pacote-sol" style={{ '--pacote-dur': '2.8s' }} d="M106 138H170Q190 138 190 158V176H222" />
+        <path className="pacote" style={{ '--pacote-dur': '2.8s', '--pacote-atraso': '-1.4s' }} d="M88 214H170Q190 214 190 194V176H222" />
       </g>
 
       {/* Quadro com o limite */}
       <g className="entra" style={{ '--i': 4 }}>
         <circle className="halo" cx="262" cy="176" r="50" fill="var(--color-flux)" />
         <circle cx="262" cy="176" r="40" fill="var(--color-panel)" stroke="var(--color-line)" strokeWidth="1.5" />
+        {/* Anel externo girando: o quadro está sempre trabalhando */}
+        <circle className="gira" cx="262" cy="176" r="46" fill="none" stroke="var(--color-flux)" strokeWidth="1.25"
+                strokeDasharray="2 7" opacity="0.7" />
+        <circle className="gira" style={{ '--gira-dur': '14s', animationDirection: 'reverse' }} cx="262" cy="176" r="53"
+                fill="none" stroke="var(--color-flare)" strokeWidth="1" strokeDasharray="40 120" opacity="0.45" />
         <circle cx="262" cy="176" r="31" fill="none" stroke="var(--color-hair)" strokeWidth="5" />
         <circle cx="262" cy="176" r="31" fill="none" stroke="var(--color-flux)" strokeWidth="5" strokeLinecap="round"
                 strokeDasharray="195" strokeDashoffset="52" transform="rotate(-90 262 176)" />
@@ -58,6 +66,8 @@ function HeroFluxo({ className = '' }) {
       <g className="entra" style={{ '--i': 5 }}>
         <path className="fio" d="M302 176H552" />
         <path className="corrente" d="M302 176H552" />
+        {/* Pacote correndo pelo barramento até a última vaga */}
+        <path className="pacote" style={{ '--pacote-dur': '2.2s', '--pacote-atraso': '-0.6s' }} d="M302 176H552" />
         {VAGAS.map((v, i) => (
           <g key={v.x}>
             <path className="fio" d={`M${v.x} 176V208`} />

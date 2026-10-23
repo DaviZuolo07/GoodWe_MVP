@@ -12,9 +12,13 @@ import { supabase } from '../supabaseClient.js'
  * não um lugar para onde alguém vai dirigir.
  *
  * Mapa: Leaflet + azulejos da CARTO (dados do OpenStreetMap). Sem chave e sem
- * cartão de crédito. Não usamos tile.openstreetmap.org: a política de uso dele
- * exige o cabeçalho Referer, e o app manda `no-referrer` (index.html) - o
- * resultado era o mosaico "Access blocked / 403".
+ * cartão de crédito. O app manda `no-referrer` (index.html), e há provedor de
+ * azulejo que recusa pedido sem Referer - o resultado era o fundo cinza
+ * quadriculado, só com zoom e pinos. Por isso:
+ *   - os azulejos (e só eles) saem com `strict-origin-when-cross-origin`:
+ *     o provedor vê a ORIGEM (http://host:porta), nunca a página;
+ *   - se a base não carregar (rede da faculdade, bloqueio de rastreamento do
+ *     navegador, provedor fora), o mapa troca sozinho para a próxima da lista.
  * A rota abre no Google Maps pelo ENDEREÇO escrito, não pela coordenada: no
  * Brasil o OSM quase não tem número de casa, então a coordenada pode ser o
  * meio da rua; o Google resolve o número e leva até a porta.
@@ -23,6 +27,24 @@ import { supabase } from '../supabaseClient.js'
  */
 
 const CENTRO_SP = [-23.53, -46.75]
+
+const ATRIB_OSM = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+const ATRIB_CARTO = `${ATRIB_OSM} &copy; <a href="https://carto.com/attributions">CARTO</a>`
+const ATRIB_ESRI = 'Azulejos &copy; <a href="https://www.esri.com">Esri</a>'
+
+/** Bases em ordem de preferência; a seguinte só entra se a anterior falhar. */
+function basesDoMapa(escuro) {
+  return [
+    { url: `https://{s}.basemaps.cartocdn.com/${escuro ? 'dark_all' : 'rastertiles/voyager'}/{z}/{x}/{y}{r}.png`,
+      subdomains: 'abcd', maxZoom: 20, attribution: ATRIB_CARTO },
+    { url: `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/${escuro ? 'World_Dark_Gray_Base' : 'World_Light_Gray_Base'}/MapServer/tile/{z}/{y}/{x}`,
+      maxZoom: 16, attribution: ATRIB_ESRI },
+    { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      maxZoom: 19, attribution: ATRIB_OSM, className: escuro ? 'tiles-noite' : '' },
+  ]
+}
+const FALHAS_PARA_TROCAR = 6        // azulejos com erro antes do primeiro que carrega
+const ESPERA_TROCA_MS = 8000        // nenhum azulejo em 8 s: a base não responde
 
 function distanciaKm(a, b) {
   const rad = (g) => (g * Math.PI) / 180
@@ -96,15 +118,30 @@ function MapaPage({ condominioAtual, onVerLocal }) {
     if (!caixa.current || mapa.current) return
     const escuro = document.documentElement.dataset.tema !== 'claro'
     const m = L.map(caixa.current, { zoomControl: true, attributionControl: true }).setView(CENTRO_SP, 11)
-    // Azulejos CARTO: estilo escuro nativo (sem filtro CSS) e não exigem Referer.
-    L.tileLayer(`https://{s}.basemaps.cartocdn.com/${escuro ? 'dark_all' : 'rastertiles/voyager'}/{z}/{x}/{y}{r}.png`, {
-      subdomains: 'abcd',
-      maxZoom: 20,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    }).addTo(m)
+    const bases = basesDoMapa(escuro)
+    let camada = null
+    let relogio = null
+
+    function usarBase(i) {
+      clearTimeout(relogio)
+      camada?.remove()
+      const { url, ...opcoes } = bases[i]
+      let falhas = 0
+      let carregou = false
+      const esta = L.tileLayer(url, { ...opcoes, referrerPolicy: 'strict-origin-when-cross-origin' })
+      // Evento de uma base já descartada (azulejo cancelado na troca) não conta.
+      const proxima = () => { if (camada === esta && !carregou && i + 1 < bases.length) usarBase(i + 1) }
+      camada = esta
+        .on('tileload', () => { carregou = true; if (camada === esta) clearTimeout(relogio) })
+        .on('tileerror', () => { if (++falhas >= FALHAS_PARA_TROCAR) proxima() })
+        .addTo(m)
+      relogio = setTimeout(proxima, ESPERA_TROCA_MS)
+    }
+
+    usarBase(0)
     camadaPinos.current = L.layerGroup().addTo(m)
     mapa.current = m
-    return () => { m.remove(); mapa.current = null }
+    return () => { clearTimeout(relogio); m.remove(); mapa.current = null }
   }, [])
 
   // Pinos: refeitos quando muda a lista, a disponibilidade ou o local escolhido.
@@ -182,8 +219,11 @@ function MapaPage({ condominioAtual, onVerLocal }) {
       )}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div ref={caixa} className="realce relative z-0 h-[52vh] min-h-[320px] overflow-hidden rounded-panel border border-line lg:h-[620px]"
-             role="region" aria-label="Mapa dos pontos de recarga" />
+        <div className="relative min-w-0 rounded-panel">
+          <div ref={caixa} className="realce mapa-hud relative z-0 h-[52vh] min-h-[320px] overflow-hidden rounded-panel border border-line lg:h-[620px]"
+               role="region" aria-label="Mapa dos pontos de recarga" />
+          <span className="condutor" style={{ '--cond-dur': '9s' }} aria-hidden="true" />
+        </div>
 
         <ul className="space-y-2">
           {ordenados.map((l) => {

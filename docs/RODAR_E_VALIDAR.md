@@ -90,8 +90,10 @@ python provisionar.py admin-global --nome "Davi Admin"
 
 A senha é gerada e aparece **uma vez** no terminal: guarde direto no
 gerenciador de senhas (nunca em arquivo do repositório, nem colada em chat).
-Se ela vazou, troque: `python provisionar.py senha-gestor --nome "Davi Admin"`.
-O segundo fator vem no passo 3.
+Não há comando para escolher ou trocar senha de gestor (decisão de 22/10).
+Se ela vazou: apague a conta no Supabase (Table Editor → usuarios) e rode o
+`admin-global` de novo. O segundo fator vem no passo 3 e é **sempre
+obrigatório**: sem ele o painel só mostra a tela de cadastro do autenticador.
 
 **Conta de gestor não entra no app do morador** — de propósito (ADR-023): o
 app responde "Nome de usuário ou senha incorretos", a mesma mensagem da senha

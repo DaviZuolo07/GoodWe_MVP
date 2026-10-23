@@ -29,6 +29,8 @@ function ChargerCard({ charger, sessao, onSelecionar, selecionado = false }) {
         ${selecionado ? 'border-flux/70 shadow-flux' : `border-line ${st.borda}`}`}
     >
       {selecionado && <span className="bus" aria-hidden="true" />}
+      {/* Ponto sem recarga: a borda corre devagar. Carregando, quem desenha é o .carregando-borda */}
+      {!(emUso && sessao) && <span className="condutor condutor-suave" aria-hidden="true" />}
 
       <div className="relative flex items-start justify-between gap-3">
         <span className="flex items-center gap-2">

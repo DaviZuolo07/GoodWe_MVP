@@ -77,7 +77,8 @@ import simulador
 from config import CORPO_MAX_V2, JANELA_REPLAY_S, MAX_LEITURAS_LOTE, agora, agora_iso, \
     para_datetime, supabase, um
 from fisica import (custo_da_sessao, energia_bruta_wh, energia_escalada_kwh, minutos_pela_potencia_medida,
-                    potencia_escalada_kw, soc_pela_energia, soc_pela_tensao_18650)
+                    potencia_escalada_kw, potencia_no_soc, soc_pela_energia, soc_pela_tensao_18650,
+                    teto_kw)
 from identidade import gestor_logado
 from seguranca import assinatura_v2_confere, chave_dispositivo, hash_token_dispositivo, \
     ip_do_cliente, \
@@ -164,6 +165,31 @@ class RfidV2Payload(RfidPayload):
 # Peças comuns aos dois protocolos
 # ---------------------------------------------------------------------------
 
+def _carga(s: dict, fator: float, charger: dict | None = None, v: dict | None = None) -> dict:
+    """
+    O que o MODELO DE CARGA da placa precisa para calcular a recarga sem
+    sensor (totem Next, sem INA219): a bateria do celular cadastrado, o teto da
+    porta e o % de partida - tudo no BRUTO da placa (Wh, W). E a `fracao` de
+    tempo que o water-filling deu à vaga (1 = relé sempre fechado).
+    """
+    charger = charger or recarga.carregador(s["carregador_id"])
+    v = v if v is not None else (recarga.veiculo(s["veiculo_id"]) or {})
+    soc = float(s.get("percentual_bateria_atual") or s.get("percentual_bateria_inicial") or 0)
+    teto = teto_kw(charger, v)
+    fracao = demanda.fracao_de_tempo(s.get("potencia_alocada_kw"), potencia_no_soc(teto, soc)) \
+        if demanda.por_tempo(charger) else 1.0
+    return {
+        "fracao": fracao,
+        "carga": {
+            "capacidade_wh": round(float(v.get("capacidade_bateria_kwh") or 0) * 1000 / fator, 3),
+            "potencia_max_w": round(teto * 1000 / fator, 3),
+            "percentual": round(soc, 2),
+            "alvo": float(s.get("alvo_percentual") or 100),
+            "percentual_origem": s.get("percentual_origem") or "informado",
+        },
+    }
+
+
 def _resumo_sessao(s: dict | None, fator: float = 1.0) -> dict | None:
     if not s:
         return None
@@ -173,6 +199,7 @@ def _resumo_sessao(s: dict | None, fator: float = 1.0) -> dict | None:
         "energia_wh": round(energia_bruta_wh(s.get("energia_entregue_kwh"), fator), 3),
         "alvo": float(s.get("alvo_percentual") or 100),
         "percentual": float(s.get("percentual_bateria_atual") or 0),
+        **_carga(s, fator),
     }
 
 
@@ -238,6 +265,11 @@ def _entregar_comandos(dispositivo_id: str, so_porta: int | None = None) -> list
         payload = cmd.get("payload")
         if cmd["acao"] == "solicitar_cartao":
             payload = dispositivos.payload_pedido(recarga.sessao(cmd["sessao_id"]))  # prazo de agora
+        elif cmd["acao"] == "liberar" and cmd.get("sessao_id"):
+            s = recarga.sessao(cmd["sessao_id"])
+            d = dispositivos.dispositivo_do_carregador(s["carregador_id"]) if s else None
+            if s:
+                payload = {**(payload or {}), **_carga(s, dispositivos.fator_escala(d))}
 
         supabase.table("comandos_dispositivo").update(
             {"status": "entregue", "entregue_em": agora_iso()}).eq("id", cmd["id"]).execute()
@@ -282,7 +314,7 @@ def _fracao_solar(s: dict, cond: dict | None, potencia_kw: float) -> tuple[float
 
 def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
                        com_alocacao: bool = False, fator: float = 1.0,
-                       solar: dict | None = None) -> dict:
+                       solar: dict | None = None, origem_dado: str = "medido") -> dict:
     """
     A partir daqui a energia da sessão deixa de ser calculada e passa a ser
     MEDIDA. O modelo físico só entra para derivar o SoC; o tempo restante sai
@@ -309,7 +341,8 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
         return resposta
 
     v = recarga.veiculo(s["veiculo_id"]) or {}
-    cond = recarga.condominio_de(recarga.carregador(carregador_id))
+    charger = recarga.carregador(carregador_id)
+    cond = recarga.condominio_de(charger)
 
     potencia_kw = potencia_escalada_kw(leitura.potencia_w, fator)
     energia_kwh = max(float(s.get("energia_entregue_kwh") or 0),
@@ -320,7 +353,12 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
         media = potencia_kw if media is None else float(media) * (1 - ALFA_MEDIA) + potencia_kw * ALFA_MEDIA
 
     soc = soc_pela_energia(s, v, energia_kwh)
-    tempo = minutos_pela_potencia_medida(s, v, soc or 0, media) if soc is not None else None
+    # Divisão por tempo: a média acima é a do relé FECHADO. Na janela inteira a
+    # vaga recebe essa potência só na `fracao` do tempo - é isso que a
+    # previsão de término tem de usar, senão promete acabar antes.
+    dividida = _carga(s, fator, charger, v) if demanda.por_tempo(charger) else None
+    media_janela = media * dividida["fracao"] if (dividida and media) else media
+    tempo = minutos_pela_potencia_medida(s, v, soc or 0, media_janela) if soc is not None else None
 
     # Celular cheio para de puxar corrente. 30 s abaixo de 0,5 W com o relé
     # fechado e alguma energia já entregue = carga completa. Física = BRUTO.
@@ -334,7 +372,9 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
                 .eq("id", s["id"]).execute()
         elif (agora() - desde).total_seconds() >= recarga.SEGUNDOS_BAIXA_POTENCIA:
             fim_por_dispositivo = True
-    elif s.get("baixa_potencia_desde"):
+    elif s.get("baixa_potencia_desde") and leitura.rele_ligado:
+        # Só uma leitura com o relé FECHADO e potência alta desmente o "cheio".
+        # O relé aberto pela divisão de tempo não diz nada sobre o celular.
         supabase.table("sessoes_recarga").update({"baixa_potencia_desde": None}).eq("id", s["id"]).execute()
 
     puxando_w = float(leitura.potencia_w or 0)
@@ -344,7 +384,8 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
     else:
         fracao, origem_solar = _fracao_solar(s, cond, potencia_kw)
     motivo = recarga.registrar_progresso(s, v, cond, energia_kwh, potencia_kw, soc, tempo, media,
-                                         fracao_solar=fracao, origem_solar=origem_solar)
+                                         fracao_solar=fracao, origem_solar=origem_solar,
+                                         origem_dado=origem_dado)
     if not motivo and fim_por_dispositivo:
         motivo = "dispositivo_carregado"
         recarga.encerrar(recarga.sessao(s["id"]) or s, motivo)
@@ -357,6 +398,10 @@ def _processar_leitura(carregador_id: str, leitura: TelemetriaPayload,
         extra["alocado_kw"] = round(alocado / fator, 6)          # domínio da placa
     if solar is not None:
         extra["fonte"] = "rede" if atual.get("modo_vaga_solar") == "rede" else "solar"
+    if motivo is None:
+        # Fração de tempo (água no balde por relé) e o modelo de carga do
+        # celular, atualizados a cada lote. Placa antiga ignora os dois.
+        extra.update(_carga(atual, fator, charger, v))
     return {
         **extra,
         "ok": True,
@@ -587,7 +632,8 @@ def receber_telemetria(payload: TelemetriaPayload, x_device_token: str = Header(
         "energia_escalada_kwh": energia_escalada_kwh(payload.energia_wh, fator),
         "origem": "simulado" if d.get("virtual") else "medido",
     }).execute()
-    return _processar_leitura(d["carregador_id"], payload, fator=fator)
+    return _processar_leitura(d["carregador_id"], payload, fator=fator,
+                              origem_dado="simulado" if d.get("virtual") else "medido")
 
 
 # ===========================================================================
@@ -749,9 +795,15 @@ def leitura_rfid_v2(payload: RfidV2Payload, d: dict = Depends(_assinada(consumir
     carregador_id = dispositivos.carregador_da_porta(d["id"], payload.porta)
     if not carregador_id:
         raise HTTPException(status_code=422, detail="porta_inexistente")
-    return {"porta": payload.porta,
-            **recarga.processar_tag(carregador_id, payload.uid, payload.porta,
-                                    dispositivo_id=d["id"], ip=d.get("_ip"))}
+    r = recarga.processar_tag(carregador_id, payload.uid, payload.porta,
+                              dispositivo_id=d["id"], ip=d.get("_ip"))
+    extra = {}
+    if r.get("acao") in ("ligar", "liberar") and r.get("sessao_id"):
+        # A placa liga o relé E já sabe qual celular está carregando (modelo de carga).
+        s = recarga.sessao(r["sessao_id"])
+        if s:
+            extra = _carga(s, dispositivos.fator_escala(d))
+    return {"porta": payload.porta, **r, **extra}
 
 
 @router.post("/v2/telemetria")
@@ -790,8 +842,9 @@ def receber_telemetria_v2(payload: TelemetriaV2Payload, d: dict = Depends(_assin
     for porta in sorted(ultima):
         carregador_id = dispositivos.carregador_da_porta(d["id"], porta)
         solar = ctx if (porta == ps and ctx) else None
-        respostas.append({"porta": porta, **_processar_leitura(carregador_id, ultima[porta], com_alocacao=True,
-                                                               fator=fator, solar=solar)})
+        respostas.append({"porta": porta, **_processar_leitura(
+            carregador_id, ultima[porta], com_alocacao=True, fator=fator, solar=solar,
+            origem_dado="simulado" if d.get("virtual") else "medido")})
     return {"ok": True, "gravadas": len(leituras), "fontes_gravadas": len(fontes), "portas": respostas}
 
 

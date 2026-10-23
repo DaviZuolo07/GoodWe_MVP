@@ -65,6 +65,25 @@ def recibo(sessao_id: str, usuario: dict = Depends(usuario_logado)):
     return recarga.recibo(usuario, sessao_id)
 
 
+class BateriaCelular(BaseModel):
+    percentual: float = Field(..., ge=0, le=100)
+
+
+@router.get("/recargas/{sessao_id}/serie")
+def serie(sessao_id: str, usuario: dict = Depends(usuario_logado)):
+    """O gráfico da MINHA recarga - simulada ou do totem (db/23)."""
+    from identidade import sessao_do_usuario
+    import serie as serie_mod
+    return serie_mod.serie_da_sessao(sessao_do_usuario(sessao_id, usuario["id"]))
+
+
+@router.post("/recargas/{sessao_id}/bateria")
+def bateria(sessao_id: str, payload: BateriaCelular, usuario: dict = Depends(usuario_logado)):
+    """% real lido pelo app no próprio celular que está carregando (Chrome do Android)."""
+    import serie as serie_mod
+    return serie_mod.percentual_do_celular(usuario, sessao_id, payload.percentual)
+
+
 @router.get("/recargas/{sessao_id}/leituras")
 def leituras(sessao_id: str, usuario: dict = Depends(usuario_logado)):
     """Série medida pelo ESP32 da MINHA recarga (base do gráfico ao vivo)."""
