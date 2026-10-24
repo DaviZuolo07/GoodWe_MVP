@@ -9,7 +9,11 @@
 #include "config.h"
 
 namespace {
-  LiquidCrystal_I2C tela(ENDERECO_LCD, COLUNAS, LINHAS);
+  // O LCD é criado no boot, no endereço que RESPONDEU (0x27 ou 0x3F). Sem
+  // LCD fica nullptr e hal::lcd não faz nada: escrever num I2C vazio enche o
+  // monitor serial de "nack" do core 3.x a cada troca de tela.
+  LiquidCrystal_I2C* tela = nullptr;
+  uint8_t enderecoLcd = 0;
   char sombra[LINHAS][COLUNAS + 1];                      // o que está no vidro agora
 
   MFRC522 rfid(PINO_RFID_SS, PINO_RFID_RST);
@@ -27,11 +31,7 @@ namespace hal {
 void iniciar() {
   // 1) Segurança primeiro: todo relé ABERTO. O digitalWrite vem ANTES do
   //    pinMode: o pino já nasce no nível "desligado" quando vira saída.
-<<<<<<< HEAD
   for (uint8_t p = 1; p <= PORTAS && USAR_RELE; p++) {
-=======
-  for (uint8_t p = 1; p <= PORTAS; p++) {
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     digitalWrite(PINO_RELE[p], nivel(false, RELE_ATIVO_EM_LOW));
     pinMode(PINO_RELE[p], OUTPUT);
     digitalWrite(PINO_RELE[p], nivel(false, RELE_ATIVO_EM_LOW));
@@ -46,9 +46,17 @@ void iniciar() {
   }
 
   Wire.begin(PINO_SDA, PINO_SCL);
-  tela.init();
-  tela.backlight();
-  tela.clear();
+  const uint8_t candidatos[2] = {ENDERECO_LCD, (uint8_t)(ENDERECO_LCD == 0x27 ? 0x3F : 0x27)};
+  for (uint8_t e : candidatos) {
+    Wire.beginTransmission(e);
+    if (Wire.endTransmission() == 0) { enderecoLcd = e; break; }
+  }
+  if (enderecoLcd) {
+    tela = new LiquidCrystal_I2C(enderecoLcd, COLUNAS, LINHAS);
+    tela->init();
+    tela->backlight();
+    tela->clear();
+  }
   for (uint8_t l = 0; l < LINHAS; l++) { memset(sombra[l], ' ', COLUNAS); sombra[l][COLUNAS] = '\0'; }
 
   SPI.begin();
@@ -58,11 +66,10 @@ void iniciar() {
   WiFi.setAutoReconnect(true);
 }
 
+uint8_t lcdEndereco() { return enderecoLcd; }
+
 void rele(uint8_t porta, bool ligado) {
-<<<<<<< HEAD
   if (!USAR_RELE) return;                      // bancada sem módulo de relé
-=======
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
   if (porta >= 1 && porta <= PORTAS) digitalWrite(PINO_RELE[porta], nivel(ligado, RELE_ATIVO_EM_LOW));
 }
 
@@ -103,13 +110,14 @@ uint8_t botao() {
 bool wifiOk() { return WiFi.status() == WL_CONNECTED; }
 
 void lcd(const char* l0, const char* l1) {
+  if (!tela) return;                           // sem LCD: o serial é a tela
   const char* linhas[LINHAS] = {l0, l1};
   for (uint8_t l = 0; l < LINHAS; l++) {
     char nova[COLUNAS + 1];
     snprintf(nova, sizeof(nova), "%-16.16s", linhas[l] ? linhas[l] : "");
     if (strcmp(nova, sombra[l]) == 0) continue;       // I2C é lento: só o que mudou
-    tela.setCursor(0, l);
-    tela.print(nova);
+    tela->setCursor(0, l);
+    tela->print(nova);
     memcpy(sombra[l], nova, sizeof(nova));
   }
 }

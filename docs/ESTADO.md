@@ -4,7 +4,63 @@ Atualizado ao fim de cada chat: o que foi feito, o que quebrou, o que vem depois
 
 ---
 
-<<<<<<< HEAD
+## 24/10/2026 — Davi · Chat V9 — Duas vagas, `main` consertada, pico no sábado
+
+A montagem do Gustavo agora tem **duas** vagas (`carregador 5 V → relé → USB` em
+cada uma; tag vinculada + botão da vaga fecham o relé). Véspera da banca do Next.
+
+### Quebrou (e foi consertado)
+- **A `main` publicada estava com marcadores de conflito** (`<<<<<<< HEAD`) em 10
+  arquivos: o merge `eea0cc9` (23/10, 17:55) foi comitado sem resolver. O firmware
+  não compilava e o `pytest` quebrava na coleta (`test_next_sem_sensor.py`).
+  Resolvido mantendo o lado `HEAD` (uma vaga, 23/10), que contém o outro lado
+  inteiro: o resultado ficou **idêntico, byte a byte, ao `af998b7`**.
+- **Amanhã (24/10) é sábado, e `fisica.em_horario_de_ponta` não tinha ponta em fim
+  de semana**: o "Simular pico agora" gravava a janela e nada mudava (nem o limite,
+  nem a tarifa). Agora o condomínio de perfil `bancada` (o estande) vale todos os
+  dias; os condomínios reais seguem sem ponta no fim de semana.
+
+### Feito
+1. **Firmware:** `PORTAS = 2`; relé da vaga 2 no **GPIO 16** (o 12 é pino de boot,
+   MTDI: pode impedir o boot e a gravação); `FIRMWARE_VERSAO totem-next-1.2`.
+2. **LCD procurado no boot** (0x27 e 0x3F). Sem LCD, o totem segue sem tela e diz
+   `LCD nao encontrado` no serial — antes, cada troca de tela escrevia num I2C vazio.
+3. **`preparar_totem.py --next` cria 2 vagas por padrão** (`VAGAS_NEXT`): limite do
+   estande 15 kW, 7,5 na ponta.
+4. **Testes:** `test_duas_vagas_e_o_padrao_e_os_numeros_do_roteiro` (frações em 15 /
+   7,5 / 5 / 3 / 2,5 kW e no pico), `test_duas_vagas_fila_de_energia_e_volta_sozinha`,
+   ponta no sábado no estande (`test_unidades`); `teste_carga.cpp` ganhou 4 cenários
+   de duas vagas (pico de relés fechados juntos).
+5. **Docs:** `RODAR_NO_NOTEBOOK.md` reescrito (cola da ordem do dia, relógio com
+   `w32tm`, hotspot 2,4 GHz, firewall e regras de bloqueio, IDE e bibliotecas,
+   serial esperado linha por linha, roteiro da banca com o número de cada passo);
+   `UMA_VAGA.md` (agora o contrato de duas vagas; o nome ficou); README do firmware.
+6. Limpeza: os restos citados em 23/10 (`firmware/totem_demo/`, os dois testes
+   duplicados) já tinham saído no próprio merge; sobraram só `.pyc`, apagados.
+
+### Testado
+- `pytest backend/testes` **126 verdes**; `totem_virtual/testes` **57 verdes**.
+- Firmware **compilado** com o `xtensa-esp32-elf-g++` do core esp32 3.3.12, as flags
+  da IDE e as bibliotecas instaladas (ArduinoJson 7.4.3, MFRC522 1.4.12,
+  LiquidCrystal I2C 1.1.2): os 6 arquivos compilam, nenhum aviso nosso com `-Wall
+  -Wextra`. **Sem link** (não há `arduino-cli` neste PC): a IDE confirma no "Verificar".
+- `teste_carga.cpp` **não rodou** (sem g++ no PC); o escalonador foi reproduzido em
+  Python para os 4 cenários novos: pico 2 em 100%, pico 1 em 50%, 33% e 20%.
+
+### NÃO testado
+- Este firmware numa placa. A detecção do LCD e o GPIO 16 só se provam na montagem.
+- Se o carregador de 5 V aguenta as duas portas fechadas juntas (depende da etiqueta).
+  Com o limite em 7,5 kW o rodízio nunca fecha as duas ao mesmo tempo.
+- O backend contra o Supabase real depois destas mudanças (só banco em memória).
+
+### Próximo
+1. Gustavo: mover o fio do IN2 do GPIO 12 para o **16** (WROVER: 27) e gravar.
+2. Seguir a "Cola" e a seção 9 de `docs/RODAR_NO_NOTEBOOK.md`.
+3. Se o notebook do estande já tem o projeto: `git pull` e reiniciar o `uvicorn`
+   (sem isso o pico não funciona no sábado).
+
+---
+
 ## 23/10/2026 — Davi · Chat V8 — Totem de UMA vaga, com o relé liberando energia
 
 A montagem física que funcionou tem **uma** vaga (o Gustavo está com ela), e o relé
@@ -52,8 +108,6 @@ vagas, em vez de supor quatro. Contrato de integração: `docs/UMA_VAGA.md`.
 
 ---
 
-=======
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 ## 22/10/2026 — Davi · Chat V7 — Totem Next sem sensor, painel seguro, rodar no notebook
 
 Pedido do Davi para a banca de 23/10 (backend, db, admin, frontend e firmware: registrado para o Daniel). Roteiro do dia: `docs/RODAR_NO_NOTEBOOK.md`.

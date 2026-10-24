@@ -11,7 +11,8 @@
 // Descubra com `ipconfig` (Adaptador Wi-Fi > Endereço IPv4).
 // Suba o backend com:  uvicorn main:app --host 0.0.0.0 --port 8000
 // Não use localhost: para o ESP32, localhost é ele mesmo.
-#define BACKEND_URL "http://192.168.0.100:8000"
+// No hotspot do Windows o notebook é sempre 192.168.137.1.
+#define BACKEND_URL "http://192.168.137.1:8000"
 
 // Saem de, dentro de backend/:  python preparar_totem.py --next
 // (a chave é derivada da DEVICE_MASTER_KEY do backend/.env: trocou a chave

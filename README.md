@@ -212,8 +212,8 @@ cd backend
 python preparar_totem.py --fisico --sem-env
 ```
 
-> **Totem da banca (sem INA219, uma vaga):** o comando é
-> `python preparar_totem.py --next` — uma vaga, limite 7,5 kW, divisão por tempo
+> **Totem da banca (sem INA219, duas vagas):** o comando é
+> `python preparar_totem.py --next` — duas vagas, limite 15 kW, divisão por tempo
 > ligada. Veja [`docs/UMA_VAGA.md`](docs/UMA_VAGA.md). O passo abaixo é o do
 > totem_central, com 5 INA219 e vaga solar.
 

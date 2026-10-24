@@ -1,78 +1,60 @@
 // ============================================================================
-<<<<<<< HEAD
-// config.h - Pinos e constantes do Totem Next (23/10/2026)
+// config.h - Pinos e constantes do Totem Next (24/10/2026)
 // ============================================================================
-// O hardware da banca: ESP32, LCD 16x2 I2C, MFRC522, botão, módulo relé e
-// USB-A/USB-C de painel. SEM INA219 e SEM solar.
+// O hardware da banca: ESP32, LCD 16x2 I2C, MFRC522, 2 botões, módulo relé e
+// 2 portas USB. SEM INA219 e SEM solar.
 //
-// UMA VAGA (23/10): a montagem que funciona tem UMA vaga, e o relé dela LIBERA
-// ENERGIA de verdade. Tudo neste firmware é parametrizado por `PORTAS`: com 1
-// o totem é de uma vaga; com 4, volta a ser o de quatro, sem mais nenhuma
-// mudança de código. O backend segue as portas que `preparar_totem.py --vagas`
+// DUAS VAGAS (24/10): carregador 5 V -> relé -> porta USB, em cada vaga. O
+// relé LIBERA ENERGIA de verdade, e só fecha depois da tag certa E do botão da
+// vaga. Tudo neste firmware é parametrizado por `PORTAS` (1 a 4), sem mais
+// nenhuma mudança de código. O backend segue as portas que `preparar_totem.py --vagas`
 // gravou - os dois números têm de bater.
-=======
-// config.h - Pinos e constantes do Totem Next (22/10/2026)
-// ============================================================================
-// O hardware da banca: ESP32, LCD 16x2 I2C, MFRC522, 4 botões, módulo relé de
-// 4 canais, 2 USB-A + 2 USB-C de painel. SEM INA219 e SEM solar.
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 //
 // As constantes de tempo da máquina de estados têm os MESMOS nomes e valores
 // de firmware/totem_central/config.h (a tradução testada do totem virtual).
 // O que é novo aqui: o MODELO DE CARGA (a energia sai da física do celular,
-<<<<<<< HEAD
 // não de um sensor) e a DIVISÃO POR TEMPO do relé (water-filling).
-=======
-// não de um sensor) e a DIVISÃO POR TEMPO dos relés (water-filling).
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 // ============================================================================
 #pragma once
 #include <Arduino.h>
 
-<<<<<<< HEAD
-#define FIRMWARE_VERSAO "totem-next-1.1"   // vai no handshake; o painel lê o "totem-next"
+#define FIRMWARE_VERSAO "totem-next-1.2"   // vai no handshake; o painel lê o "totem-next"
 
 // ---------------------------------------------------------------------------
 // QUANTAS VAGAS - o único número a mudar quando o hardware mudar
 // ---------------------------------------------------------------------------
-// 1 = a montagem de 23/10 (um relé, um botão). 4 = o totem de quatro vagas.
+// 2 = a montagem de 24/10 (dois relés, dois botões). 4 = o totem de quatro.
 // Tem de ser igual ao `--vagas` do backend/preparar_totem.py: o handshake
 // imprime "handshake ok: N porta(s)" e N é o do BANCO. Vagas que o backend
 // conhece e o firmware não existem para a placa (nenhum relé é tocado).
-constexpr uint8_t PORTAS = 1;
+constexpr uint8_t PORTAS = 2;
 
 // ---------------------------------------------------------------------------
 // PINOS - a fiação que já está montada (a mesma do sketch de bancada do
-// Gustavo). Índice = número da vaga; a posição 0 não é usada. Com PORTAS = 1
-// só a posição 1 é lida: os pinos 12, 14, 27, 33, 25 e 26 ficam livres.
+// Gustavo), com UMA troca: o IN2 saiu do GPIO 12 para o GPIO 16 (abaixo).
+// Índice = número da vaga; a posição 0 não é usada. Com PORTAS = 2 só as
+// posições 1 e 2 são lidas: os pinos 14, 27, 25 e 26 ficam livres.
 // ---------------------------------------------------------------------------
-constexpr uint8_t PINO_RELE[5]  = {0, 13, 12, 14, 27};   // IN1..IN4 do módulo de relé
-=======
-#define FIRMWARE_VERSAO "totem-next-1.0"   // vai no handshake; o painel lê o "totem-next"
-
-// ---------------------------------------------------------------------------
-// PINOS - a fiação que já está montada (a mesma do sketch de bancada do
-// Gustavo). Índice = número da vaga; a posição 0 não é usada.
-// ---------------------------------------------------------------------------
-constexpr uint8_t PINO_RELE[5]  = {0, 13, 12, 14, 27};   // IN1..IN4 do módulo de 4 canais
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
+constexpr uint8_t PINO_RELE[5]  = {0, 13, 16, 14, 27};   // IN1..IN4 do módulo de relé
 constexpr uint8_t PINO_BOTAO[5] = {0, 32, 33, 25, 26};   // ao GND, com pull-up interno
 constexpr uint8_t PINO_LED      = 2;    // LED da placa: aceso = servidor aceitando a placa
 
 constexpr uint8_t PINO_RFID_SS  = 5;    // MFRC522: SCK 18, MISO 19, MOSI 23 (SPI padrão), 3,3 V
 constexpr uint8_t PINO_RFID_RST = 4;
 constexpr uint8_t PINO_SDA = 21, PINO_SCL = 22;   // LCD
-constexpr uint8_t ENDERECO_LCD = 0x27;            // PCF8574 (alguns vêm em 0x3F)
+constexpr uint8_t ENDERECO_LCD = 0x27;            // PCF8574; se não responder, tenta 0x3F
+// Sem LCD no barramento o totem segue sem tela (hal::iniciar procura o LCD
+// e avisa no serial): o monitor serial passa a ser a única tela.
 
 // O módulo da bancada liga com HIGH (o sketch antigo escrevia LOW para
 // desligar). Se o seu ligar com LOW (optoacoplador), troque para 1.
-<<<<<<< HEAD
 // TESTE: com a placa recém-ligada, NENHUM relé pode estalar.
 #define RELE_ATIVO_EM_LOW 0
-// ATENÇÃO GPIO 12: é pino de boot (MTDI). Se o ESP32 não iniciar com o módulo
-// de relé ligado (reinicia em laço, "flash read err"), passe o fio do IN2
-// para o GPIO 16 e troque o 12 por 16 acima. (Com PORTAS = 1 o IN2 nem é
-// usado: o relé da vaga 1 é o GPIO 13.)
+// POR QUE NÃO O GPIO 12: é pino de boot (MTDI). Em HIGH no boot ele manda a
+// flash para 1,8 V e a placa reinicia em laço ("flash read err, 1000") - o
+// que depende do módulo de relé, do jumper H/L e de a placa estar ligando a
+// frio. O 16 não tem função no boot. EXCEÇÃO: em módulo ESP32-WROVER o 16 é
+// da PSRAM - aí use o 27 (troque o 16 por 27 acima e mova o fio).
 
 // Bancada SEM módulo de relé ligado: 0 não toca em nenhum pino de relé, e a
 // recarga roda só no modelo. Na montagem de verdade isto é 1 - é ele que
@@ -92,14 +74,6 @@ constexpr float ACELERAR = 1.0f;
 // O monitor serial imprime o estado das vagas a cada STATUS_MS (o "painel" da
 // placa) e aceita comandos - ver `Totem::lerSerial` em maquina.cpp.
 constexpr uint32_t STATUS_MS = 5000;
-=======
-#define RELE_ATIVO_EM_LOW 0
-// ATENÇÃO GPIO 12: é pino de boot (MTDI). Se o ESP32 não iniciar com o módulo
-// de relé ligado (reinicia em laço, "flash read err"), passe o fio do IN2
-// para o GPIO 16 e troque o 12 por 16 acima.
-
-constexpr uint8_t PORTAS = 4;
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
 // ---------------------------------------------------------------------------
 // MODELO DE CARGA (sem sensor): a física do celular, a mesma do contrato

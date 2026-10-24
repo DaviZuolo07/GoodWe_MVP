@@ -42,24 +42,16 @@ ESTANDE = preparar_totem.ESTANDE
 OUTRO = "c0000000-0000-0000-0000-0000000000aa"
 
 
-<<<<<<< HEAD
 def _preparar(monkeypatch, tmp_path, vagas: int = 4):
     """
-    Prepara o estande com `vagas` vagas. O padrão do script é 1 (a montagem de
-    23/10); estes testes pedem 4 de propósito, para o totem de quatro vagas
-    continuar coberto. O caso de UMA vaga tem teste próprio mais abaixo.
+    Prepara o estande com `vagas` vagas. O padrão do script é 2 (a montagem de
+    24/10); estes testes pedem 4 de propósito, para o totem de quatro vagas
+    continuar coberto. Uma e duas vagas têm testes próprios mais abaixo.
     """
     fake.limpar()
     monkeypatch.setattr(provisionar, "_supabase", lambda: fake)
     monkeypatch.setattr(preparar_totem, "ENV_TOTEM", tmp_path / ".env")
     monkeypatch.setattr(sys, "argv", ["preparar_totem.py", "--next", "--vagas", str(vagas)])
-=======
-def _preparar(monkeypatch, tmp_path):
-    fake.limpar()
-    monkeypatch.setattr(provisionar, "_supabase", lambda: fake)
-    monkeypatch.setattr(preparar_totem, "ENV_TOTEM", tmp_path / ".env")
-    monkeypatch.setattr(sys, "argv", ["preparar_totem.py", "--next"])
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
     preparar_totem.main()
     linhas = (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
     return dict(x.split("=", 1) for x in linhas if "=" in x and not x.startswith("#"))
@@ -168,19 +160,66 @@ def test_totem_next_recebe_fracao_e_modelo_e_grava_serie(monkeypatch, tmp_path):
     assert serie_1 and serie_1[-1]["origem"] == "simulado"
 
 
-<<<<<<< HEAD
-def test_uma_vaga_e_o_padrao_e_o_estande_inteiro_cabe_nela(monkeypatch, tmp_path):
-    """
-    A montagem de 23/10: UMA vaga, e o relé dela libera energia de verdade.
-    `preparar_totem.py --next` sem `--vagas` já vem assim.
-    """
+def _preparar_padrao(monkeypatch, tmp_path, *extra):
     fake.limpar()
     monkeypatch.setattr(provisionar, "_supabase", lambda: fake)
     monkeypatch.setattr(preparar_totem, "ENV_TOTEM", tmp_path / ".env")
-    monkeypatch.setattr(sys, "argv", ["preparar_totem.py", "--next"])          # sem --vagas
+    monkeypatch.setattr(sys, "argv", ["preparar_totem.py", "--next", *extra])
     preparar_totem.main()
-    env = dict(x.split("=", 1) for x in (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
-               if "=" in x and not x.startswith("#"))
+    return dict(x.split("=", 1) for x in (tmp_path / ".env").read_text(encoding="utf-8").splitlines()
+                if "=" in x and not x.startswith("#"))
+
+
+def test_duas_vagas_e_o_padrao_e_os_numeros_do_roteiro(monkeypatch, tmp_path):
+    """
+    A montagem de 24/10: DUAS vagas, cada relé libera energia de verdade.
+    `preparar_totem.py --next` sem `--vagas` já vem assim. Os números aqui são
+    os que o roteiro da banca (docs/RODAR_NO_NOTEBOOK.md, seção 9) promete.
+    """
+    env = _preparar_padrao(monkeypatch, tmp_path)                              # sem --vagas
+    assert [c["numero"] for c in fake.t("carregadores")] == ["T1", "T2"]
+    assert [p["numero"] for p in fake.t("portas_dispositivo")] == [1, 2]
+    estande = next(c for c in fake.t("condominios") if c["id"] == ESTANDE)
+    assert estande["limite_potencia_kw"] == 15.0, "o quadro comporta as duas vagas cheias"
+
+    placa = PlacaV2(APP, env["DEVICE_ID"], env["DEVICE_KEY_HEX"])
+    hs = placa.handshake().json()
+    assert [p["porta"] for p in hs["portas"]] == [1, 2], "o firmware compara este número com PORTAS = 2"
+    assert placa.rfid(3, env["TAG_A"]).status_code == 422, "vaga que não existe é recusada"
+
+    assert (placa.rfid(1, env["TAG_A"]).json()["acao"], 1) == ("ligar", 1)
+    r2 = placa.rfid(2, env["TAG_B"]).json()
+    assert (r2["acao"], r2["fracao"]) == ("ligar", 1.0), "15 kW: as duas cheias, relés fechados direto"
+
+    def fracoes(limite_kw):
+        estande["limite_potencia_kw"] = limite_kw
+        demanda.alocar(ESTANDE)
+        t = placa.millis() + 1000
+        resp = placa.chamar("POST", "/telemetria", {"t_envio_ms": t, "leituras": [
+            {"porta": p, "t_ms": t, "potencia_w": 7.5, "energia_wh": 0.5, "rele_ligado": True}
+            for p in (1, 2)]}).json()
+        return [(x["fracao"], x["estado"], x["deve_liberar"]) for x in resp["portas"]]
+
+    assert fracoes(7.5) == [(0.5, "carregando", True)] * 2, "metade do quadro: 50% para cada, revezando"
+    assert [f for f, *_ in fracoes(5.0)] == [0.3333] * 2
+    assert [f for f, *_ in fracoes(3.0)] == [0.2] * 2, "o mínimo da vaga: 20% de 7,5 kW"
+    (f1, e1, _), (f2, e2, l2) = fracoes(2.5)
+    assert (f1, e1) == (0.3333, "carregando"), "a primeira a chegar fica com o quadro todo"
+    # A segunda fica abaixo do mínimo: fração 0 (relé aberto a janela toda),
+    # sessão viva e saldo reservado - não encerra; volta quando houver quadro.
+    assert (f2, l2) == (0.0, True), "a segunda pausa (abaixo do mínimo), sem encerrar"
+    assert fracoes(15.0) == [(1.0, "carregando", True)] * 2, "quadro cheio de novo: as duas voltam"
+
+    # Pico: o painel liga a ponta (vale no sábado: o estande é bancada) e o limite cai à metade.
+    from fisica import em_horario_de_ponta
+    estande.update(ponta_inicio="00:00", ponta_fim="23:59")
+    assert em_horario_de_ponta(estande) and demanda.limite_efetivo(estande)[0] == 7.5
+    assert [f for f, *_ in fracoes(15.0)] == [0.5, 0.5], "pico: 15 -> 7,5 kW, os relés revezam"
+
+
+def test_uma_vaga_continua_funcionando_e_o_estande_inteiro_cabe_nela(monkeypatch, tmp_path):
+    """A montagem de 23/10: UMA vaga (`--vagas 1`)."""
+    env = _preparar_padrao(monkeypatch, tmp_path, "--vagas", "1")
 
     assert [c["numero"] for c in fake.t("carregadores")] == ["T1"], "só a vaga 1 existe"
     assert [p["numero"] for p in fake.t("portas_dispositivo")] == [1]
@@ -236,8 +275,6 @@ def test_sem_next_a_vaga_solar_exige_quatro(monkeypatch, tmp_path):
         preparar_totem.main()
 
 
-=======
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 def test_serie_e_percentual_do_celular_so_para_o_dono(monkeypatch, tmp_path):
     env = _preparar(monkeypatch, tmp_path)
     placa = PlacaV2(APP, env["DEVICE_ID"], env["DEVICE_KEY_HEX"])
@@ -369,11 +406,8 @@ def test_admin_ve_tudo_e_operador_so_o_proprio_condominio(monkeypatch, tmp_path)
     r = ADMIN.patch("/gestor/next/demanda", json={"limite_potencia_kw": 22.5}, headers=davi).json()
     assert r["limite_kw"] == 22.5
     r = ADMIN.patch("/gestor/next/demanda", json={"pico": "pico_agora"}, headers=davi).json()
-    from datetime import datetime
-    from config import FUSO
-    assert r["em_ponta"] is (datetime.now(FUSO).weekday() < 5)
-    if r["em_ponta"]:
-        assert r["limite_kw"] == 11.25, "ponta = metade de 22,5"
+    # O estande é bancada: o pico do painel vale em qualquer dia (o Next é num sábado).
+    assert r["em_ponta"] is True and r["limite_kw"] == 11.25, "ponta = metade de 22,5"
     assert ADMIN.patch("/gestor/next/demanda", json={"pico": "sem_pico"}, headers=davi).json()["em_ponta"] is False
     assert ADMIN.patch("/gestor/next/demanda", json={"limite_potencia_kw": 1}, headers=op).status_code == 404
 
@@ -423,3 +457,27 @@ def test_senhas_demo_nao_toca_conta_de_gestor(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["provisionar.py", "senhas-demo", "--senha", "DemoForte#2026"])
     provisionar.main()
     assert [c["usuario_id"] for c in fake.t("credenciais_usuario")] == ["m"]
+
+
+def test_duas_vagas_fila_de_energia_e_volta_sozinha(monkeypatch, tmp_path):
+    """Roteiro da banca: quadro de 2,5 kW com a vaga 1 carregando -> a tag na vaga 2 vai para a fila."""
+    env = _preparar_padrao(monkeypatch, tmp_path)
+    estande = next(c for c in fake.t("condominios") if c["id"] == ESTANDE)
+    estande["limite_potencia_kw"] = 2.5
+    placa = PlacaV2(APP, env["DEVICE_ID"], env["DEVICE_KEY_HEX"])
+    placa.handshake()
+    r1 = placa.rfid(1, env["TAG_A"]).json()
+    assert (r1["acao"], r1["fracao"]) == ("ligar", 0.3333), "sozinha: 2,5 de 7,5 kW = 33% do tempo"
+    r2 = placa.rfid(2, env["TAG_B"]).json()
+    assert (r2["acao"], r2["motivo"], r2["fila_posicao"]) == ("nenhuma", "aguardando_energia", 1),         "1,25 kW cada < 1,5 kW: fila, com o saldo já reservado"
+    assert r2["tela"][:3] == ["Vaga 2 na espera", "Sem energia agora", "Fila: 1"]
+    s2 = next(s for s in fake.t("sessoes_recarga") if s["carregador_id"] == preparar_totem.VAGAS[2])
+    assert s2["status"] == "aguardando_energia"
+
+    # O laço de 10 s do simulador (dentro do uvicorn) promove a fila.
+    estande["limite_potencia_kw"] = 15.0
+    import recarga
+    assert recarga.promover_aguardando_energia(ESTANDE) == 1
+    s2 = next(s for s in fake.t("sessoes_recarga") if s["carregador_id"] == preparar_totem.VAGAS[2])
+    assert s2["status"] == "carregando", "sobrou quadro: a fila liga sozinha"
+    assert any(c["porta"] == 2 and c["acao"] == "liberar" for c in fake.t("comandos_dispositivo")),         "a placa recebe o liberar da vaga 2 pelo GET /comandos"

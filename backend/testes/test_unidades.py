@@ -45,6 +45,8 @@ sabado = datetime(2026, 9, 26, 19, 0, tzinfo=FUSO)
 checar(em_horario_de_ponta(COND, ponta), "terça 19h é ponta")
 checar(not em_horario_de_ponta(COND, fora), "terça 10h não é ponta")
 checar(not em_horario_de_ponta(COND, sabado), "sábado 19h não é ponta")
+checar(em_horario_de_ponta({**COND, "perfil": "bancada"}, sabado),
+       "no estande (bancada) a ponta ligada pelo painel vale no sábado")
 checar(tarifa_do_momento(PONTO, COND, ponta) == 3.0, "tarifa de ponta = base x 1,5")
 checar(tarifa_do_momento(PONTO, COND, fora) == 2.0, "fora da ponta, tarifa base")
 

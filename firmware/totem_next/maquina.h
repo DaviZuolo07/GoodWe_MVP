@@ -15,13 +15,8 @@
 //   Interface (uma: há um leitor e uma tela)
 //     INICIANDO -> AGUARDANDO_TAG -> ESCOLHA_VAGA (15 s) -> [POST /v2/rfid]
 //               -> MOSTRA_TELA (>= 4 s) -> AGUARDANDO_TAG
-<<<<<<< HEAD
 //   Vaga (PORTAS delas, cada uma com o seu relógio): o estado é o último que
 //   o BACKEND informou; sem ele, vale o relé (liberado = carregando).
-=======
-//   Vaga (quatro, cada uma com o seu relógio): o estado é o último que o
-//   BACKEND informou; sem ele, vale o relé (liberado = carregando).
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 //
 // NADA DE delay(): tudo é "já passaram X ms desde a marca?". A única espera
 // que bloqueia é o HTTP, com timeout de HTTP_TIMEOUT_MS (8 s).
@@ -126,12 +121,9 @@ class Totem {
   void rotulo(const Vaga& v, char* saida);
   void desenhar(uint32_t agora);
   void evento(const char* formato, ...);
-<<<<<<< HEAD
   // Monitor serial: comandos (tag e botão pelo computador) e estado das vagas
   void lerSerial(char* tag, size_t tamanho, bool& temTag, uint8_t& botao);
   void statusSerial(uint32_t agora);
-=======
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 
   Enlace enlace_;
   Vaga vagas_[PORTAS + 1];             // índice = número da vaga
@@ -176,12 +168,9 @@ class Totem {
   Anel<Leitura, FILA_LEITURAS_MAX> filaLeituras_;
   uint32_t descartadas_ = 0, lotesEnviados_ = 0, lotesDescartados_ = 0;
   bool configOk_ = true;               // false: DEVICE_KEY_HEX mal escrita em segredos.h
-<<<<<<< HEAD
 
   // monitor serial
   char linhaSerial_[48] = "";
   uint8_t nSerial_ = 0;
   uint32_t tStatus_ = 0;
-=======
->>>>>>> a2c95a3286904a05abfc2a0d5e2c35817827cf93
 };

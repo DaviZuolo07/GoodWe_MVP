@@ -2,9 +2,9 @@
  * ============================================================================
  * GoodWe ChargeOps - Totem Next (ESP32) - protocolo v2 + Totem v2.1
  * ============================================================================
- * 1 ESP32 comanda 4 vagas de recarga de CELULAR ao mesmo tempo: 4 relés,
- * 4 botões, 1 leitor RFID, 1 LCD 16x2, 2 USB-A + 2 USB-C. SEM INA219 e SEM
- * solar: é o hardware da banca do Next (22/10/2026).
+ * 1 ESP32 comanda PORTAS vagas de recarga de CELULAR ao mesmo tempo (config.h;
+ * 2 na banca de 24/10): um relé, um botão e uma porta USB por vaga, 1 leitor
+ * RFID, 1 LCD 16x2 (opcional). SEM INA219 e SEM solar.
  *
  * DUAS IDEIAS NOVAS EM RELAÇÃO AO TOTEM CENTRAL (firmware/totem_central)
  *   Modelo de carga   sem sensor, a energia de cada vaga sai da física do
@@ -18,7 +18,7 @@
  *                     limite do estande cai e os relés passam a revezar.
  *
  * FLUXO NO ESTANDE
- *   "Aproxime cartao" -> tag -> "Escolha vaga 1-4" (15 s) -> botão N
+ *   "Aproxime cartao" -> tag -> "Escolha vaga 1-2" (15 s) -> botão N
  *   -> POST /hardware/v2/rfid -> o backend decide (saldo, débito na carteira,
  *   fila de energia, vaga ocupada...) -> a vaga N é liberada -> o rodízio fecha
  *   o relé -> telemetria a cada 6 s -> previsão de fim no LCD e no app.

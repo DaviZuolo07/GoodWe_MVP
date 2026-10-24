@@ -228,12 +228,16 @@ def _hora(valor, padrao: str) -> time:
 
 
 def em_horario_de_ponta(condominio: dict | None, momento: datetime | None = None) -> bool:
-    """Dias úteis dentro da janela [ponta_inicio, ponta_fim), no fuso local."""
+    """
+    Dias úteis dentro da janela [ponta_inicio, ponta_fim), no fuso local.
+    O estande (perfil bancada) vale também no fim de semana: lá a ponta só
+    existe quando o painel a liga ("Simular pico agora"), e o Next é num sábado.
+    """
     if not condominio:
         return False
     momento = (momento or datetime.now(FUSO)).astimezone(FUSO)
-    if momento.weekday() >= 5:          # sábado e domingo não têm ponta
-        return False
+    if momento.weekday() >= 5 and condominio.get("perfil") != "bancada":
+        return False                    # sábado e domingo não têm ponta
     inicio = _hora(condominio.get("ponta_inicio"), "18:00")
     fim = _hora(condominio.get("ponta_fim"), "21:00")
     agora_t = momento.time()

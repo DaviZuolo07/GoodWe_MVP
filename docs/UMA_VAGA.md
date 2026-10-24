@@ -1,8 +1,13 @@
-# Totem de UMA vaga — integração (23/10/2026)
+# Totem de DUAS vagas — integração (24/10/2026)
 
-A montagem que foi para a banca tem **uma vaga**, e o relé dela **libera energia de
-verdade** para o celular. Este documento é o contrato entre o firmware do Gustavo e
-o backend: o que mudou, o que precisa bater, e como voltar para quatro vagas.
+> O arquivo manteve o nome `UMA_VAGA.md` (a montagem de 23/10) para não quebrar os
+> links. O conteúdo vale para a montagem de **24/10: duas vagas**.
+
+Cada vaga é `carregador 5 V → relé → porta USB`, e o relé **libera energia de verdade**.
+Ele só fecha depois de **dois passos**: o MFRC522 lê uma tag **vinculada a uma conta no
+app** e a pessoa aperta o **botão da vaga**. O botão decide qual vaga recebe energia.
+Este documento é o contrato entre o firmware do Gustavo e o backend: o que precisa
+bater e como mudar o número de vagas.
 
 Para levantar tudo na ordem: [`RODAR_NO_NOTEBOOK.md`](RODAR_NO_NOTEBOOK.md).
 
@@ -12,78 +17,89 @@ Para levantar tudo na ordem: [`RODAR_NO_NOTEBOOK.md`](RODAR_NO_NOTEBOOK.md).
 
 | Onde | O quê | Valor hoje |
 |---|---|---|
-| `firmware/totem_next/config.h` | `constexpr uint8_t PORTAS` | `1` |
-| banco (via `backend/preparar_totem.py`) | `--vagas N` | `1` (é o padrão com `--next`) |
+| `firmware/totem_next/config.h` | `constexpr uint8_t PORTAS` | `2` |
+| banco (via `backend/preparar_totem.py`) | `--vagas N` | `2` (é o padrão com `--next`) |
 
 ```powershell
-# de backend/ - uma vaga (padrão)
+# de backend/ - duas vagas (padrão)
 python preparar_totem.py --next
-# quatro vagas
+# uma ou quatro vagas
+python preparar_totem.py --next --vagas 1
 python preparar_totem.py --next --vagas 4
 ```
 
-O firmware confere sozinho no handshake e avisa no monitor serial:
+O firmware confere sozinho no handshake e avisa no monitor serial
+(`firmware/totem_next/maquina.cpp`, `aplicarHandshake`):
 
 ```
-handshake ok: 1 porta(s) no backend, 1 nesta placa
+handshake ok: 2 porta(s) no backend, 2 nesta placa
 ```
 
-Se os números diferirem, a linha vira um `ATENCAO:` dizendo exatamente o que
+Se os números diferirem, vem logo abaixo uma linha
+`ATENCAO: o backend tem N porta(s) e este firmware tem PORTAS = M (...)` dizendo o que
 corrigir. **Vaga que o backend conhece e o firmware não, não existe para a placa:**
-nenhum relé é tocado, e o comando de liberar volta com `porta_inexistente`. Por isso
-`--vagas 1` **apaga** T2..T4 do banco — para o painel não mostrar vaga sem relé e o
-alocador não dividir o limite com uma vaga fantasma. Se as vagas que saem já tiverem
-histórico de recarga, elas ficam offline e fora da placa, em vez de serem apagadas.
+nenhum relé é tocado, e o comando de liberar volta com `porta_inexistente`. Botão de vaga
+que o backend não conhece leva `422` (LCD `Vaga N` / `indisponivel`). Por isso diminuir
+o `--vagas` **apaga** as vagas que sobram — para o painel não mostrar vaga sem relé e o
+alocador não dividir o limite com uma vaga fantasma. Vagas com histórico de recarga
+ficam offline e fora da placa, em vez de serem apagadas.
 
 Nada mais no projeto depende do número de vagas: backend, painel e app montam a lista
 a partir do banco.
 
-## 2. O que mudou de 4 para 1
+## 2. Os números com duas vagas
 
-| Item | 4 vagas | 1 vaga |
-|---|---|---|
-| Limite do estande | 30 kW | **7,5 kW** (`7,5 × vagas`) |
-| Limite na ponta (× 0,5) | 15 kW | **3,75 kW** |
-| Vagas no banco | T1..T4 | **T1** |
-| Portas da placa | 1..4 | **1** |
-| Water-filling | reparte entre as vagas | **recorta a própria vaga no tempo** |
-| LCD, página do quadro | `1:7.5W 2:75%` / `3:CARGA 4:LIVRE` | `Vaga 1` / `7.5W` |
-| Relés usados | GPIO 13, 12, 14, 27 | **GPIO 13** |
-| Botões usados | GPIO 32, 33, 25, 26 | **GPIO 32** |
+| Item | Valor |
+|---|---|
+| Limite do estande | **15 kW** (`7,5 × vagas`) |
+| Limite na ponta (× 0,5) | **7,5 kW** |
+| Vagas no banco | **T1, T2** |
+| Portas da placa | **1, 2** |
+| Relés | GPIO **13** (vaga 1), **16** (vaga 2) |
+| Botões | GPIO **32** (vaga 1), **33** (vaga 2) |
+| Tarifa | R$ 1,15/kWh na escala (= por Wh real); na ponta × `ponta_multiplicador_tarifa` (padrão 1,5 do db/12 = R$ 1,725; o painel mostra o valor do estande) |
 
-Com uma vaga o water-filling não some — ele aparece **dentro** da vaga. O quadro do
-estande é do tamanho dela, então baixar o limite vira tempo de relé fechado:
+Water-filling com os dois celulares abaixo de 80% (cada um pede a vaga cheia, 7,5 kW).
+Conferido em `backend/testes/test_next_sem_sensor.py::test_duas_vagas_e_o_padrao_e_os_numeros_do_roteiro`:
 
-| Limite do estande | A vaga recebe | Fração | O relé, numa janela de 30 s |
+| Limite do estande | `fracao` vaga 1 / vaga 2 | Relés, numa janela de 30 s | Fechados juntos |
 |---|---|---|---|
-| 7,5 kW | 7,5 kW | 100% | fechado direto (sem estalo à toa) |
-| 3,75 kW | 3,75 kW | 50% | 15 s fechado, 15 s aberto |
-| 1,5 kW | 1,5 kW | 20% | 6 s fechado, 24 s aberto |
-| 1 kW | 0 | — | aberto: **pausada**, abaixo do mínimo da vaga |
+| 15 kW | 1,0 / 1,0 | os dois fechados direto | 2 |
+| 7,5 kW (ou o pico) | 0,5 / 0,5 | vaga 1 de 0 a 15 s, vaga 2 de 15 a 30 s | 1 |
+| 5 kW | 0,3333 / 0,3333 | 10 s cada | 1 |
+| 3 kW | 0,2 / 0,2 | 6 s cada (o mínimo da vaga) | 1 |
+| 2,5 kW | 0,3333 / **0** | só a primeira a chegar; a segunda pausa **sem encerrar** | 1 |
 
-O mínimo é 20% da vaga (`demanda.MINIMO_FRACAO_POR_TEMPO`): fatia menor que isso não
-carrega nada e só faz o relé estalar. Uma tag nova nesse estado vai para a **fila de
-energia**, com o saldo já reservado, e liga sozinha quando sobra potência.
+O mínimo é 20% da vaga (`demanda.MINIMO_FRACAO_POR_TEMPO`). Uma **tag nova** que ficaria
+abaixo dele vai para a **fila de energia** com o saldo reservado (`test_duas_vagas_fila_de_energia_e_volta_sozinha`)
+e liga sozinha no laço de 10 s do backend (`simulador.ciclo` → `recarga.promover_aguardando_energia`)
+quando sobra potência.
 
-## 3. Fiação da vaga única
+**A fonte.** As duas portas saem do mesmo carregador de 5 V. Com fração ≤ 0,5 o
+escalonador nunca fecha os dois relés juntos (`teste/teste_carga.cpp`, cenários de duas
+vagas, `pico 1`) — o limite do estande protege a fonte do mesmo jeito que protege o quadro
+de um condomínio.
+
+## 3. Fiação
 
 | Ligação | GPIO | Observação |
 |---|---|---|
 | Relé da vaga 1 (IN1) | **13** | módulo **ativo em HIGH** (`RELE_ATIVO_EM_LOW 0`) |
+| Relé da vaga 2 (IN2) | **16** | **não o 12** (abaixo) |
 | Botão da vaga 1, ao GND | **32** | pull-up interno |
+| Botão da vaga 2, ao GND | **33** | pull-up interno |
 | MFRC522 | SCK 18, MISO 19, MOSI 23, SDA/SS 5, RST 4 | **3,3 V**, nunca 5 V |
-| LCD I2C 16x2 | SDA 21, SCL 22 | endereço 0x27 (alguns vêm em 0x3F) |
+| LCD I2C 16x2 (opcional) | SDA 21, SCL 22 | 0x27 ou 0x3F, procurado no boot |
 | LED de status | 2 | aceso = servidor aceitando a placa |
 
-- **Teste de segurança:** com a placa recém-ligada, **nenhum relé pode estalar**. Se
-  estalar, o módulo liga com LOW: troque `RELE_ATIVO_EM_LOW` para `1`.
-- **USB-A:** ligue **D+ com D−** na porta. Sem isso o celular puxa ~0,5 A e o modelo
-  (7,5 W) fica otimista.
-- **USB-C fêmea:** **22 kΩ do VBUS a cada pino CC** anuncia 1,5 A. Sem isso, cabo C-C
-  pode não carregar nada.
-- Fio de 1 mm² do +5 V ao relé e do relé à porta. Fonte de 5 V com folga para 1,5 A.
-- **GPIO 12 é pino de boot**, mas com uma vaga ele nem é usado. Se um dia voltarem os
-  quatro relés e a placa reiniciar em laço, passe o IN2 para o GPIO 16.
+- **GPIO 12 é pino de boot (MTDI).** Em HIGH no boot a flash vai para 1,8 V e a placa
+  reinicia em laço (`flash read err, 1000`), ou a gravação falha. O sketch de validação
+  usava o 12 para a vaga 2; o firmware usa o **16**. Em módulo **WROVER**, o 16 é da
+  PSRAM: use o **27**.
+- **Sem LCD**, o firmware imprime `LCD nao encontrado (...)` e segue: o serial vira a tela.
+- **Teste de segurança:** com a placa recém-ligada, **nenhum relé pode ficar fechado**.
+  Se ficar, o módulo liga com LOW: troque `RELE_ATIVO_EM_LOW` para `1`.
+- **USB-A:** ligue **D+ com D−** na porta. **USB-C fêmea:** 22 kΩ do VBUS a cada pino CC.
 
 ## 4. O que a placa manda e o que o backend responde
 
@@ -96,7 +112,11 @@ Protocolo v2 (ADR-015): toda requisição vai assinada com HMAC-SHA256 derivada 
 | ao ligar | `POST /hardware/v2/handshake` | mac, ip, firmware | **as portas** (estado, `rele_esperado`, sessão aberta), `fator_escala`, intervalos |
 | tag + botão | `POST /hardware/v2/rfid` | `porta`, `uid` | `acao` (`ligar`/`desligar`/`nenhuma`), `motivo`, `tela`, `fracao`, `carga` |
 | a cada 6 s | `POST /hardware/v2/telemetria` | lote de leituras (W, Wh, V, A, `rele_ligado`) | por porta: `deve_liberar`, `estado`, `percentual`, `tempo_restante_min`, **`fracao`**, `carga`, custo |
-| a cada 2 s | `GET /hardware/v2/comandos` | nada | ordens do app/painel (`ligar`, `desligar`, `solicitar_cartao`, `ping`) |
+| a cada 2 s | `GET /hardware/v2/comandos` | nada | ordens do app/painel/fila (`liberar`, `bloquear`, `solicitar_cartao`, `ping`) |
+
+O UID vai **sem espaços e em maiúsculas** (`D3F5BFD9`; o sketch de validação imprimia
+`D3 F5 BF D9`). Tag que ninguém vinculou volta com `cartao_nao_cadastrado` e o LCD mostra
+o UID para a pessoa vincular no app.
 
 Os dois campos que fazem o water-filling andar:
 
@@ -113,17 +133,16 @@ Tudo em **unidade bruta** (W, Wh, V, A). A escala 1:1000 (7,5 W da porta aparece
 
 Diga isto na banca, e está escrito no painel:
 
-- **Reais:** o relé, o tempo que ele fica fechado, a tag, o botão, o saldo, a cobrança
-  e a energia que o celular recebe de fato.
+- **Reais:** o relé, o tempo que ele fica fechado, a tag, o botão, o saldo, a reserva, a
+  cobrança, o estorno e a energia que o celular recebe de fato.
 - **Modelo:** os **números** de potência e energia. Não há INA219, então a placa calcula
   a recarga pela física do celular (curva CC-CV: cheia até 80%, caindo até 100%) e
   grava tudo com origem **`simulado`**, nunca `medido`.
-- **O que o modelo não sabe:** se o celular foi desplugado. Sem corrente medida, a vaga
-  segue contando até a tag encerrar, o alvo chegar ou o valor reservado acabar. É a
-  razão de existir um INA219 no projeto completo (ADR-022).
+- **O que o modelo não sabe:** se o celular foi desplugado, nem se a fonte cedeu. Sem
+  corrente medida, a vaga segue contando até a tag encerrar, o alvo chegar ou o valor
+  reservado acabar. É a razão de existir um INA219 no projeto completo (ADR-022).
 - `ACELERAR` em `config.h` é **1** em operação. Acima disso o modelo anda mais rápido
-  que o relógio (time-lapse de demonstração) e a energia vira projeção — não apresente
-  o valor cobrado como medido nesse modo.
+  que o relógio e a energia vira projeção — não apresente o valor cobrado como medido.
 
 ## 6. Conduzir pelo computador (plano B do leitor e do botão)
 
@@ -133,7 +152,7 @@ Monitor serial a **115200**, com **Nova linha**. Passa pelo mesmo
 | Digite | Faz |
 |---|---|
 | `t D3F5BFD9` | aproxima a tag com esse UID |
-| `b` | aperta o botão da vaga 1 (`b 2` para a vaga 2, quando houver) |
+| `b` / `b 2` | aperta o botão da vaga 1 / da vaga 2 |
 | `s` | imprime %, W, Wh, tempo fechado e previsão de fim |
 
 A cada 5 s a placa imprime esse mesmo status sozinha.
@@ -142,20 +161,21 @@ A cada 5 s a placa imprime esse mesmo status sozinha.
 
 ```powershell
 cd backend
-python -m pytest testes -q                       # 124 testes
+python -m pytest testes -q                       # 126 testes
 cd ..
-python -m pytest totem_virtual/testes -q         # 57 testes (~3 min)
+python -m pytest totem_virtual/testes -q         # 57 testes (~3,5 min)
 cd firmware\totem_next
 g++ -std=c++17 -O2 -o teste_carga teste/teste_carga.cpp carga.cpp && .\teste_carga
 ```
 
-O último termina em `TUDO PASSOU` e imprime o rodízio, inclusive os três cenários de
-uma vaga. Os testes de backend que seguram esta versão estão em
+O último termina em `TUDO PASSOU` (precisa de um g++; o notebook do estande não tem).
+Os testes de backend que seguram esta versão estão em
 `backend/testes/test_next_sem_sensor.py`:
 
-- `test_uma_vaga_e_o_padrao_e_o_estande_inteiro_cabe_nela`
+- `test_duas_vagas_e_o_padrao_e_os_numeros_do_roteiro`
+- `test_duas_vagas_fila_de_energia_e_volta_sozinha`
+- `test_uma_vaga_continua_funcionando_e_o_estande_inteiro_cabe_nela`
 - `test_diminuir_as_vagas_apaga_as_que_sobraram`
-- `test_sem_next_a_vaga_solar_exige_quatro`
 
 Na bancada, o roteiro de ponta a ponta é a seção 9 de
 [`RODAR_NO_NOTEBOOK.md`](RODAR_NO_NOTEBOOK.md).
