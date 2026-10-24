@@ -111,8 +111,7 @@ int main() {
   // DUAS VAGAS (a montagem de 24/10, UMA fonte de 5 V para as duas portas).
   // O que importa para a fonte é o PICO: com 50% ou menos cada, as fatias se
   // encaixam uma depois da outra e nunca há dois relés fechados juntos.
-  printf("Duas vagas (PORTAS = 2):
-");
+  printf("Duas vagas (PORTAS = 2):\n");
   const float duas_cheias[5] = {0, 1.0f, 1.0f, 0, 0};       // 15 kW: as duas fechadas
   const float duas_metade[5] = {0, 0.5f, 0.5f, 0, 0};       // 7,5 kW ou pico: revezam
   const float duas_terco[5]  = {0, 1.0f / 3, 1.0f / 3, 0, 0};   // 5 kW
